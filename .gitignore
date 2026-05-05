@@ -1,0 +1,7 @@
+.env
+bot.log
+prompt.txt
+mem0/
+qdrant_storage/
+*.db
+__pycache__/
