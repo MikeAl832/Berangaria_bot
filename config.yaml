@@ -1,34 +1,33 @@
-"model": "deepseek-v4-flash" 
+"model": "deepseek-v4-flash"
 "max_context_tokens": 32000 # Максимальная история в токенах
-"max_reply_tokens": 4096    # Максимальное количество токенов в одном ответе моделе
+"max_reply_tokens": 4096    # Максимальное количество токенов в одном ответе модели
 "random_reply_chance": 10   # Шанс рандомного ответа
-"random_reply_cooldown": {} 
+"random_reply_cooldown": {}
 "admin_mode": false         # true = только админы могут использовать опасные команды
 "vision_mode": false        # true/false vision mode для поддерживаемых моделей
-"debug": false              # true = выводит в консоль промт который отправляется модели
+"debug": false              # true = выводит в консоль промпт который отправляется модели
 "bot_names": ["Бер", "Ber"] # Список имен на которые отзывается модель
 
 # Настройки самой модели
 # Поддерживаемые параметры:
-# "top_k": 20,
-# "min_p": 0,
-# "presence_penalty": 0,
-# "repetition_penalty": 1.1,
-# "thinking": {
-#     "type": "enabled",
-#     "budget_tokens": 512
-# }  
-"generation_params": {
-    "temperature": 0.9,
-    "top_p": 0.95
-},
+# top_k: 20
+# min_p: 0
+# presence_penalty: 0
+# repetition_penalty: 1.1
+# thinking:
+#   type: enabled
+#   budget_tokens: 512
+"generation_params":
+  "temperature": 0.9
+  "top_p": 0.95
 
 "summary_interval": 10      # Количество сообщений которые останутся после команды сжатия истории /summarize
+
 # Белые списки для бота (id)
 "allowed_users": [1217938322]
 "allowed_groups": [-1002263830880]
 
-# Цены для 1M токенов для вашей модели для посчета стоимости запросов
+# Цены для 1M токенов для вашей модели для подсчета стоимости запросов
 "price_prompt_cache_miss": 0.14     # Цена за входные токены
-"price_prompt_cache_hit": 0.0028    # Цена за  кэшированные токены (не у всех моделей)
+"price_prompt_cache_hit": 0.0028    # Цена за кэшированные токены (не у всех моделей)
 "price_completion": 0.28            # Цена за выходные токены
