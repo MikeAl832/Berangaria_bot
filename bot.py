@@ -18,8 +18,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 with open("config.yaml", "r", encoding="utf-8") as f:
     config = yaml.safe_load(f)
-with open("system_prompt.txt", "r", encoding="utf-8") as f:
-    system_prompt = f.read()
 load_dotenv()
 
 
