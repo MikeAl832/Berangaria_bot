@@ -5,3 +5,4 @@ mem0/
 qdrant_storage/
 *.db
 __pycache__/
+venv

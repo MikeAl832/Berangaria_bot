@@ -2,7 +2,6 @@ httpx
 python-telegram-bot[job-queue]
 mem0ai[nlp]
 transformers
-tiktoken
 python-dotenv
 pyyaml
 ddgs

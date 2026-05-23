@@ -73,7 +73,7 @@ MEM0_CONFIG = {
     "llm": {
         "provider": "lmstudio",
         "config": {
-            "model": "gemma-4-e4b-it",
+            "model": "qwen3-vl-8b-instruct",
             "lmstudio_base_url": "http://127.0.0.1:1234/v1",
             "temperature": 0.1,
             "max_tokens": 2000,
