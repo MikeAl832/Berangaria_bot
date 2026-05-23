@@ -1,8 +1,12 @@
 "model": "deepseek-v4-flash"
+"local_models": "qwen3-vl-8b-instruct" 
+"provider": "lmstudio" # deepseek/lmstudio
+"base_url": "http://127.0.0.1:1234/v1" # Base URL for the LM Studio API
+"embedding_model": "text-embedding-multilingual-e5-large-instruct" # Модель для эмбеддингов, поддерживаемые модели зависят от провайдера
 "max_context_tokens": 32000 # Максимальная история в токенах
 "max_reply_tokens": 4096    # Максимальное количество токенов в одном ответе модели
 "random_reply_chance": 10   # Шанс рандомного ответа
-"random_reply_cooldown": {}
+"random_reply_cooldown": {} 
 "admin_mode": false         # true = только админы могут использовать опасные команды
 "vision_mode": false        # true/false vision mode для поддерживаемых моделей
 "debug": true              # true = выводит в консоль промпт который отправляется модели

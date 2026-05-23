@@ -1,4 +1,14 @@
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import (
@@ -11,14 +21,6 @@ from handlers import (
     handle_message, handle_media, error_handler
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ def main():
 
     app.add_error_handler(error_handler)
 
-    logger.info(f"🎲 Шанс случайного ответа: {config.RANDOM_REPLY_CHANCE}%")
+    logger.info(f"🎲 Шанс случайного ответа: {RANDOM_REPLY_CHANCE}%")
     logger.info(f"📝 Максимальный контекст: {MAX_CONTEXT_TOKENS} токенов")
     logger.info(f"💬 Максимум токенов в ответе: {MAX_REPLY_TOKENS}")
     logger.info(f"👁️ Vision mode: {VISION_MODE}")
