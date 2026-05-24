@@ -9,6 +9,9 @@ random_reply_cooldown = {}
 # Последнее известное количество токенов для чата (из API)
 chat_tokens = {}
 
+# Счётчик количества вызовов API для каждого ключа
+api_call_count = {}
+
 # Буфер сообщений для склеивания (debounce)
 # Формат: { "chat_id_user_id": { "messages": [...], "task": asyncio.Task } }
 message_buffer = {}

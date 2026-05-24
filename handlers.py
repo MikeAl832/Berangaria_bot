@@ -8,7 +8,7 @@ from config import (
     ADMIN_MODE, RANDOM_REPLY_CHANCE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE
 )
-from state import histories, get_history_key, message_buffer, chat_tokens
+from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count
 import config
 from llm_client import summarize_history, send_llm_request
 from utils import escape_user_text, is_bot_mentioned, should_reply_randomly, download_media_as_base64
@@ -39,7 +39,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             f"👋 Привет, {user_name}!\n\n"
-            f"Я запоминаю нашу беседу.\n\n"
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
@@ -129,7 +128,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Статистика {chat_type}:\n"
         f"Сообщений в истории: {msg_count}\n"
         f"Токенов (с учетом системного промпта): {token_count}/{MAX_CONTEXT_TOKENS}\n"
-        f"Диалогов: {msg_count // 2}\n"
+        f"Вызовов API: {api_call_count.get(key, 0)}\n"
         f"🎲 Шанс случайного ответа: {config.RANDOM_REPLY_CHANCE}%"
     )
 

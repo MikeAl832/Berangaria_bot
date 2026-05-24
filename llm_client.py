@@ -12,7 +12,7 @@ from config import (
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, TOOLS, API_KEY, API_URL,
     DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT
 )
-from state import histories, chat_tokens
+from state import histories, chat_tokens, api_call_count
 from memory_store import memory
 from tools import web_search
 
@@ -247,10 +247,22 @@ async def send_llm_request(
 
                         if func_name == 'web_search':
                             await update.message.chat.send_action(action="typing")
-                            status_message = await update.message.reply_text(
-                                f"🔍 Выполняю поиск: *{args['query']}*...",
-                                parse_mode="Markdown"
-                            )
+                            status_text = f"🔍 Выполняю поиск: *{args['query']}*..."
+
+                            if status_message is None:
+                                status_message = await update.message.reply_text(
+                                    status_text,
+                                    parse_mode="Markdown"
+                                )
+                            else:
+                                try:
+                                    await status_message.edit_text(
+                                        status_text,
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Не удалось отредактировать статусное сообщение: {e}")
+
                             logger.info(f"🔍 Поиск: {args['query']}")
 
                             search_result = web_search(
@@ -280,6 +292,9 @@ async def send_llm_request(
                     continue
 
                 reply = message.get('content', '')
+                
+                # Увеличиваем счётчик вызовов API
+                api_call_count[key] = api_call_count.get(key, 0) + 1
 
                 reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
                 reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
