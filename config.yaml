@@ -1,5 +1,10 @@
 "model": "deepseek-v4-flash"
-"local_models": "qwen3-vl-8b-instruct" 
+"vision_model": "qwen3-vl-8b-thinking"  # Локальная vision-модель (в LM Studio). Используется только если vision_provider=lmstudio. Thinking даёт лучшее качество, но в ~2 раза медленнее
+"vision_provider": "gemini"  # "lmstudio" — локальная Qwen3-VL, "gemini" — Google Gemini API (free tier, нативное видео, лучшее распознавание)
+"gemini_model": "gemini-3.1-flash-lite"  # Модель Gemini для vision. Бесплатные: gemini-2.0-flash, gemini-2.5-flash. См. ai.google.dev/pricing
+"mem0_model": "qwen3-4b-instruct-2507@q8_0"  # Локальная НЕ-thinking модель для mem0 и суммаризации диалога. Если пусто — используется основная MODEL (DeepSeek)
+"video_max_duration_sec": 60  # Максимальная длина видео в секундах (более длинные отклоняются)
+"video_max_frames": 8         # Сколько равномерно распределённых кадров вытащить из видео (актуально для lmstudio; gemini обрабатывает видео целиком)
 "provider": "lmstudio" # deepseek/lmstudio
 "base_url": "http://127.0.0.1:1234/v1" # Base URL for the LM Studio API
 "embedding_model": "text-embedding-multilingual-e5-large-instruct" # Модель для эмбеддингов, поддерживаемые модели зависят от провайдера
@@ -8,7 +13,7 @@
 "random_reply_chance": 10   # Шанс рандомного ответа
 "random_reply_cooldown": {} 
 "admin_mode": false         # true = только админы могут использовать опасные команды
-"vision_mode": false        # true/false vision mode для поддерживаемых моделей
+"vision_mode": true        # true/false vision mode для поддерживаемых моделей
 "debug": true              # true = выводит в консоль промпт который отправляется модели
 "bot_names": ["Бер", "Ber"] # Список имен на которые отзывается модель
 

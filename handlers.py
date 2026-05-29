@@ -6,12 +6,17 @@ from telegram.ext import ContextTypes
 
 from config import (
     ADMIN_MODE, RANDOM_REPLY_CHANCE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
-    ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE
+    ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC, VIDEO_MAX_FRAMES,
+    VISION_PROVIDER
 )
 from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count
 import config
 from llm_client import summarize_history, send_llm_request
-from utils import escape_user_text, is_bot_mentioned, should_reply_randomly, download_media_as_base64
+from vision_provider import describe_image_bytes, describe_video, is_native_video_supported
+from utils import (
+    escape_user_text, is_bot_mentioned, should_reply_randomly,
+    download_media_as_base64, extract_video_frames, download_video_to_file
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +201,12 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         return
 
     # Склеиваем сообщения
+    # Описания медиа (картинок/видео) добавляем как [Image description: ...] или [Video description: ...]
+    media_items = [
+        (m.get("media_kind", "image"), m["media_description"])
+        for m in messages if m.get("media_description")
+    ]
+
     if is_group:
         # Для группы мы просто берем базовую часть из первого сообщения и добавляем все тексты
         first_msg = messages[0]
@@ -213,7 +224,11 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
             message_parts.append(f"[Message: {escape_user_text(combined_text)}]")
         else:
             message_parts.append(f"[Message: (сообщение без текста)]")
-            
+
+        for kind, desc in media_items:
+            tag = "Video description" if kind == "video" else "Image description"
+            message_parts.append(f"[{tag}: {escape_user_text(desc)}]")
+
         message_content = " ".join(message_parts)
     else:
         first_msg = messages[0]
@@ -225,31 +240,18 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
             message_parts.append(f"[Message: {escape_user_text(combined_text)}]")
         else:
             message_parts.append("[Message: (без текста)]")
-            
+
+        for kind, desc in media_items:
+            tag = "Video description" if kind == "video" else "Image description"
+            message_parts.append(f"[{tag}: {escape_user_text(desc)}]")
+
         message_content = " ".join(message_parts)
 
     if key not in histories:
         histories[key] = []
     
     history = histories[key]
-    
-    # Для картинок логика чуть сложнее. Если были картинки, добавим их.
-    # В текущей реализации мы склеиваем текст. Картинки тоже нужно учесть.
-    content_parts = []
-    has_image = any(m["image_url"] for m in messages)
-    
-    if has_image:
-        content_parts.append({"type": "text", "text": message_content})
-        for m in messages:
-            if m["image_url"]:
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": m["image_url"]}
-                })
-        history.append({"role": "user", "content": content_parts})
-    else:
-        history.append({"role": "user", "content": message_content})
-
+    history.append({"role": "user", "content": message_content})
     histories[key] = history
 
     if not (mentioned or random_reply):
@@ -259,7 +261,8 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     await send_llm_request(update, context, key, history, user_name, user_id, is_group, random_reply, reason)
 
 
-async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, image_url: str = None):
+async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                        text: str, media_description: str = None, media_kind: str = None):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -290,7 +293,8 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text
 
     msg_data = {
         "text": text,
-        "image_url": image_url,
+        "media_description": media_description,
+        "media_kind": media_kind,
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text
@@ -357,22 +361,151 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     caption = update.message.caption or ""
-    
+
     if not VISION_MODE:
-        # Если Vision Mode выключен, мы все равно должны обрабатывать текст из картинки
+        # Vision выключен — просто пропустим текст подписи (если есть)
         if caption:
             await queue_message(update, context, text=caption)
-        return  
+        return
 
+    # Показываем "печатает", пока vision-модель работает с картинкой
+    try:
+        await update.message.chat.send_action(action="typing")
+    except Exception:
+        pass
+
+    image_description = None
     try:
         photo = update.message.photo[-1]
-        b64, mime = await download_media_as_base64(photo.file_id, context)
-        image_url = f"data:{mime};base64,{b64}"
+        image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
+        image_description = await describe_image_bytes(image_bytes, mime, caption=caption)
     except Exception as e:
-        logger.error(f"Ошибка загрузки фото: {e}")
-        image_url = None
+        logger.error(f"Ошибка обработки фото: {e}")
 
-    await queue_message(update, context, text=caption, image_url=image_url)
+    if not image_description:
+        # Если описать не удалось — оставим хотя бы пометку
+        image_description = "(не удалось разобрать изображение)"
+
+    await queue_message(update, context, text=caption,
+                        media_description=image_description, media_kind="image")
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
+
+    if update.effective_user.id == context.bot.id:
+        return
+
+    caption = update.message.caption or ""
+
+    if not VISION_MODE:
+        if caption:
+            await queue_message(update, context, text=caption)
+        return
+
+    # Telegram отдаёт видео либо как .video, либо как .video_note (кружочки), либо как .animation (gif)
+    video_obj = update.message.video or update.message.video_note or update.message.animation
+    if video_obj is None:
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    is_group = update.effective_chat.type in ['group', 'supergroup']
+
+    # Применяем те же ACL, что и в queue_message — чтобы не качать видео впустую
+    if is_group and ALLOWED_GROUPS and chat_id not in ALLOWED_GROUPS:
+        return
+    if not is_group and ALLOWED_USERS and user_id not in ALLOWED_USERS:
+        await update.message.reply_text("Не разговариваю с незнакомцами.")
+        return
+
+    # Раннее отсечение по метаданным Telegram (быстрее, чем качать)
+    tg_duration_raw = getattr(video_obj, "duration", 0) or 0
+    # PTB начиная с v22.2 постепенно мигрирует duration с int на datetime.timedelta.
+    # Поддерживаем оба варианта, чтобы не зависеть от версии.
+    if hasattr(tg_duration_raw, "total_seconds"):
+        tg_duration = tg_duration_raw.total_seconds()
+    else:
+        tg_duration = float(tg_duration_raw)
+
+    if tg_duration and tg_duration > VIDEO_MAX_DURATION_SEC:
+        await update.message.reply_text(
+            f"Видео длиннее {VIDEO_MAX_DURATION_SEC} сек — не буду смотреть."
+        )
+        return
+
+    try:
+        await update.message.chat.send_action(action="upload_video")
+    except Exception:
+        pass
+
+    video_description = None
+
+    if is_native_video_supported():
+        # Gemini принимает видео целиком — без извлечения кадров
+        video_path = None
+        try:
+            video_path, mime, duration = await download_video_to_file(
+                video_obj.file_id, context,
+                max_duration_sec=VIDEO_MAX_DURATION_SEC
+            )
+            if video_path is None and duration > VIDEO_MAX_DURATION_SEC:
+                await update.message.reply_text(
+                    f"Видео длиннее {VIDEO_MAX_DURATION_SEC} сек ({duration:.0f}с) — не буду смотреть."
+                )
+                return
+            if video_path:
+                try:
+                    await update.message.chat.send_action(action="typing")
+                except Exception:
+                    pass
+                video_description = await describe_video(
+                    video_path=video_path, mime=mime,
+                    caption=caption, duration=duration
+                )
+        except Exception as e:
+            logger.error(f"Ошибка обработки видео (gemini): {e}", exc_info=True)
+        finally:
+            if video_path:
+                try:
+                    import os as _os
+                    _os.remove(video_path)
+                except OSError:
+                    pass
+    else:
+        # LM Studio: извлекаем кадры через ffmpeg и шлём как набор картинок
+        try:
+            frames, duration = await extract_video_frames(
+                video_obj.file_id, context,
+                num_frames=VIDEO_MAX_FRAMES,
+                max_duration_sec=VIDEO_MAX_DURATION_SEC
+            )
+
+            if not frames and duration > VIDEO_MAX_DURATION_SEC:
+                await update.message.reply_text(
+                    f"Видео длиннее {VIDEO_MAX_DURATION_SEC} сек ({duration:.0f}с) — не буду смотреть."
+                )
+                return
+
+            if not frames:
+                logger.warning("Не удалось извлечь кадры из видео")
+            else:
+                try:
+                    await update.message.chat.send_action(action="typing")
+                except Exception:
+                    pass
+                video_description = await describe_video(
+                    frames_data_urls=frames, caption=caption, duration=duration
+                )
+        except Exception as e:
+            logger.error(f"Ошибка обработки видео (lmstudio): {e}", exc_info=True)
+
+    if not video_description:
+        video_description = "(не удалось разобрать видео)"
+
+    await queue_message(update, context, text=caption,
+                        media_description=video_description, media_kind="video")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

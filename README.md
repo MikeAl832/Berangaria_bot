@@ -62,8 +62,12 @@ API_KEY=your_deepseek_api_key          # or leave empty for local models
 Main settings:
 
 - `provider`: `deepseek` or `lmstudio`
-- `model` / `local_models`
-- `vision_mode`: enable/disable image analysis
+- `model`: main chat model (DeepSeek API)
+- `mem0_model`: local non-thinking model for memory extraction & summarization (e.g. `qwen3-4b-instruct-2507@q8_0`); leave empty to use `model`
+- `vision_provider`: `gemini` (free Google API, native video) or `lmstudio` (local Qwen3-VL)
+- `vision_model`: local vision model name when `vision_provider=lmstudio`
+- `gemini_model`: Gemini model when `vision_provider=gemini`
+- `vision_mode`: enable/disable image and video analysis
 - `admin_mode`: restrict `/clear`, `/summarize`, `/random` to group admins
 - `allowed_users`, `allowed_groups`: access lists (Telegram IDs)
 - `bot_names`: triggers for mentioning the bot in groups

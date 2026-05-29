@@ -1,4 +1,13 @@
 import logging
+import warnings
+
+# Скрываем варнинг python-telegram-bot про будущий переход duration → timedelta.
+# Наш код в handlers.handle_video поддерживает оба варианта, миграция нам не страшна.
+try:
+    from telegram.warnings import PTBDeprecationWarning
+    warnings.filterwarnings("ignore", category=PTBDeprecationWarning)
+except ImportError:
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,12 +22,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE
+    MAX_REPLY_TOKENS, VISION_MODE, VISION_MODEL, VISION_PROVIDER, GEMINI_MODEL
 )
 import config
 from handlers import (
     start, clear, stats, random_chance, summarize_command,
-    handle_message, handle_media, error_handler
+    handle_message, handle_media, handle_video, error_handler
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -40,6 +49,10 @@ def main():
 
     # Медиа
     app.add_handler(MessageHandler(filters.PHOTO, handle_media))
+    app.add_handler(MessageHandler(
+        filters.VIDEO | filters.VIDEO_NOTE | filters.ANIMATION,
+        handle_video
+    ))
 
     app.add_error_handler(error_handler)
 
@@ -47,6 +60,11 @@ def main():
     logger.info(f"📝 Максимальный контекст: {MAX_CONTEXT_TOKENS} токенов")
     logger.info(f"💬 Максимум токенов в ответе: {MAX_REPLY_TOKENS}")
     logger.info(f"👁️ Vision mode: {VISION_MODE}")
+    if VISION_MODE:
+        if VISION_PROVIDER == "gemini":
+            logger.info(f"🖼️ Vision provider: Gemini ({GEMINI_MODEL})")
+        else:
+            logger.info(f"🖼️ Vision provider: LM Studio ({VISION_MODEL or '(не задана!)'})")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
     logger.info("✅ Бот запущен!")
     

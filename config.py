@@ -19,7 +19,7 @@ MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", {})
 MODEL = config_yaml.get("model", "deepseek-v4-flash")
-LOCAL_MODELS = config_yaml.get("local_models", [])
+MEM0_MODEL = config_yaml.get("mem0_model", "")  # Локальная НЕ-thinking модель для mem0 и суммаризации. Если пусто — используется основная MODEL (DeepSeek API)
 PROVIDER = config_yaml.get("provider", "deepseek")
 BASE_URL = config_yaml.get("base_url", API_URL)
 EMBEDDING_MODEL = config_yaml.get("embedding_model", "text-embedding-multilingual-e5-large-instruct")
@@ -27,6 +27,12 @@ SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
 ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
 VISION_MODE = config_yaml.get("vision_mode", False)
+VISION_MODEL = config_yaml.get("vision_model", "")
+VISION_PROVIDER = config_yaml.get("vision_provider", "lmstudio").lower()  # "lmstudio" | "gemini"
+GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-2.0-flash")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 60)
+VIDEO_MAX_FRAMES = config_yaml.get("video_max_frames", 8)
 DEBUG = config_yaml.get("debug", False)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.14)
@@ -75,7 +81,7 @@ MEM0_CONFIG = {
     "llm": {
         "provider": PROVIDER,
         "config": {
-            "model": LOCAL_MODELS[0] if LOCAL_MODELS else MODEL,
+            "model": MEM0_MODEL or MODEL,
             "lmstudio_base_url": BASE_URL,
             "temperature": 0.1,
             "max_tokens": 2000,

@@ -8,15 +8,16 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    LM_STUDIO_URL, LOCAL_MODELS, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, TOOLS, API_KEY, API_URL,
-    DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT
+    LM_STUDIO_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
+    MAX_REPLY_TOKENS, MODEL, MEM0_MODEL, GENERATION_PARAMS, TOOLS, API_KEY, API_URL,
+    DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
 )
 from state import histories, chat_tokens, api_call_count
 from memory_store import memory
 from tools import web_search
 
 logger = logging.getLogger(__name__)
+
 
 async def summarize_history(history: list) -> list:
     to_summarize = history[:-SUMMARY_INTERVAL]
@@ -33,7 +34,7 @@ async def summarize_history(history: list) -> list:
     ])
     
     summary_payload = {
-        "model": LOCAL_MODELS[0] if LOCAL_MODELS else MODEL,
+        "model": MEM0_MODEL or MODEL,
         "messages": [
             {
                 "role": "system",
@@ -84,9 +85,15 @@ async def send_llm_request(
 
     if VISION_MODE:
         system_prompt += ("""
-            === VISION CAPABILITIES ===
-            If the user sends a photo, you can see it. Describe what you notice, make witty observations about it, but never sound like a technical image analysis tool. 
-            Your comments should be natural and humorous — like a friend looking at a picture over your shoulder.
+            === ИЗОБРАЖЕНИЯ И ВИДЕО ===
+            Когда пользователь присылает фото, ты получаешь его как [Image description: ...] внутри сообщения.
+            Когда пользователь присылает видео, ты получаешь его как [Video description: ...] — это описание нескольких кадров, разнесённых по таймлайну.
+            Описание приходит структурированным: разделы «ДЕТАЛИ» (что видно), «УЗНАВАНИЕ» (распознанные персонажи/мемы/бренды) и «ИТОГ» (краткий пересказ).
+            Используй раздел УЗНАВАНИЕ чтобы упомянуть персонажа/мем/бренд по имени — это твоё главное преимущество. ИТОГ задаёт настроение для шутки. ДЕТАЛИ — это сырьё, не зачитывай его.
+            Считай, что ты видела картинку или видео сама. Реагируй естественно: пошути, подколи, прокомментируй интересные детали.
+            НИКОГДА не пиши "на картинке видно", "на видео видно", "судя по описанию", "согласно тексту", "в разделе деталей" — это разрушает иллюзию.
+            НЕ зачитывай разделы дословно и не цитируй формат «ДЕТАЛИ/УЗНАВАНИЕ/ИТОГ». Используй описание только как контекст для остроумной реплики.
+            Если в УЗНАВАНИИ написано «возможно, это …» — можешь упомянуть с лёгкой неуверенностью. Если написано «не узнаю» — не выдумывай имена.
         """)
 
     now = datetime.now()

@@ -8,3 +8,5 @@ ddgs
 numpy
 qdrant-client
 fastembed
+imageio-ffmpeg
+Pillow
