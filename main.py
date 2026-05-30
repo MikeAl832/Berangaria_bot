@@ -1,8 +1,6 @@
 import logging
 import warnings
 
-# Скрываем варнинг python-telegram-bot про будущий переход duration → timedelta.
-# Наш код в handlers.handle_video поддерживает оба варианта, миграция нам не страшна.
 try:
     from telegram.warnings import PTBDeprecationWarning
     warnings.filterwarnings("ignore", category=PTBDeprecationWarning)

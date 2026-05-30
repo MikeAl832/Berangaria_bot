@@ -11,12 +11,77 @@ from config import (
     LM_STUDIO_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
     MAX_REPLY_TOKENS, MODEL, MEM0_MODEL, GENERATION_PARAMS, TOOLS, API_KEY, API_URL,
     DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
+    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
 )
 from state import histories, chat_tokens, api_call_count
 from memory_store import memory
 from tools import web_search
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_plain_text(content) -> str:
+    """
+    Достаёт чистый текст пользователя из сообщения для поиска по памяти:
+    отбрасывает [Image description: ...] / [Video description: ...] / [Context from memory: ...]
+    и служебные теги, оставляя только содержимое [Message: ...] (или сырой текст).
+    """
+    if isinstance(content, list):
+        content = next((p.get('text', '') for p in content if p.get('type') == 'text'), '')
+    if not isinstance(content, str):
+        return ''
+
+    # Убираем тяжёлые блоки описаний медиа и контекста памяти
+    text = re.sub(r'\[Image description:.*?\]', '', content, flags=re.DOTALL)
+    text = re.sub(r'\[Video description:.*?\]', '', text, flags=re.DOTALL)
+    text = re.sub(r'\[Context from memory:.*?\]', '', text, flags=re.DOTALL)
+
+    # Если есть [Message: ...] — берём только его содержимое
+    msg_match = re.search(r'\[Message:\s*(.*?)\]', text, flags=re.DOTALL)
+    if msg_match:
+        return msg_match.group(1).strip()
+
+    # Иначе чистим оставшиеся служебные теги
+    text = re.sub(r'\[(?:User|Time|Reply to|Quoted message):.*?\]', '', text, flags=re.DOTALL)
+    return text.strip()
+
+
+def _format_memory_block(mem_results: dict) -> str:
+    """
+    Формирует компактный блок памяти:
+    - фильтрует по порогу релевантности MEMORY_MIN_SCORE
+    - берёт топ MEMORY_SEARCH_LIMIT
+    - ограничивает суммарную длину MEMORY_MAX_CHARS
+    Возвращает готовый текст (без обёртки) или '' если ничего релевантного.
+    """
+    results = (mem_results or {}).get('results') or []
+    if not results:
+        return ''
+
+    # Отсортируем по score по убыванию (если score есть)
+    def _score(item):
+        return item.get('score', 0.0) or 0.0
+
+    results = sorted(results, key=_score, reverse=True)
+
+    lines = []
+    total = 0
+    for item in results:
+        # Порог релевантности применяем только если score реально присутствует
+        if 'score' in item and item['score'] is not None and item['score'] < MEMORY_MIN_SCORE:
+            continue
+        fact = (item.get('memory') or '').strip()
+        if not fact:
+            continue
+        line = f"- {fact}"
+        if total + len(line) > MEMORY_MAX_CHARS:
+            break
+        lines.append(line)
+        total += len(line)
+        if len(lines) >= MEMORY_SEARCH_LIMIT:
+            break
+
+    return "\n".join(lines)
 
 
 async def summarize_history(history: list) -> list:
@@ -52,10 +117,10 @@ async def summarize_history(history: list) -> list:
                 "content": text_to_summarize
             }
         ],
-        "max_tokens": 1500,
-        "temperature": 0.5,
+        "max_tokens": 2000,
+        "temperature": 0.3,
         "top_p": 0.9,
-        "top_k": 50 
+        "top_k": 40 
     }
     
     try:
@@ -67,7 +132,10 @@ async def summarize_history(history: list) -> list:
             summary = data['choices'][0]['message']['content']
             
             summary = re.sub(r'<think>.*?</think>', '', summary, flags=re.DOTALL).strip()
-            logger.info(f"📝 Резюме истории: {summary[:100]}...")
+            if DEBUG:
+                logger.info(f"📝 Резюме истории:\n{summary}")
+            else:
+                logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
             
             return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
             
@@ -85,15 +153,15 @@ async def send_llm_request(
 
     if VISION_MODE:
         system_prompt += ("""
-            === ИЗОБРАЖЕНИЯ И ВИДЕО ===
-            Когда пользователь присылает фото, ты получаешь его как [Image description: ...] внутри сообщения.
-            Когда пользователь присылает видео, ты получаешь его как [Video description: ...] — это описание нескольких кадров, разнесённых по таймлайну.
-            Описание приходит структурированным: разделы «ДЕТАЛИ» (что видно), «УЗНАВАНИЕ» (распознанные персонажи/мемы/бренды) и «ИТОГ» (краткий пересказ).
-            Используй раздел УЗНАВАНИЕ чтобы упомянуть персонажа/мем/бренд по имени — это твоё главное преимущество. ИТОГ задаёт настроение для шутки. ДЕТАЛИ — это сырьё, не зачитывай его.
-            Считай, что ты видела картинку или видео сама. Реагируй естественно: пошути, подколи, прокомментируй интересные детали.
-            НИКОГДА не пиши "на картинке видно", "на видео видно", "судя по описанию", "согласно тексту", "в разделе деталей" — это разрушает иллюзию.
-            НЕ зачитывай разделы дословно и не цитируй формат «ДЕТАЛИ/УЗНАВАНИЕ/ИТОГ». Используй описание только как контекст для остроумной реплики.
-            Если в УЗНАВАНИИ написано «возможно, это …» — можешь упомянуть с лёгкой неуверенностью. Если написано «не узнаю» — не выдумывай имена.
+            === IMAGES AND VIDEO ===
+            When a user sends a photo, you receive it as [Image description: ...] inside the message.
+            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
+            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
+            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
+            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
+            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
+            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
+            If the RECOGNITION section says «possibly this is …» — you may mention it with slight uncertainty. If it says «I don't recognize» — do not invent names.        
         """)
 
     now = datetime.now()
@@ -126,29 +194,33 @@ async def send_llm_request(
 
     if memory:
         try:
-            query = history[-1].get('content', '') if history else user_name
-            if isinstance(query, list):
-                query = next((p.get('text', '') for p in query if p.get('type') == 'text'), '')
+            # C: ищем по чистому тексту пользователя, без описаний картинок/видео и тегов
+            query = _extract_plain_text(history[-1].get('content', '')) if history else user_name
+            if not query:
+                query = user_name
 
+            # Память партиционируется по чату (key): в группе — общая на весь чат
+            # (group_<chat_id>), в личке — на пользователя (private_<user_id>).
             mem_results = await asyncio.wait_for(
                 asyncio.to_thread(
                     memory.search,
                     query,
-                    filters={"user_id": str(user_id)},
-                    limit=5
+                    filters={"user_id": key},
+                    limit=MEMORY_SEARCH_LIMIT
                 ),
                 timeout=30.0
             )
 
-            if mem_results and mem_results.get('results'):
-                mem_text = "\n".join([f"- {m['memory']}" for m in mem_results['results']])
-                
-                if payload_messages[-1]["role"] == "user":
-                    last_content = payload_messages[-1]["content"]
-                    payload_messages[-1] = {
-                        "role": "user",
-                        "content": f"{last_content}\n\n[Context from memory:{mem_text}]"
-                    }
+            # A + D: фильтрация по релевантности, ограничение количества и длины, аккуратный формат
+            mem_text = _format_memory_block(mem_results)
+            if mem_text and payload_messages[-1]["role"] == "user":
+                last_content = payload_messages[-1]["content"]
+                payload_messages[-1] = {
+                    "role": "user",
+                    "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
+                }
+                if DEBUG:
+                    logger.info(f"🧠 Память ({mem_text.count(chr(10)) + 1} фактов, {len(mem_text)} символов) scope={key} по запросу: {query[:80]}")
 
         except asyncio.TimeoutError:
             logger.warning("⚠️ Память: таймаут поиска, продолжаем без неё")
@@ -180,11 +252,11 @@ async def send_llm_request(
         if DEBUG:
             messages_structure = []
             for msg in payload_messages:
-                content_preview = str(msg.get('content', ''))[:100]
+                content_full = str(msg.get('content', ''))
                 messages_structure.append({
                     "role": msg['role'],
-                    "length": len(str(msg.get('content', ''))),
-                    "preview": content_preview
+                    "length": len(content_full),
+                    "content": content_full
                 })
             logger.info(f"📤 Структура запроса: {json.dumps(messages_structure, indent=2, ensure_ascii=False)}")
 
@@ -323,19 +395,31 @@ async def send_llm_request(
                 if memory:
                     async def save_memory_background():
                         try:
-                            last_user_msg = history[-2].get('content', '') if len(history) >= 2 else ''
-                            if isinstance(last_user_msg, list):
-                                last_user_msg = next((p.get('text', '') for p in last_user_msg if p.get('type') == 'text'), '')
-                            
+                            # B1 + B3: в память кладём ТОЛЬКО чистую реплику пользователя
+                            # (без описаний картинок/видео и без реплик ассистента).
+                            raw_user_msg = history[-2].get('content', '') if len(history) >= 2 else ''
+                            last_user_msg = _extract_plain_text(raw_user_msg)
+
+                            if not last_user_msg:
+                                # Нечего извлекать (например, было только фото без подписи) — пропускаем
+                                logger.info(f"🧠 Память: нет текста для сохранения (scope={key}), пропуск")
+                                return
+
+                            # В группе подставляем имя говорящего, чтобы mem0 корректно
+                            # атрибутировал факт нужному человеку (в общей памяти чата).
+                            if is_group:
+                                speaker_msg = f"{user_name}: {last_user_msg}"
+                            else:
+                                speaker_msg = last_user_msg
+
                             await asyncio.to_thread(
                                 memory.add,
                                 [
-                                    {"role": "user", "content": last_user_msg},
-                                    {"role": "assistant", "content": reply}
+                                    {"role": "user", "content": speaker_msg}
                                 ],
-                                user_id=str(user_id)
+                                user_id=key
                             )
-                            logger.info(f"✅ Память сохранена для user_id={user_id}")
+                            logger.info(f"✅ Память сохранена (scope={key})")
                         except Exception as e:
                             logger.error(f"⚠️ Ошибка сохранения памяти: {e}")
                     

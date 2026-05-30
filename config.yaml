@@ -1,13 +1,21 @@
 "model": "deepseek-v4-flash"
+
+# Vision mode:
 "vision_model": "qwen3-vl-8b-thinking"  # Локальная vision-модель (в LM Studio). Используется только если vision_provider=lmstudio. Thinking даёт лучшее качество, но в ~2 раза медленнее
 "vision_provider": "gemini"  # "lmstudio" — локальная Qwen3-VL, "gemini" — Google Gemini API (free tier, нативное видео, лучшее распознавание)
 "gemini_model": "gemini-3.1-flash-lite"  # Модель Gemini для vision. Бесплатные: gemini-2.0-flash, gemini-2.5-flash. См. ai.google.dev/pricing
-"mem0_model": "qwen3-4b-instruct-2507@q8_0"  # Локальная НЕ-thinking модель для mem0 и суммаризации диалога. Если пусто — используется основная MODEL (DeepSeek)
 "video_max_duration_sec": 60  # Максимальная длина видео в секундах (более длинные отклоняются)
 "video_max_frames": 8         # Сколько равномерно распределённых кадров вытащить из видео (актуально для lmstudio; gemini обрабатывает видео целиком)
-"provider": "lmstudio" # deepseek/lmstudio
-"base_url": "http://127.0.0.1:1234/v1" # Base URL for the LM Studio API
+
+# Mem0:
+"mem0_model": "gigachat3.1-10b-a1.8b"  # Локальная НЕ-thinking модель для mem0 и суммаризации диалога. Если пусто — используется основная MODEL (DeepSeek)
+"provider": "lmstudio" # deepseek/lmstudio для mem0
+"base_url": "http://127.0.0.1:1234/v1" # Базовый URL для LM Studio API для mem0
 "embedding_model": "text-embedding-multilingual-e5-large-instruct" # Модель для эмбеддингов, поддерживаемые модели зависят от провайдера
+"memory_search_limit": 5    # Сколько фактов о пользователе подмешивать в контекст (топ-N по релевантности)
+"memory_min_score": 0.3     # Минимальный score релевантности факта (0..1). Менее релевантные отбрасываются
+"memory_max_chars": 800     # Максимальная суммарная длина блока [Context from memory]
+
 "max_context_tokens": 32000 # Максимальная история в токенах
 "max_reply_tokens": 4096    # Максимальное количество токенов в одном ответе модели
 "random_reply_chance": 10   # Шанс рандомного ответа

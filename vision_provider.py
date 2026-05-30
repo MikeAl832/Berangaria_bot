@@ -18,10 +18,23 @@ import httpx
 from config import (
     LM_STUDIO_URL, VISION_MODEL, VISION_PROVIDER,
     GEMINI_MODEL, GEMINI_API_KEY,
-    VIDEO_MAX_FRAMES, VIDEO_MAX_DURATION_SEC,
+    VIDEO_MAX_FRAMES, VIDEO_MAX_DURATION_SEC, DEBUG,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_description(prefix: str, description: str, meta: str = "") -> None:
+    """
+    Логирует результат vision-модели.
+    DEBUG=True  → полный текст описания.
+    DEBUG=False → только метаданные (длина, токены), без содержимого.
+    """
+    head = f"{prefix} {meta}".rstrip()
+    if DEBUG:
+        logger.info(f"{head}\n{description}")
+    else:
+        logger.info(f"{head} | {len(description)} символов")
 
 
 # ========================== ОБЩИЕ ПРОМПТЫ ==========================
@@ -119,9 +132,10 @@ async def _lmstudio_describe_image(image_bytes: bytes, mime: str, caption: str =
             data = r.json()
             description = _strip_thinking(data['choices'][0]['message']['content'] or "")
             usage = data.get('usage') or {}
-            logger.info(
-                f"🖼️ [LMStudio:{VISION_MODEL}] completion={usage.get('completion_tokens', '?')} | "
-                f"{description[:160]}..."
+            _log_description(
+                f"🖼️ [LMStudio:{VISION_MODEL}]",
+                description,
+                meta=f"completion={usage.get('completion_tokens', '?')}",
             )
             return description
     except Exception as e:
@@ -163,9 +177,10 @@ async def _lmstudio_describe_video_frames(frames_data_urls: list[str], caption: 
             data = r.json()
             description = _strip_thinking(data['choices'][0]['message']['content'] or "")
             usage = data.get('usage') or {}
-            logger.info(
-                f"🎬 [LMStudio:{VISION_MODEL}, {len(frames_data_urls)} кадров] "
-                f"completion={usage.get('completion_tokens', '?')} | {description[:160]}..."
+            _log_description(
+                f"🎬 [LMStudio:{VISION_MODEL}, {len(frames_data_urls)} кадров]",
+                description,
+                meta=f"completion={usage.get('completion_tokens', '?')}",
             )
             return description
     except Exception as e:
@@ -237,10 +252,13 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
             data = r.json()
             description = _gemini_extract_text(data)
             usage = data.get("usageMetadata") or {}
-            logger.info(
-                f"🖼️ [Gemini:{GEMINI_MODEL}] tokens="
-                f"prompt={usage.get('promptTokenCount', '?')}, "
-                f"out={usage.get('candidatesTokenCount', '?')} | {description[:160]}..."
+            _log_description(
+                f"🖼️ [Gemini:{GEMINI_MODEL}]",
+                description,
+                meta=(
+                    f"tokens prompt={usage.get('promptTokenCount', '?')}, "
+                    f"out={usage.get('candidatesTokenCount', '?')}"
+                ),
             )
             return description
     except Exception as e:
@@ -397,10 +415,13 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
             data = r.json()
             description = _gemini_extract_text(data)
             usage = data.get("usageMetadata") or {}
-            logger.info(
-                f"🎬 [Gemini:{GEMINI_MODEL}, {file_size} байт] tokens="
-                f"prompt={usage.get('promptTokenCount', '?')}, "
-                f"out={usage.get('candidatesTokenCount', '?')} | {description[:160]}..."
+            _log_description(
+                f"🎬 [Gemini:{GEMINI_MODEL}, {file_size} байт]",
+                description,
+                meta=(
+                    f"tokens prompt={usage.get('promptTokenCount', '?')}, "
+                    f"out={usage.get('candidatesTokenCount', '?')}"
+                ),
             )
             return description
     except Exception as e:

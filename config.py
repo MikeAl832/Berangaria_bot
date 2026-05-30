@@ -19,16 +19,20 @@ MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", {})
 MODEL = config_yaml.get("model", "deepseek-v4-flash")
-MEM0_MODEL = config_yaml.get("mem0_model", "")  # Локальная НЕ-thinking модель для mem0 и суммаризации. Если пусто — используется основная MODEL (DeepSeek API)
+MEM0_MODEL = config_yaml.get("mem0_model", "") 
 PROVIDER = config_yaml.get("provider", "deepseek")
 BASE_URL = config_yaml.get("base_url", API_URL)
 EMBEDDING_MODEL = config_yaml.get("embedding_model", "text-embedding-multilingual-e5-large-instruct")
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+# Память (mem0): сколько фактов вытаскивать, порог релевантности и лимит общей длины блока
+MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
+MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.3)
+MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
 ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
 VISION_MODE = config_yaml.get("vision_mode", False)
 VISION_MODEL = config_yaml.get("vision_model", "")
-VISION_PROVIDER = config_yaml.get("vision_provider", "lmstudio").lower()  # "lmstudio" | "gemini"
+VISION_PROVIDER = config_yaml.get("vision_provider", "lmstudio").lower()
 GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-2.0-flash")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 60)
@@ -71,6 +75,32 @@ TOOLS = [
     }
 ]
 
+# Доп. инструкции для извлечения фактов mem0 (поле custom_instructions в mem0 2.x).
+# Добавляются к базовому промпту извлечения как раздел "## Custom Instructions".
+# Цель: хранить только устойчивые факты О ПОЛЬЗОВАТЕЛЕ на русском, без диалогового лога и шума.
+MEM0_CUSTOM_INSTRUCTIONS = """ЯЗЫК: Извлекай и формулируй ВСЕ факты ТОЛЬКО на русском языке, кратко, в третьем лице. Имена собственные, бренды и технические термины сохраняй в оригинале.
+
+АТРИБУЦИЯ: Это групповой чат. Сообщения могут начинаться с имени говорящего в формате "Имя: текст". ВСЕГДА указывай в факте, к КОМУ он относится, по имени. Если человек говорит о себе ("я купил", "меня зовут") — припиши факт говорящему. Если говорит о другом человеке ("Миша заднеприводный", "глэк должен денег") — припиши факт тому, о ком речь, а не говорящему. Каждый факт должен явно содержать имя человека, к которому относится.
+
+ИЗВЛЕКАЙ только устойчивые, значимые факты о людях:
+- Личные данные: имя, ник, возраст, город, профессия, языки
+- Устойчивые предпочтения и вкусы: любимые/нелюбимые аниме, игры, музыка, еда, технологии
+- Увлечения и занятия: чем занимается, над чем работает, хобби
+- Важные факты и события: учёба, работа, проекты, питомцы, планы, покупки техники, долги, договорённости
+- Конкретные технические детали: железо, стек, инструменты
+- Прозвища и характеристики, которые участники дают друг другу
+
+НЕ ИЗВЛЕКАЙ (полностью игнорируй):
+- Приветствия, прощания, междометия ("привет", "пока", "ахах", "лол", "ок")
+- Сиюминутные реакции без фактов ("это глупо", "смешно", "круто", "неа")
+- Вопросы, если в них нет факта о ком-то
+- Описания присланных картинок и видео (это НЕ факты о людях)
+- Метакомментарии про самого бота и его настройку: "я тебя переписал", "очистил память", "запускаю локально", "твой создатель", "твои мозги это deepseek", чем работает ассистент и как устроен — это НЕ факты о личности человека. Ассистента зовут Берангария (Бер) — никогда не подставляй другие имена ассистенту и не записывай факты о самом ассистенте.
+- Разовые фразы без долгосрочной ценности
+
+Не привязывай факты к конкретному времени, если время не является сутью факта.
+Если значимых фактов нет — верни пустой список."""
+
 os.environ["MEM0_TELEMETRY"] = "false"
 os.environ['HTTP_PROXY'] = ''
 os.environ['HTTPS_PROXY'] = ''
@@ -78,6 +108,7 @@ os.environ['no_proxy'] = 'localhost,127.0.0.1,static.rust-lang.org'
 
 MEM0_CONFIG = {
     "version": "v1.1",
+    "custom_instructions": MEM0_CUSTOM_INSTRUCTIONS,
     "llm": {
         "provider": PROVIDER,
         "config": {
