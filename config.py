@@ -24,7 +24,6 @@ PROVIDER = config_yaml.get("provider", "deepseek")
 BASE_URL = config_yaml.get("base_url", API_URL)
 EMBEDDING_MODEL = config_yaml.get("embedding_model", "text-embedding-multilingual-e5-large-instruct")
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
-# Память (mem0): сколько фактов вытаскивать, порог релевантности и лимит общей длины блока
 MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
 MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.3)
 MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
@@ -75,9 +74,6 @@ TOOLS = [
     }
 ]
 
-# Доп. инструкции для извлечения фактов mem0 (поле custom_instructions в mem0 2.x).
-# Добавляются к базовому промпту извлечения как раздел "## Custom Instructions".
-# Цель: хранить только устойчивые факты О ПОЛЬЗОВАТЕЛЕ на русском, без диалогового лога и шума.
 MEM0_CUSTOM_INSTRUCTIONS = """ЯЗЫК: Извлекай и формулируй ВСЕ факты ТОЛЬКО на русском языке, кратко, в третьем лице. Имена собственные, бренды и технические термины сохраняй в оригинале.
 
 АТРИБУЦИЯ: Это групповой чат. Сообщения могут начинаться с имени говорящего в формате "Имя: текст". ВСЕГДА указывай в факте, к КОМУ он относится, по имени. Если человек говорит о себе ("я купил", "меня зовут") — припиши факт говорящему. Если говорит о другом человеке ("Миша заднеприводный", "глэк должен денег") — припиши факт тому, о ком речь, а не говорящему. Каждый факт должен явно содержать имя человека, к которому относится.

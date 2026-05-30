@@ -1,13 +1,3 @@
-"""
-Vision-провайдеры: LM Studio (локальная Qwen3-VL) и Google Gemini API.
-
-Унифицированный интерфейс:
-    - describe_image_bytes(image_bytes, mime, caption) -> str
-    - describe_video_path(video_path, caption) -> str
-
-Выбор провайдера — по config.VISION_PROVIDER.
-"""
-
 import re
 import os
 import asyncio
