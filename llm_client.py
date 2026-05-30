@@ -126,7 +126,7 @@ async def summarize_history(history: list) -> list:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(LM_STUDIO_URL, json=summary_payload)
-            logger.info(f"Ответ сумморизации: {response.status_code}")
+            logger.info(f"Ответ сумморизации: [cyan]{response.status_code}[/]")
             response.raise_for_status()
             data = response.json()
             summary = data['choices'][0]['message']['content']
@@ -135,12 +135,12 @@ async def summarize_history(history: list) -> list:
             if DEBUG:
                 logger.info(f"📝 Резюме истории:\n{summary}")
             else:
-                logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
+                logger.info(f"📝 Резюме истории получено ([green]{len(summary)}[/] символов)")
             
             return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
             
     except Exception as e:
-        logger.error(f"❌ Ошибка суммаризации: {e}")
+        logger.error(f"❌ [red]Ошибка суммаризации:[/] {e}")
         return history 
 
 
@@ -185,7 +185,7 @@ async def send_llm_request(
     time_str += f"Times of Day: {time_of_day}."
 
     if chat_tokens.get(key, 0) > MAX_CONTEXT_TOKENS * 0.85:
-        logger.info(f"📝 Автосуммаризация для key={key}")
+        logger.info(f"📝 [yellow]Автосуммаризация[/] для key={key}")
         history = await summarize_history(history)
         histories[key] = history
         
@@ -220,12 +220,12 @@ async def send_llm_request(
                     "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
                 }
                 if DEBUG:
-                    logger.info(f"🧠 Память ({mem_text.count(chr(10)) + 1} фактов, {len(mem_text)} символов) scope={key} по запросу: {query[:80]}")
+                    logger.info(f"🧠 [magenta]Память[/] ({mem_text.count(chr(10)) + 1} фактов, {len(mem_text)} символов) scope={key} по запросу: {query[:80]}")
 
         except asyncio.TimeoutError:
-            logger.warning("⚠️ Память: таймаут поиска, продолжаем без неё")
+            logger.warning("⚠️ [yellow]Память: таймаут поиска, продолжаем без неё[/]")
         except Exception as e:
-            logger.error(f"⚠️ Ошибка получения памяти: {e}")
+            logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
     if random_reply and is_group and payload_messages[-1]["role"] == "user":
         random_instruction = (
@@ -279,7 +279,7 @@ async def send_llm_request(
 
                 if response.status_code == 400:
                     histories[key] = []
-                    logger.error(f"400: {response.text}")
+                    logger.error(f"[red]400:[/] {response.text}")
                     await update.message.reply_text("⚠️ История сброшена. Напишите ещё раз.")
                     return
 
@@ -306,8 +306,8 @@ async def send_llm_request(
                     
                     chat_tokens[key] = total_tokens
                     
-                    logger.info(f"📊 Токены: запрос={prompt_tokens} (кэш={cached_tokens}), "
-                                f"ответ={completion_tokens}, всего={total_tokens}")
+                    logger.info(f"📊 Токены: запрос=[cyan]{prompt_tokens}[/] (кэш=[cyan]{cached_tokens}[/]), "
+                                f"ответ=[cyan]{completion_tokens}[/], всего=[bright_green]{total_tokens}[/]")
                 
                 prompt_not_cached = prompt_tokens - cached_tokens
                 cost_prompt = (prompt_not_cached / 1_000_000) * PRICE_PROMPT_CACHE_MISS
@@ -315,7 +315,7 @@ async def send_llm_request(
                 cost_completion = (completion_tokens / 1_000_000) * PRICE_COMPLETION
 
                 total_cost = cost_prompt + cost_cached + cost_completion
-                logger.info(f"💰 Стоимость запроса: ${total_cost:.6f}")
+                logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
                 
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     payload_messages.append(message)
@@ -340,9 +340,9 @@ async def send_llm_request(
                                         parse_mode="Markdown"
                                     )
                                 except Exception as e:
-                                    logger.warning(f"Не удалось отредактировать статусное сообщение: {e}")
+                                    logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
 
-                            logger.info(f"🔍 Поиск: {args['query']}")
+                            logger.info(f"🔍 [blue]Поиск:[/] {args['query']}")
 
                             search_result = web_search(
                                 query=args['query'],
@@ -402,7 +402,7 @@ async def send_llm_request(
 
                             if not last_user_msg:
                                 # Нечего извлекать (например, было только фото без подписи) — пропускаем
-                                logger.info(f"🧠 Память: нет текста для сохранения (scope={key}), пропуск")
+                                logger.info(f"🧠 [magenta]Память: нет текста для сохранения[/] (scope={key}), пропуск")
                                 return
 
                             # В группе подставляем имя говорящего, чтобы mem0 корректно
@@ -419,9 +419,9 @@ async def send_llm_request(
                                 ],
                                 user_id=key
                             )
-                            logger.info(f"✅ Память сохранена (scope={key})")
+                            logger.info(f"✅ [bright_green]Память сохранена[/] (scope={key})")
                         except Exception as e:
-                            logger.error(f"⚠️ Ошибка сохранения памяти: {e}")
+                            logger.error(f"⚠️ [red]Ошибка сохранения памяти:[/] {e}")
                     
                     asyncio.create_task(save_memory_background()) 
 
@@ -437,7 +437,7 @@ async def send_llm_request(
                             for i in range(0, len(reply), 4096):
                                 await update.message.reply_text(reply[i:i+4096])
                     except Exception as e:
-                        logger.warning(f"Не удалось отредактировать статусное сообщение: {e}")
+                        logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
                         await update.message.reply_text(reply)
                 else:
                     if len(reply) <= 4096:
@@ -448,14 +448,14 @@ async def send_llm_request(
                 return
 
             except httpx.ConnectError:
-                logger.error("❌ API недоступен!")
+                logger.error("❌ [bright_red]API недоступен![/]")
                 await update.message.reply_text("❌ API недоступен!")
                 return
             except httpx.TimeoutException:
-                logger.error("❌ Таймаут запроса к API")
+                logger.error("❌ [bright_red]Таймаут запроса к API[/]")
                 await update.message.reply_text("❌ Таймаут.")
                 return
             except Exception as e:
-                logger.error(f"❌ Ошибка в обработке запроса: {e}")
+                logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}")
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return

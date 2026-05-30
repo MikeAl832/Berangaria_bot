@@ -10,3 +10,4 @@ qdrant-client
 fastembed
 imageio-ffmpeg
 Pillow
+colorama

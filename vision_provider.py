@@ -86,7 +86,7 @@ def _strip_thinking(text: str) -> str:
 
 async def _lmstudio_describe_image(image_bytes: bytes, mime: str, caption: str = "") -> str:
     if not VISION_MODEL:
-        logger.warning("⚠️ VISION_MODEL не задана — пропускаю описание картинки")
+        logger.warning("⚠️ [yellow]VISION_MODEL не задана — пропускаю описание картинки[/]")
         return ""
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -129,13 +129,13 @@ async def _lmstudio_describe_image(image_bytes: bytes, mime: str, caption: str =
             )
             return description
     except Exception as e:
-        logger.error(f"❌ LMStudio image error: {e}")
+        logger.error(f"❌ [red]LMStudio image error:[/] {e}")
         return ""
 
 
 async def _lmstudio_describe_video_frames(frames_data_urls: list[str], caption: str, duration: float) -> str:
     if not VISION_MODEL:
-        logger.warning("⚠️ VISION_MODEL не задана — пропускаю описание видео")
+        logger.warning("⚠️ [yellow]VISION_MODEL не задана — пропускаю описание видео[/]")
         return ""
     if not frames_data_urls:
         return ""
@@ -174,7 +174,7 @@ async def _lmstudio_describe_video_frames(frames_data_urls: list[str], caption: 
             )
             return description
     except Exception as e:
-        logger.error(f"❌ LMStudio video error: {e}")
+        logger.error(f"❌ [red]LMStudio video error:[/] {e}")
         return ""
 
 
@@ -192,7 +192,7 @@ def _gemini_extract_text(resp_json: dict) -> str:
         feedback = resp_json.get("promptFeedback") or {}
         block_reason = feedback.get("blockReason")
         if block_reason:
-            logger.warning(f"⚠️ Gemini заблокировал запрос: {block_reason}")
+            logger.warning(f"⚠️ [yellow]Gemini заблокировал запрос:[/] {block_reason}")
             return ""
         return ""
     parts = (candidates[0].get("content") or {}).get("parts") or []
@@ -202,7 +202,7 @@ def _gemini_extract_text(resp_json: dict) -> str:
 
 async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "") -> str:
     if not GEMINI_API_KEY:
-        logger.error("❌ GEMINI_API_KEY не задан в .env")
+        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
         return ""
 
     user_text = _IMAGE_PROMPT
@@ -237,7 +237,7 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
         async with httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"❌ Gemini image API {r.status_code}: {r.text[:300]}")
+                logger.error(f"❌ [red]Gemini image API {r.status_code}:[/] {r.text[:300]}")
                 return ""
             data = r.json()
             description = _gemini_extract_text(data)
@@ -252,7 +252,7 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
             )
             return description
     except Exception as e:
-        logger.error(f"❌ Gemini image error: {e}")
+        logger.error(f"❌ [red]Gemini image error:[/] {e}")
         return ""
 
 
@@ -285,10 +285,10 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             r.raise_for_status()
             upload_url = r.headers.get("X-Goog-Upload-URL") or r.headers.get("x-goog-upload-url")
             if not upload_url:
-                logger.error(f"❌ Gemini upload: нет upload URL в ответе ({dict(r.headers)})")
+                logger.error(f"❌ [red]Gemini upload: нет upload URL в ответе[/] ({dict(r.headers)})")
                 return None
         except Exception as e:
-            logger.error(f"❌ Gemini upload start: {e}")
+            logger.error(f"❌ [red]Gemini upload start:[/] {e}")
             return None
 
         # 2) Загрузка содержимого
@@ -307,30 +307,30 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             file_uri = file_info.get("uri")
             file_name_id = file_info.get("name")  # files/abc123
             if not file_uri:
-                logger.error(f"❌ Gemini upload finalize: нет uri в ответе: {data}")
+                logger.error(f"❌ [red]Gemini upload finalize: нет uri в ответе:[/] {data}")
                 return None
-            logger.info(f"📤 Gemini Files: загружено {file_name_id} ({file_size} байт)")
+            logger.info(f"📤 [green]Gemini Files: загружено[/] {file_name_id} ({file_size} байт)")
 
             # 3) Дождаться, пока файл станет ACTIVE (для видео идёт препроцессинг)
             poll_url = f"{GEMINI_API_BASE}/{file_name_id}"
             for _ in range(60):  # до 60 секунд
                 pr = await client.get(poll_url, headers={"x-goog-api-key": GEMINI_API_KEY})
                 if pr.status_code != 200:
-                    logger.warning(f"Gemini poll {pr.status_code}: {pr.text[:200]}")
+                    logger.warning(f"⚠️ [yellow]Gemini poll {pr.status_code}:[/] {pr.text[:200]}")
                     await asyncio.sleep(1)
                     continue
                 state = pr.json().get("state", "")
                 if state == "ACTIVE":
                     return file_uri
                 if state == "FAILED":
-                    logger.error(f"❌ Gemini обработка файла FAILED: {pr.json()}")
+                    logger.error(f"❌ [red]Gemini обработка файла FAILED:[/] {pr.json()}")
                     return None
                 await asyncio.sleep(1)
 
-            logger.error("❌ Gemini upload: файл не стал ACTIVE за 60 сек")
+            logger.error("❌ [red]Gemini upload: файл не стал ACTIVE за 60 сек[/]")
             return None
         except Exception as e:
-            logger.error(f"❌ Gemini upload finalize: {e}")
+            logger.error(f"❌ [red]Gemini upload finalize:[/] {e}")
             return None
 
 
@@ -353,7 +353,7 @@ async def _gemini_delete_file(file_uri: str) -> None:
 
 async def _gemini_describe_video(video_path: str, mime: str, caption: str, duration: float) -> str:
     if not GEMINI_API_KEY:
-        logger.error("❌ GEMINI_API_KEY не задан в .env")
+        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
         return ""
 
     file_size = os.path.getsize(video_path)
@@ -400,7 +400,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"❌ Gemini video API {r.status_code}: {r.text[:300]}")
+                logger.error(f"❌ [red]Gemini video API {r.status_code}:[/] {r.text[:300]}")
                 return ""
             data = r.json()
             description = _gemini_extract_text(data)
@@ -415,7 +415,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
             )
             return description
     except Exception as e:
-        logger.error(f"❌ Gemini video error: {e}")
+        logger.error(f"❌ [red]Gemini video error:[/] {e}")
         return ""
     finally:
         # Подчищаем за собой загруженный файл
@@ -450,7 +450,7 @@ async def describe_video(
     """
     if VISION_PROVIDER == "gemini":
         if not video_path:
-            logger.error("❌ Gemini video: video_path обязателен")
+            logger.error("❌ [red]Gemini video: video_path обязателен[/]")
             return ""
         return await _gemini_describe_video(video_path, mime, caption, duration)
 

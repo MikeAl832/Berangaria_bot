@@ -8,6 +8,6 @@ memory = None
 try:
     from mem0 import Memory
     memory = Memory.from_config(MEM0_CONFIG)
-    logger.info("✅ Mem0 инициализирован")
+    logger.info("✅ [bright_green]Mem0 инициализирован[/]")
 except Exception as e:
-    logger.error(f"⚠️ Mem0 недоступен: {e}")
+    logger.error(f"⚠️ Mem0 недоступен: [red]{e}[/]")

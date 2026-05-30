@@ -180,11 +180,11 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Диалог сжат: {old_len} → {new_len} сообщений.\n"
             f"Суть разговора сохранена, последние реплики остались нетронутыми."
         )
-        logger.info(f"📝 Ручная суммаризация: {old_len} → {new_len} сообщений для {key}")
+        logger.info(f"📝 Ручная суммаризация: [green]{old_len} → {new_len}[/] сообщений для {key}")
         
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка при суммаризации: {e}")
-        logger.error(f"❌ Ошибка ручной суммаризации: {e}")
+        logger.error(f"❌ [red]Ошибка ручной суммаризации:[/] {e}")
 
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
@@ -345,7 +345,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or "ЛС"
     user_text = update.message.text or ""
     
-    logger.info(f"📨 [{chat_title} | {chat_id} | {chat_type}] {update.effective_user.first_name}: {user_text or '(пусто)'}")
+    logger.info(f"📨 [[blue]{chat_title} | {chat_id} | {chat_type}[/]] [cyan]{update.effective_user.first_name}[/]: {user_text or '(пусто)'}")
 
     if update.effective_user.id == context.bot.id:
         return
@@ -380,7 +380,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
         image_description = await describe_image_bytes(image_bytes, mime, caption=caption)
     except Exception as e:
-        logger.error(f"Ошибка обработки фото: {e}")
+        logger.error(f"❌ [red]Ошибка обработки фото:[/] {e}")
 
     if not image_description:
         # Если описать не удалось — оставим хотя бы пометку
@@ -465,7 +465,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=caption, duration=duration
                 )
         except Exception as e:
-            logger.error(f"Ошибка обработки видео (gemini): {e}", exc_info=True)
+            logger.error(f"❌ [red]Ошибка обработки видео (gemini):[/] {e}", exc_info=True)
         finally:
             if video_path:
                 try:
@@ -489,7 +489,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             if not frames:
-                logger.warning("Не удалось извлечь кадры из видео")
+                logger.warning("⚠️ [yellow]Не удалось извлечь кадры из видео[/]")
             else:
                 try:
                     await update.message.chat.send_action(action="typing")
@@ -499,7 +499,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     frames_data_urls=frames, caption=caption, duration=duration
                 )
         except Exception as e:
-            logger.error(f"Ошибка обработки видео (lmstudio): {e}", exc_info=True)
+            logger.error(f"❌ [red]Ошибка обработки видео (lmstudio):[/] {e}", exc_info=True)
 
     if not video_description:
         video_description = "(не удалось разобрать видео)"
@@ -509,9 +509,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"❌ Глобальная ошибка: {context.error}", exc_info=True)
+    logger.error(f"❌ [bright_red]Глобальная ошибка:[/] {context.error}", exc_info=True)
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text("Произошла ошибка. Попробуйте /clear.")
     except Exception as e:
-        logger.error(f"Не удалось отправить сообщение об ошибке: {e}")
+        logger.error(f"❌ [red]Не удалось отправить сообщение об ошибке:[/] {e}")

@@ -7,14 +7,9 @@ try:
 except ImportError:
     pass
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+from log_setup import setup_logging
+
+setup_logging(level=logging.INFO, log_file='bot.log')
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
@@ -33,7 +28,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 def main():
-    logger.info("🤖 Бот запускается...")
+    logger.info("🤖 [cyan]Бот запускается...[/]")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -54,17 +49,17 @@ def main():
 
     app.add_error_handler(error_handler)
 
-    logger.info(f"🎲 Шанс случайного ответа: {RANDOM_REPLY_CHANCE}%")
-    logger.info(f"📝 Максимальный контекст: {MAX_CONTEXT_TOKENS} токенов")
-    logger.info(f"💬 Максимум токенов в ответе: {MAX_REPLY_TOKENS}")
-    logger.info(f"👁️ Vision mode: {VISION_MODE}")
+    logger.info(f"🎲 Шанс случайного ответа: [yellow]{RANDOM_REPLY_CHANCE}%[/]")
+    logger.info(f"📝 Максимальный контекст: [yellow]{MAX_CONTEXT_TOKENS}[/] токенов")
+    logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
+    logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")
     if VISION_MODE:
         if VISION_PROVIDER == "gemini":
-            logger.info(f"🖼️ Vision provider: Gemini ({GEMINI_MODEL})")
+            logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
         else:
-            logger.info(f"🖼️ Vision provider: LM Studio ({VISION_MODEL or '(не задана!)'})")
+            logger.info(f"🖼️ Vision provider: [cyan]LM Studio[/] ([magenta]{VISION_MODEL or '(не задана!)'}[/])")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
-    logger.info("✅ Бот запущен!")
+    logger.info("✅ [bright_green]Бот запущен![/]")
     
     app.run_polling(drop_pending_updates=True)
 
