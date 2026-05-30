@@ -157,7 +157,7 @@ The bot maintains per-chat history with token budgeting and optional automatic s
 
 ## License
 
-MIT
+GPL-3.0
 
 ## Author
 
