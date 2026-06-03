@@ -214,6 +214,10 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         
         message_parts = [f"[User: {user_name}] [Time: {timestamp}]"]
         
+        # Добавляем информацию о пересылке, если она есть
+        if first_msg.get("forward_info"):
+            message_parts.append(f"[{first_msg['forward_info']}]")
+        
         # Добавляем reply context из первого сообщения, если он был
         if first_msg["reply_to_name"]:
             message_parts.append(f"[Reply to: {first_msg['reply_to_name']}]")
@@ -234,6 +238,10 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         first_msg = messages[0]
         timestamp = first_msg["timestamp"]
         message_parts = [f"[User: {user_name}] [Time: {timestamp}]"]
+        
+        # Добавляем информацию о пересылке для личных сообщений
+        if first_msg.get("forward_info"):
+            message_parts.append(f"[{first_msg['forward_info']}]")
         
         combined_text = "\n".join([m["text"] for m in messages if m["text"]])
         if combined_text:
@@ -286,6 +294,27 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         reply_to_name = update.message.reply_to_message.from_user.first_name
         reply_to_text = (update.message.reply_to_message.text or "сообщение без текста")[:80]
 
+    # Проверяем, является ли сообщение пересланным
+    forward_info = None
+    if update.message.forward_origin:
+        origin = update.message.forward_origin
+        forward_type = origin.type
+        
+        if forward_type == "user":
+            # Переслано от пользователя
+            forward_info = f"Forwarded from user: {origin.sender_user.first_name}"
+        elif forward_type == "hidden_user":
+            # Переслано от пользователя со скрытым аккаунтом
+            forward_info = f"Forwarded from: {origin.sender_user_name}"
+        elif forward_type == "chat":
+            # Переслано из чата/канала
+            chat_title = origin.sender_chat.title if origin.sender_chat else "Unknown chat"
+            forward_info = f"Forwarded from chat: {chat_title}"
+        elif forward_type == "channel":
+            # Переслано из канала
+            chat_title = origin.chat.title if origin.chat else "Unknown channel"
+            forward_info = f"Forwarded from channel: {chat_title}"
+
     mentioned, reason = is_bot_mentioned(update, context)
     random_reply = should_reply_randomly(chat_id) if is_group else False
     if not is_group:
@@ -297,7 +326,8 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         "media_kind": media_kind,
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
-        "reply_to_text": reply_to_text
+        "reply_to_text": reply_to_text,
+        "forward_info": forward_info
     }
 
     if buffer_key in message_buffer:
