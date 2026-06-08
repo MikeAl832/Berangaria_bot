@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 from config import (
     ADMIN_MODE, RANDOM_REPLY_CHANCE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
-    ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC, VIDEO_MAX_FRAMES,
+    ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VISION_PROVIDER
 )
 from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count
@@ -508,7 +508,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             frames, duration = await extract_video_frames(
                 video_obj.file_id, context,
-                num_frames=VIDEO_MAX_FRAMES,
+                num_frames=8,  # Фиксированное количество кадров (используется только для локальных vision моделей)
                 max_duration_sec=VIDEO_MAX_DURATION_SEC
             )
 

@@ -8,8 +8,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    LM_STUDIO_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
-    MAX_REPLY_TOKENS, MODEL, MEM0_MODEL, GENERATION_PARAMS, TOOLS, API_KEY, API_URL,
+    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, TOOLS, DEEPSEEK_API_KEY, DEEPSEEK_API_URL,
     DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
 )
@@ -99,7 +99,7 @@ async def summarize_history(history: list) -> list:
     ])
     
     summary_payload = {
-        "model": MEM0_MODEL or MODEL,
+        "model": MODEL,
         "messages": [
             {
                 "role": "system",
@@ -124,8 +124,12 @@ async def summarize_history(history: list) -> list:
     }
     
     try:
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(LM_STUDIO_URL, json=summary_payload)
+            response = await client.post(DEEPSEEK_API_URL, json=summary_payload, headers=headers)
             logger.info(f"Ответ сумморизации: [cyan]{response.status_code}[/]")
             response.raise_for_status()
             data = response.json()
@@ -199,6 +203,9 @@ async def send_llm_request(
             if not query:
                 query = user_name
 
+            if DEBUG:
+                logger.info(f"🔍 [cyan]Mem0 поиск:[/] query='{query[:80]}', scope={key}")
+
             # Память партиционируется по чату (key): в группе — общая на весь чат
             # (group_<chat_id>), в личке — на пользователя (private_<user_id>).
             mem_results = await asyncio.wait_for(
@@ -211,6 +218,10 @@ async def send_llm_request(
                 timeout=30.0
             )
 
+            if DEBUG:
+                results_count = len(mem_results.get('results', []))
+                logger.info(f"📊 [cyan]Mem0 результаты:[/] найдено {results_count} фактов")
+
             # A + D: фильтрация по релевантности, ограничение количества и длины, аккуратный формат
             mem_text = _format_memory_block(mem_results)
             if mem_text and payload_messages[-1]["role"] == "user":
@@ -220,7 +231,12 @@ async def send_llm_request(
                     "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
                 }
                 if DEBUG:
-                    logger.info(f"🧠 [magenta]Память[/] ({mem_text.count(chr(10)) + 1} фактов, {len(mem_text)} символов) scope={key} по запросу: {query[:80]}")
+                    facts_count = mem_text.count('\n') if mem_text else 0
+                    logger.info(f"🧠 [magenta]Память:[/] {facts_count} фактов, {len(mem_text)} символов")
+                    logger.info(f"📝 [dim]Факты:[/]\n{mem_text}")
+                else:
+                    facts_count = mem_text.count('\n') if mem_text else 0
+                    logger.info(f"🧠 [magenta]Память[/] ({facts_count} фактов, {len(mem_text)} символов) scope={key}")
 
         except asyncio.TimeoutError:
             logger.warning("⚠️ [yellow]Память: таймаут поиска, продолжаем без неё[/]")
@@ -271,11 +287,11 @@ async def send_llm_request(
 
             try:
                 headers = {
-                    "Authorization": f"Bearer {API_KEY}",
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                     "Content-Type": "application/json"
                 }
                 
-                response = await client.post(API_URL, json=payload, headers=headers)
+                response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
 
                 if response.status_code == 400:
                     histories[key] = []
@@ -402,7 +418,8 @@ async def send_llm_request(
 
                             if not last_user_msg:
                                 # Нечего извлекать (например, было только фото без подписи) — пропускаем
-                                logger.info(f"🧠 [magenta]Память: нет текста для сохранения[/] (scope={key}), пропуск")
+                                if DEBUG:
+                                    logger.info(f"🧠 [magenta]Память: нет текста для сохранения[/] (scope={key}), пропуск")
                                 return
 
                             # В группе подставляем имя говорящего, чтобы mem0 корректно
@@ -412,14 +429,27 @@ async def send_llm_request(
                             else:
                                 speaker_msg = last_user_msg
 
-                            await asyncio.to_thread(
+                            if DEBUG:
+                                logger.info(f"💾 [magenta]Mem0 сохранение:[/] '{speaker_msg[:80]}...' (scope={key})")
+
+                            result = await asyncio.to_thread(
                                 memory.add,
                                 [
                                     {"role": "user", "content": speaker_msg}
                                 ],
                                 user_id=key
                             )
-                            logger.info(f"✅ [bright_green]Память сохранена[/] (scope={key})")
+                            
+                            if DEBUG:
+                                # result содержит информацию о добавленных/обновленных фактах
+                                added = len(result.get('results', []))
+                                logger.info(f"✅ [bright_green]Память сохранена:[/] {added} фактов (scope={key})")
+                            else:
+                                logger.info(f"✅ [bright_green]Память сохранена[/] (scope={key})")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"⚠️ [red]Ошибка парсинга JSON от mem0 (DeepSeek вернул невалидный JSON):[/] {e}")
+                            if DEBUG:
+                                logger.debug(f"Попытка сохранить: '{speaker_msg[:200]}'")
                         except Exception as e:
                             logger.error(f"⚠️ [red]Ошибка сохранения памяти:[/] {e}")
                     

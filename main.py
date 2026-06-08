@@ -1,11 +1,15 @@
 import logging
 import warnings
 
+import warnings
 try:
     from telegram.warnings import PTBDeprecationWarning
     warnings.filterwarnings("ignore", category=PTBDeprecationWarning)
 except ImportError:
     pass
+
+# Suppress fastembed metadata warnings (non-critical)
+warnings.filterwarnings("ignore", message="Local file sizes do not match the metadata")
 
 from log_setup import setup_logging
 
@@ -15,7 +19,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE, VISION_MODEL, VISION_PROVIDER, GEMINI_MODEL
+    MAX_REPLY_TOKENS, VISION_MODE, VISION_PROVIDER, GEMINI_MODEL
 )
 import config
 from handlers import (
@@ -54,10 +58,7 @@ def main():
     logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
     logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")
     if VISION_MODE:
-        if VISION_PROVIDER == "gemini":
-            logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
-        else:
-            logger.info(f"🖼️ Vision provider: [cyan]LM Studio[/] ([magenta]{VISION_MODEL or '(не задана!)'}[/])")
+        logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
     logger.info("✅ [bright_green]Бот запущен![/]")
     

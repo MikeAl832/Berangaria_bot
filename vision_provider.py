@@ -6,9 +6,7 @@ import logging
 import httpx
 
 from config import (
-    LM_STUDIO_URL, VISION_MODEL, VISION_PROVIDER,
-    GEMINI_MODEL, GEMINI_API_KEY,
-    VIDEO_MAX_FRAMES, VIDEO_MAX_DURATION_SEC, DEBUG,
+    GEMINI_MODEL, GEMINI_API_KEY, DEBUG
 )
 
 logger = logging.getLogger(__name__)
@@ -16,18 +14,18 @@ logger = logging.getLogger(__name__)
 
 def _log_description(prefix: str, description: str, meta: str = "") -> None:
     """
-    Логирует результат vision-модели.
-    DEBUG=True  → полный текст описания.
-    DEBUG=False → только метаданные (длина, токены), без содержимого.
+    Logs vision model results.
+    DEBUG=True  → full description text.
+    DEBUG=False → metadata only (length, tokens), no content.
     """
     head = f"{prefix} {meta}".rstrip()
     if DEBUG:
         logger.info(f"{head}\n{description}")
     else:
-        logger.info(f"{head} | {len(description)} символов")
+        logger.info(f"{head} | {len(description)} chars")
 
 
-# ========================== ОБЩИЕ ПРОМПТЫ ==========================
+# ========================== PROMPTS ==========================
 
 _IMAGE_PROMPT = (
     "Проанализируй изображение в три шага и оформи ответ строго по этим разделам.\n\n"
@@ -44,17 +42,11 @@ _IMAGE_PROMPT = (
 )
 
 
-def _video_prompt(duration: float, num_frames: int = 0, native_video: bool = False) -> str:
-    if native_video:
-        intro = "Тебе дано видео"
-        if duration > 0:
-            intro += f" длительностью около {duration:.0f} сек"
-        intro += "."
-    else:
-        intro = f"Тебе дано {num_frames} кадров из видео"
-        if duration > 0:
-            intro += f" длительностью около {duration:.0f} сек"
-        intro += ", расположенных по порядку от начала к концу."
+def _video_prompt(duration: float) -> str:
+    intro = "Тебе дано видео"
+    if duration > 0:
+        intro += f" длительностью около {duration:.0f} сек"
+    intro += "."
 
     return (
         f"{intro}\n\n"
@@ -70,129 +62,20 @@ def _video_prompt(duration: float, num_frames: int = 0, native_video: bool = Fal
         "Отвечай на русском языке."
     )
 
-
-def _strip_thinking(text: str) -> str:
-    """Убирает <think>...</think> блоки и стоп-токены."""
-    if not text:
-        return ""
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    if '<think>' in text and '</think>' not in text:
-        return ""
-    text = re.sub(r'<\|.*?\|>', '', text)
-    return text.strip()
-
-
-# ========================== LM STUDIO ==========================
-
-async def _lmstudio_describe_image(image_bytes: bytes, mime: str, caption: str = "") -> str:
-    if not VISION_MODEL:
-        logger.warning("⚠️ [yellow]VISION_MODEL не задана — пропускаю описание картинки[/]")
-        return ""
-
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    image_url = f"data:{mime};base64,{b64}"
-
-    user_text = _IMAGE_PROMPT
-    if caption:
-        user_text += (
-            f"\n\nПодпись пользователя к картинке: «{caption}». "
-            "Используй её как подсказку — проверь, согласуется ли подпись с тем, что видишь, "
-            "и при узнавании персонажей учитывай её контекст."
-        )
-
-    payload = {
-        "model": VISION_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ]
-        }],
-        "max_tokens": 5000,
-        "temperature": 0.4,
-        "top_p": 0.95,
-        "top_k": 20,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            r = await client.post(LM_STUDIO_URL, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            description = _strip_thinking(data['choices'][0]['message']['content'] or "")
-            usage = data.get('usage') or {}
-            _log_description(
-                f"🖼️ [LMStudio:{VISION_MODEL}]",
-                description,
-                meta=f"completion={usage.get('completion_tokens', '?')}",
-            )
-            return description
-    except Exception as e:
-        logger.error(f"❌ [red]LMStudio image error:[/] {e}")
-        return ""
-
-
-async def _lmstudio_describe_video_frames(frames_data_urls: list[str], caption: str, duration: float) -> str:
-    if not VISION_MODEL:
-        logger.warning("⚠️ [yellow]VISION_MODEL не задана — пропускаю описание видео[/]")
-        return ""
-    if not frames_data_urls:
-        return ""
-
-    user_text = _video_prompt(duration, num_frames=len(frames_data_urls), native_video=False)
-    if caption:
-        user_text += (
-            f"\n\nПодпись пользователя к видео: «{caption}». "
-            "Используй её как подсказку и при узнавании учитывай контекст."
-        )
-
-    content = [{"type": "text", "text": user_text}]
-    for url in frames_data_urls:
-        content.append({"type": "image_url", "image_url": {"url": url}})
-
-    payload = {
-        "model": VISION_MODEL,
-        "messages": [{"role": "user", "content": content}],
-        "max_tokens": 4500,
-        "temperature": 0.4,
-        "top_p": 0.95,
-        "top_k": 20,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            r = await client.post(LM_STUDIO_URL, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            description = _strip_thinking(data['choices'][0]['message']['content'] or "")
-            usage = data.get('usage') or {}
-            _log_description(
-                f"🎬 [LMStudio:{VISION_MODEL}, {len(frames_data_urls)} кадров]",
-                description,
-                meta=f"completion={usage.get('completion_tokens', '?')}",
-            )
-            return description
-    except Exception as e:
-        logger.error(f"❌ [red]LMStudio video error:[/] {e}")
-        return ""
-
-
-# ========================== GEMINI ==========================
+# ========================== GEMINI API ==========================
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-# Inline-данные у Gemini ограничены ~20МБ на запрос.
-GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024  # с запасом
+GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024  # ~18MB inline limit with buffer
 
 
 def _gemini_extract_text(resp_json: dict) -> str:
-    """Достаёт текст из ответа Gemini, обрабатывая prompt feedback / safety blocks."""
+    """Extract text from Gemini response, handling prompt feedback / safety blocks."""
     candidates = resp_json.get("candidates") or []
     if not candidates:
         feedback = resp_json.get("promptFeedback") or {}
         block_reason = feedback.get("blockReason")
         if block_reason:
-            logger.warning(f"⚠️ [yellow]Gemini заблокировал запрос:[/] {block_reason}")
+            logger.warning(f"Gemini blocked request: {block_reason}")
             return ""
         return ""
     parts = (candidates[0].get("content") or {}).get("parts") or []
@@ -201,8 +84,9 @@ def _gemini_extract_text(resp_json: dict) -> str:
 
 
 async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "") -> str:
+    """Describe image using Gemini API."""
     if not GEMINI_API_KEY:
-        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
+        logger.error("GEMINI_API_KEY not set in .env")
         return ""
 
     user_text = _IMAGE_PROMPT
@@ -237,13 +121,13 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
         async with httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"❌ [red]Gemini image API {r.status_code}:[/] {r.text[:300]}")
+                logger.error(f"Gemini image API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             description = _gemini_extract_text(data)
             usage = data.get("usageMetadata") or {}
             _log_description(
-                f"🖼️ [Gemini:{GEMINI_MODEL}]",
+                f"[Gemini:{GEMINI_MODEL}]",
                 description,
                 meta=(
                     f"tokens prompt={usage.get('promptTokenCount', '?')}, "
@@ -252,7 +136,7 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
             )
             return description
     except Exception as e:
-        logger.error(f"❌ [red]Gemini image error:[/] {e}")
+        logger.error(f"Gemini image error: {e}")
         return ""
 
 
@@ -357,7 +241,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
         return ""
 
     file_size = os.path.getsize(video_path)
-    user_text = _video_prompt(duration, native_video=True)
+    user_text = _video_prompt(duration)
     if caption:
         user_text += (
             f"\n\nПодпись пользователя к видео: «{caption}». "
@@ -426,37 +310,25 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
 # ========================== ПУБЛИЧНЫЙ API ==========================
 
 async def describe_image_bytes(image_bytes: bytes, mime: str, caption: str = "") -> str:
-    """
-    Возвращает текстовое описание картинки.
-    Маршрутизирует на провайдер из config.VISION_PROVIDER.
-    """
-    if VISION_PROVIDER == "gemini":
-        return await _gemini_describe_image(image_bytes, mime, caption)
-    return await _lmstudio_describe_image(image_bytes, mime, caption)
+    """Возвращает текстовое описание картинки через Gemini."""
+    return await _gemini_describe_image(image_bytes, mime, caption)
 
 
 async def describe_video(
     *,
-    video_path: str | None = None,
+    video_path: str,
     mime: str = "video/mp4",
-    frames_data_urls: list[str] | None = None,
     caption: str = "",
     duration: float = 0.0,
 ) -> str:
-    """
-    Возвращает текстовое описание видео.
-    - Для gemini: используется video_path (видео идёт целиком).
-    - Для lmstudio: используется frames_data_urls (заранее извлечённые кадры).
-    """
-    if VISION_PROVIDER == "gemini":
-        if not video_path:
-            logger.error("❌ [red]Gemini video: video_path обязателен[/]")
-            return ""
-        return await _gemini_describe_video(video_path, mime, caption, duration)
-
-    return await _lmstudio_describe_video_frames(frames_data_urls or [], caption, duration)
+    """Возвращает текстовое описание видео через Gemini (видео передаётся целиком)."""
+    if not video_path:
+        logger.error("❌ [red]video_path обязателен[/]")
+        return ""
+    return await _gemini_describe_video(video_path, mime, caption, duration)
 
 
 def is_native_video_supported() -> bool:
-    """True если провайдер умеет принимать видео целиком (без извлечения кадров)."""
-    return VISION_PROVIDER == "gemini"
+    """True — Gemini поддерживает видео нативно."""
+    return True
+

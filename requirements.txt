@@ -1,6 +1,7 @@
 httpx
 python-telegram-bot[job-queue]
 mem0ai[nlp]
+google-generativeai
 transformers
 python-dotenv
 pyyaml

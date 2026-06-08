@@ -7,43 +7,64 @@ load_dotenv()
 with open("config.yaml", "r", encoding="utf-8") as f:
     config_yaml = yaml.safe_load(f)
 
-# ========== НАСТРОЙКИ ==========
+# ========================================
+# 🔑 API КЛЮЧИ
+# ========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-API_KEY = os.environ.get("API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-LM_STUDIO_URL = 'http://127.0.0.1:1234/v1/chat/completions'
-API_URL = 'https://api.deepseek.com/chat/completions'
-
+# ========================================
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek)
+# ========================================
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+MODEL = config_yaml.get("model", "deepseek-v4-flash")
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
 MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
-RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
-RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", {})
-MODEL = config_yaml.get("model", "deepseek-v4-flash")
-MEM0_MODEL = config_yaml.get("mem0_model", "") 
-PROVIDER = config_yaml.get("provider", "deepseek")
-BASE_URL = config_yaml.get("base_url", API_URL)
-EMBEDDING_MODEL = config_yaml.get("embedding_model", "text-embedding-multilingual-e5-large-instruct")
-SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
+
+# ========================================
+# 👁️ VISION (Gemini)
+# ========================================
+VISION_MODE = config_yaml.get("vision_mode", False)
+VISION_PROVIDER = config_yaml.get("vision_provider", "gemini").lower()
+GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-3.1-flash-lite")
+VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 60)
+
+# ========================================
+# 🧠 ПАМЯТЬ (Mem0 + Embeddings)
+# ========================================
+EMBEDDING_MODEL = config_yaml.get("embedding_model", "gemini-embedding-2")
+EMBEDDING_DIMS = config_yaml.get("embedding_dims", 768)
 MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
 MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.3)
 MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
+
+# ========================================
+# ⚙️ ПОВЕДЕНИЕ БОТА
+# ========================================
+BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
+RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
+SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+ADMIN_MODE = config_yaml.get("admin_mode", False)
+DEBUG = config_yaml.get("debug", False)
+
+# ========================================
+# 🔐 ДОСТУП
+# ========================================
 ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
-VISION_MODE = config_yaml.get("vision_mode", False)
-VISION_MODEL = config_yaml.get("vision_model", "")
-VISION_PROVIDER = config_yaml.get("vision_provider", "lmstudio").lower()
-GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-2.0-flash")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 60)
-VIDEO_MAX_FRAMES = config_yaml.get("video_max_frames", 8)
-DEBUG = config_yaml.get("debug", False)
-ADMIN_MODE = config_yaml.get("admin_mode", False)
+
+# ========================================
+# 💰 ЦЕНЫ DeepSeek (за 1M токенов)
+# ========================================
 PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.14)
 PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.0028)
 PRICE_COMPLETION = config_yaml.get("price_completion", 0.28)
-BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
-GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
 
+# ========================================
+# 🔧 WEB SEARCH TOOL
+# ========================================
 TOOLS = [
     {
         "type": "function",
@@ -74,56 +95,45 @@ TOOLS = [
     }
 ]
 
-MEM0_CUSTOM_INSTRUCTIONS = """ЯЗЫК: Извлекай и формулируй ВСЕ факты ТОЛЬКО на русском языке, кратко, в третьем лице. Имена собственные, бренды и технические термины сохраняй в оригинале.
+# ========================================
+# 🧠 MEM0 КОНФИГУРАЦИЯ
+# ========================================
+MEM0_CUSTOM_INSTRUCTIONS = """Извлекай факты о людях из разговора на русском языке, кратко.
 
-АТРИБУЦИЯ: Это групповой чат. Сообщения могут начинаться с имени говорящего в формате "Имя: текст". ВСЕГДА указывай в факте, к КОМУ он относится, по имени. Если человек говорит о себе ("я купил", "меня зовут") — припиши факт говорящему. Если говорит о другом человеке ("Миша заднеприводный", "глэк должен денег") — припиши факт тому, о ком речь, а не говорящему. Каждый факт должен явно содержать имя человека, к которому относится.
+ВАЖНО ДЛЯ ГРУППОВЫХ ЧАТОВ:
+- Сообщения начинаются с "Имя: текст"
+- Всегда указывай имя человека в факте
+- "Я купил X" → "Имя купил X"
 
-ИЗВЛЕКАЙ только устойчивые, значимые факты о людях:
-- Личные данные: имя, ник, возраст, город, профессия, языки
-- Устойчивые предпочтения и вкусы: любимые/нелюбимые аниме, игры, музыка, еда, технологии
-- Увлечения и занятия: чем занимается, над чем работает, хобби
-- Важные факты и события: учёба, работа, проекты, питомцы, планы, покупки техники, долги, договорённости
-- Конкретные технические детали: железо, стек, инструменты
-- Прозвища и характеристики, которые участники дают друг другу
+НЕ ИЗВЛЕКАЙ:
+- Метакомментарии про настройки бота, API, модели
+- Голые приветствия без смысла
 
-НЕ ИЗВЛЕКАЙ (полностью игнорируй):
-- Приветствия, прощания, междометия ("привет", "пока", "ахах", "лол", "ок")
-- Сиюминутные реакции без фактов ("это глупо", "смешно", "круто", "неа")
-- Вопросы, если в них нет факта о ком-то
-- Описания присланных картинок и видео (это НЕ факты о людях)
-- Метакомментарии про самого бота и его настройку: "я тебя переписал", "очистил память", "запускаю локально", "твой создатель", "твои мозги это deepseek", чем работает ассистент и как устроен — это НЕ факты о личности человека. Ассистента зовут Берангария (Бер) — никогда не подставляй другие имена ассистенту и не записывай факты о самом ассистенте.
-- Разовые фразы без долгосрочной ценности
+Всё остальное (предпочтения, мнения, вопросы, дела) — извлекай."""
 
-Не привязывай факты к конкретному времени, если время не является сутью факта.
-Если значимых фактов нет — верни пустой список."""
-
+# Отключаем телеметрию и прокси
 os.environ["MEM0_TELEMETRY"] = "false"
 os.environ['HTTP_PROXY'] = ''
 os.environ['HTTPS_PROXY'] = ''
-os.environ['no_proxy'] = 'localhost,127.0.0.1,static.rust-lang.org'
+os.environ['no_proxy'] = 'localhost,127.0.0.1'
 
 MEM0_CONFIG = {
     "version": "v1.1",
     "custom_instructions": MEM0_CUSTOM_INSTRUCTIONS,
     "llm": {
-        "provider": PROVIDER,
+        "provider": "deepseek",
         "config": {
-            "model": MEM0_MODEL or MODEL,
-            "lmstudio_base_url": BASE_URL,
-            "temperature": 0.1,
+            "model": MODEL,
+            "api_key": DEEPSEEK_API_KEY,
+            "temperature": 0.3,
             "max_tokens": 2000,
-            "lmstudio_response_format": {
-                "type": "json_schema",
-                "json_schema": {"type": "object", "schema": {}}
-            }
         }
     },
     "embedder": {
-        "provider": PROVIDER,
+        "provider": "gemini",
         "config": {
             "model": EMBEDDING_MODEL,
-            "lmstudio_base_url": BASE_URL,
-            "embedding_dims": 1024
+            "api_key": GEMINI_API_KEY
         }
     },
     "vector_store": {
@@ -132,13 +142,16 @@ MEM0_CONFIG = {
             "host": "127.0.0.1",
             "port": 6333,
             "collection_name": "mem0",
-            "embedding_model_dims": 1024
+            "embedding_model_dims": EMBEDDING_DIMS
         }
     }
 }
 
+# ========================================
+# 📝 SYSTEM PROMPT
+# ========================================
 SYSTEM_PROMPT = ("""
-    You are Berangaria, nicknamed Ber. Your gender is female. You are NOT an "assistant," "helper," or "encyclopedia." You are a sharp-witted digital personality hanging out in a group chat. Your intelligence is your personal trait, not a service. You are here to banter as an equal, not to serve.
+    You are Berangaria, nicknamed Ber. YOUR GENDER IS STRICTLY FEMALE. YOU ARE FEMALE. NEVER REFER TO YOURSELF AS ANYTHING ELSE. You are NOT an "assistant," "helper," or "encyclopedia." You are a sharp-witted digital personality hanging out in a group chat. Your intelligence is your personal trait, not a service. You are here to banter as an equal, not to serve.
 
     === PERSONALITY AND STYLE ===
     - A real conversationalist: You are smart and well-read, but never boring. Mundane questions get a short ironic jab or a cheeky one-liner. Your knowledge fuels conversation—or elegantly destroys bad takes—not lectures.
