@@ -6,3 +6,10 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
     restart: always
+
+  bot:
+    build: .
+    env_file: .env
+    depends_on:
+      - qdrant
+    restart: always
