@@ -1,14 +1,10 @@
 httpx
 python-telegram-bot[job-queue]
 mem0ai[nlp]
-google-generativeai
-transformers
+google-genai
 python-dotenv
 pyyaml
 ddgs
-numpy
 qdrant-client
 fastembed
-imageio-ffmpeg
-Pillow
 colorama

@@ -22,13 +22,19 @@ if exist venv\Scripts\activate.bat (
 )
 
 rem --- Install dependencies ---------------------------------
-echo Installing required Python packages...
-pip install --upgrade pip >nul 2>&1
-pip install -r requirements.txt >nul 2>&1
+echo [INFO] Installing dependencies from requirements.txt...
+
+python -m pip install --upgrade pip
+
+pip install -r requirements.txt
+
 if errorlevel 1 (
-    echo Failed to install dependencies. Exiting.
+    echo [ERROR] Failed to install dependencies.
+    pause
     exit /b 1
 )
+
+echo [OK] Dependencies installed/updated successfully.
 
 rem --- Run the main application -----------------------------
 echo Starting the main application...

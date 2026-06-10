@@ -88,10 +88,24 @@ def _strip_color_tags(text: str) -> str:
     return _COLOR_PATTERN.sub(lambda m: m.group(2), text)
 
 
-def setup_logging(level=logging.INFO, log_file="bot.log"):
-    """Настраивает цветной вывод в консоль и чистый (без тегов) вывод в файл."""
+def setup_logging(level=logging.INFO, log_file="bot.log", debug=False, verbose=False):
+    """
+    Настраивает цветной вывод в консоль и чистый (без тегов) вывод в файл.
+    
+    ВАРИАНТ 3A:
+    - Консоль: INFO (чистый вывод) или DEBUG (если debug=True)
+    - Файл: ВСЕГДА DEBUG (полный аудит для разбора)
+    
+    Args:
+        level: Базовый уровень логирования (по умолчанию INFO)
+        log_file: Путь к файлу логов
+        debug: Если True, устанавливает уровень DEBUG в консоли
+        verbose: Если True, включает DEBUG для всех библиотек (HTTP, TLS, H2)
+    """
     root = logging.getLogger()
-    root.setLevel(level)
+    
+    # Root logger всегда на DEBUG, чтобы файл всё ловил
+    root.setLevel(logging.DEBUG)
 
     # Убираем возможные старые хендлеры (на случай повторного вызова)
     for handler in root.handlers[:]:
@@ -99,14 +113,51 @@ def setup_logging(level=logging.INFO, log_file="bot.log"):
 
     datefmt = "%Y-%m-%d %H:%M:%S"
 
-    # Консоль — с цветом и поддержкой инлайн-тегов
+    # ========================================
+    # КОНСОЛЬ — с цветом и поддержкой инлайн-тегов
+    # ========================================
     console = logging.StreamHandler()
     console.setFormatter(ColorFormatter(datefmt=datefmt))
+    
+    # Уровень консоли зависит от debug флага
+    if debug or verbose:
+        console.setLevel(logging.DEBUG)
+    else:
+        console.setLevel(logging.INFO)
+    
     root.addHandler(console)
 
-    # Файл — чистый текст, теги [color]...[/] вырезаются
+    # ========================================
+    # ФАЙЛ — ВСЕГДА DEBUG для полного аудита
+    # ========================================
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(
         PlainFormatter("%(asctime)s [%(levelname)s] %(message)s", datefmt=datefmt)
     )
+    file_handler.setLevel(logging.DEBUG)  # Файл всегда ловит всё
     root.addHandler(file_handler)
+
+    # Глушим избыточные библиотечные логи (если verbose=False, то глушим)
+    if not verbose:
+        # HTTP клиенты
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        
+        # OpenAI/DeepSeek клиент
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        
+        # H2 protocol (HTTP/2)
+        logging.getLogger("h2").setLevel(logging.WARNING)
+        logging.getLogger("hpack").setLevel(logging.WARNING)
+        
+        # TLS/rustls/rquest (если есть)
+        logging.getLogger("rustls").setLevel(logging.WARNING)
+        logging.getLogger("rquest").setLevel(logging.WARNING)
+        
+        # fastembed (уже есть warning filter, но на всякий случай)
+        logging.getLogger("fastembed").setLevel(logging.WARNING)
+        
+        # Telegram bot библиотека (бесконечные getUpdates)
+        logging.getLogger("telegram").setLevel(logging.INFO)
+        logging.getLogger("telegram.ext").setLevel(logging.INFO)

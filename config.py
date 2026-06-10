@@ -14,6 +14,12 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+# Валидация обязательных API ключей
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
+if not DEEPSEEK_API_KEY:
+    raise ValueError("API_KEY (DeepSeek) не установлен в .env файле!")
+
 # ========================================
 # 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek)
 # ========================================
@@ -27,9 +33,11 @@ GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "t
 # 👁️ VISION (Gemini)
 # ========================================
 VISION_MODE = config_yaml.get("vision_mode", False)
-VISION_PROVIDER = config_yaml.get("vision_provider", "gemini").lower()
 GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-3.1-flash-lite")
 VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 60)
+GEMINI_UPLOAD_MAX_WAIT_SEC = config_yaml.get("gemini_upload_max_wait_sec", 60)
+GEMINI_UPLOAD_BACKOFF_INITIAL = config_yaml.get("gemini_upload_backoff_initial", 0.5)
+GEMINI_UPLOAD_BACKOFF_MAX = config_yaml.get("gemini_upload_backoff_max", 5.0)
 
 # ========================================
 # 🧠 ПАМЯТЬ (Mem0 + Embeddings)
@@ -46,8 +54,17 @@ MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
 BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
 RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
+RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 DEBUG = config_yaml.get("debug", False)
+VERBOSE = config_yaml.get("verbose", False)  # Суперподробные логи (включает DEBUG)
+
+# ========================================
+# 📊 ТЕХНИЧЕСКИЕ КОНСТАНТЫ
+# ========================================
+MAX_API_RETRIES = 5  # Максимальное количество попыток обращения к API
+MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементов в одном сообщении для экономии токенов
 
 # ========================================
 # 🔐 ДОСТУП
@@ -61,39 +78,6 @@ ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
 PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.14)
 PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.0028)
 PRICE_COMPLETION = config_yaml.get("price_completion", 0.28)
-
-# ========================================
-# 🔧 WEB SEARCH TOOL
-# ========================================
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Mandatory search for prices, specs, news, dates after 2023. Then give an answer with numbers — don't say 'rumored' or 'no data'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query in the most relevant language"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Number of results, 3-8",
-                        "default": 5
-                    },
-                    "timelimit": {
-                        "type": "string",
-                        "description": "Time filter: 'd'=day, 'w'=week, 'm'=month, 'y'=year",
-                        "enum": ["d", "w", "m", "y"]
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    }
-]
 
 # ========================================
 # 🧠 MEM0 КОНФИГУРАЦИЯ

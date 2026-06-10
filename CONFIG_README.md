@@ -92,16 +92,22 @@ memory_max_chars: 1200
 bot_names: ["Бер", "Ber"]
 random_reply_chance: 10
 summary_interval: 10
+message_debounce_seconds: 4.0
+random_reply_cooldown: 10
 admin_mode: false
 debug: true
+verbose: false
 ```
 
 **Parameters:**
 - `bot_names`: Names that trigger bot responses in groups
 - `random_reply_chance`: Probability (0-100) of spontaneous group replies
 - `summary_interval`: Messages preserved after summarization
+- `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
+- `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins
 - `debug`: Enable detailed logging
+- `verbose`: Super-detailed logs (HTTP, TLS, H2 - includes debug)
 
 ### Access Control
 
@@ -221,6 +227,29 @@ Request cost: $0.000285
 ```
 
 ## Troubleshooting
+
+### Automatic Summarization
+
+**How it works:**
+- Runs daily at 5:00 AM (local time)
+- Summarizes all active chats with 10+ messages
+- Keeps the last `summary_interval` messages intact
+- Compresses older history into a brief summary
+
+**Manual trigger:**
+Use `/summarize` command to compress chat history immediately.
+
+**Configuration:**
+- Schedule time is hardcoded in `main.py` (change `hour=5` in `periodic_summarization()`)
+- Minimum messages required: `summary_interval` parameter in `config.yaml`
+
+**Logs:**
+```
+⏰ Следующая суммаризация в 05:00 11.06.2026 (через 8.5ч)
+📝 Запуск суммаризации для 3 активных чатов...
+  ✅ group_-1002263830880: 25 → 11 сообщений
+📝 Суммаризировано 1 из 3 чатов
+```
 
 ### Vision Not Working
 

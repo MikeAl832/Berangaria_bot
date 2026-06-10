@@ -6,7 +6,8 @@ import logging
 import httpx
 
 from config import (
-    GEMINI_MODEL, GEMINI_API_KEY, DEBUG
+    GEMINI_MODEL, GEMINI_API_KEY, DEBUG,
+    GEMINI_UPLOAD_MAX_WAIT_SEC, GEMINI_UPLOAD_BACKOFF_INITIAL, GEMINI_UPLOAD_BACKOFF_MAX
 )
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,13 @@ def _log_description(prefix: str, description: str, meta: str = "") -> None:
     """
     Logs vision model results.
     DEBUG=True  → full description text.
-    DEBUG=False → metadata only (length, tokens), no content.
+    DEBUG=False → metadata only (model, tokens, length).
     """
     head = f"{prefix} {meta}".rstrip()
+    logger.info(f"{head} | {len(description)} chars")
+    
     if DEBUG:
-        logger.info(f"{head}\n{description}")
-    else:
-        logger.info(f"{head} | {len(description)} chars")
+        logger.debug(f"Описание:\n{description}")
 
 
 # ========================== PROMPTS ==========================
@@ -197,21 +198,31 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
 
             # 3) Дождаться, пока файл станет ACTIVE (для видео идёт препроцессинг)
             poll_url = f"{GEMINI_API_BASE}/{file_name_id}"
-            for _ in range(60):  # до 60 секунд
+            max_wait_time = GEMINI_UPLOAD_MAX_WAIT_SEC
+            wait_time = 0
+            backoff = GEMINI_UPLOAD_BACKOFF_INITIAL
+            
+            while wait_time < max_wait_time:
                 pr = await client.get(poll_url, headers={"x-goog-api-key": GEMINI_API_KEY})
                 if pr.status_code != 200:
                     logger.warning(f"⚠️ [yellow]Gemini poll {pr.status_code}:[/] {pr.text[:200]}")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(backoff)
+                    wait_time += backoff
+                    backoff = min(backoff * 1.5, GEMINI_UPLOAD_BACKOFF_MAX)
                     continue
+                
                 state = pr.json().get("state", "")
                 if state == "ACTIVE":
                     return file_uri
                 if state == "FAILED":
                     logger.error(f"❌ [red]Gemini обработка файла FAILED:[/] {pr.json()}")
                     return None
-                await asyncio.sleep(1)
+                
+                await asyncio.sleep(backoff)
+                wait_time += backoff
+                backoff = min(backoff * 1.5, GEMINI_UPLOAD_BACKOFF_MAX)
 
-            logger.error("❌ [red]Gemini upload: файл не стал ACTIVE за 60 сек[/]")
+            logger.error(f"❌ [red]Gemini upload: файл не стал ACTIVE за {max_wait_time} сек[/]")
             return None
         except Exception as e:
             logger.error(f"❌ [red]Gemini upload finalize:[/] {e}")
@@ -236,8 +247,13 @@ async def _gemini_delete_file(file_uri: str) -> None:
 
 
 async def _gemini_describe_video(video_path: str, mime: str, caption: str, duration: float) -> str:
+    """Описывает видео через Gemini API. Не удаляет файл - это ответственность вызывающего кода."""
     if not GEMINI_API_KEY:
         logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
+        return ""
+
+    if not os.path.exists(video_path):
+        logger.error(f"❌ [red]Файл видео не найден:[/] {video_path}")
         return ""
 
     file_size = os.path.getsize(video_path)
@@ -302,7 +318,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
         logger.error(f"❌ [red]Gemini video error:[/] {e}")
         return ""
     finally:
-        # Подчищаем за собой загруженный файл
+        # Подчищаем за собой загруженный файл из Gemini Files API
         if file_uri:
             asyncio.create_task(_gemini_delete_file(file_uri))
 
@@ -321,14 +337,22 @@ async def describe_video(
     caption: str = "",
     duration: float = 0.0,
 ) -> str:
-    """Возвращает текстовое описание видео через Gemini (видео передаётся целиком)."""
+    """
+    Возвращает текстовое описание видео через Gemini (видео передаётся целиком).
+    
+    ВАЖНО: Удаление временного файла происходит в finally блоке этой функции.
+    """
     if not video_path:
         logger.error("❌ [red]video_path обязателен[/]")
         return ""
-    return await _gemini_describe_video(video_path, mime, caption, duration)
-
-
-def is_native_video_supported() -> bool:
-    """True — Gemini поддерживает видео нативно."""
-    return True
-
+    
+    try:
+        return await _gemini_describe_video(video_path, mime, caption, duration)
+    finally:
+        # Удаляем временный файл после обработки (или при ошибке)
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                logger.debug(f"🗑️ Удалён временный файл: {video_path}")
+        except OSError as e:
+            logger.debug(f"⚠️ Не удалось удалить временный файл {video_path}: {e}")

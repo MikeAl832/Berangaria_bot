@@ -9,66 +9,93 @@ from telegram.ext import ContextTypes
 
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, TOOLS, DEEPSEEK_API_KEY, DEEPSEEK_API_URL,
-    DEBUG, PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
-    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, DEBUG, PRICE_PROMPT_CACHE_MISS,
+    PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
+    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MAX_API_RETRIES,
 )
-from state import histories, chat_tokens, api_call_count
+from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity
 from memory_store import memory
-from tools import web_search
+from tools import web_search, TOOLS
 
 logger = logging.getLogger(__name__)
 
 
+def markdown_to_html(text: str) -> str:
+    """
+    Конвертирует базовый Markdown в HTML для Telegram.
+    Поддерживает: жирный, курсив, код, ссылки.
+    """
+    # Экранируем HTML символы
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    
+    # Блоки кода ```code```
+    text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+    
+    # Инлайн код `code`
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # Жирный текст **text** или __text__
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+    
+    # Курсив *text* или _text_ (но не внутри слов)
+    text = re.sub(r'(?<!\w)\*(.+?)\*(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
+    
+    # Жирный курсив ***text*** или ___text___
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
+    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text)
+    
+    # Зачёркнутый ~~text~~
+    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+    
+    # Ссылки [text](url)
+    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
+    
+    return text
+
+
 def _extract_plain_text(content) -> str:
     """
-    Достаёт чистый текст пользователя из сообщения для поиска по памяти:
-    отбрасывает [Image description: ...] / [Video description: ...] / [Context from memory: ...]
-    и служебные теги, оставляя только содержимое [Message: ...] (или сырой текст).
+    Извлекает чистый текст пользователя из сообщения для поиска по памяти.
+    Убирает служебные теги, оставляя только содержимое [Message: ...].
     """
     if isinstance(content, list):
         content = next((p.get('text', '') for p in content if p.get('type') == 'text'), '')
     if not isinstance(content, str):
         return ''
 
-    # Убираем тяжёлые блоки описаний медиа и контекста памяти
-    text = re.sub(r'\[Image description:.*?\]', '', content, flags=re.DOTALL)
-    text = re.sub(r'\[Video description:.*?\]', '', text, flags=re.DOTALL)
-    text = re.sub(r'\[Context from memory:.*?\]', '', text, flags=re.DOTALL)
-
-    # Если есть [Message: ...] — берём только его содержимое
-    msg_match = re.search(r'\[Message:\s*(.*?)\]', text, flags=re.DOTALL)
+    # Ищем [Message: ...] — самый частый случай
+    msg_match = re.search(r'\[Message:\s*(.*?)\]', content, flags=re.DOTALL)
     if msg_match:
         return msg_match.group(1).strip()
 
-    # Иначе чистим оставшиеся служебные теги
-    text = re.sub(r'\[(?:User|Time|Reply to|Quoted message):.*?\]', '', text, flags=re.DOTALL)
+    # Если нет Message, убираем служебные блоки
+    text = re.sub(
+        r'\[(?:Image description|Video description|Context from memory|User|Time|Reply to|Quoted message|Forwarded from [^]]+):(?:[^\[\]]|\[(?!Message:))*?\]',
+        '',
+        content
+    )
+
     return text.strip()
 
 
 def _format_memory_block(mem_results: dict) -> str:
     """
-    Формирует компактный блок памяти:
-    - фильтрует по порогу релевантности MEMORY_MIN_SCORE
-    - берёт топ MEMORY_SEARCH_LIMIT
-    - ограничивает суммарную длину MEMORY_MAX_CHARS
-    Возвращает готовый текст (без обёртки) или '' если ничего релевантного.
+    Формирует компактный блок памяти с фильтрацией по релевантности.
+    Возвращает готовый текст или пустую строку.
     """
     results = (mem_results or {}).get('results') or []
     if not results:
         return ''
 
-    # Отсортируем по score по убыванию (если score есть)
-    def _score(item):
-        return item.get('score', 0.0) or 0.0
-
-    results = sorted(results, key=_score, reverse=True)
+    # Сортируем по релевантности
+    results = sorted(results, key=lambda item: item.get('score') or 0.0, reverse=True)
 
     lines = []
     total = 0
     for item in results:
-        # Порог релевантности применяем только если score реально присутствует
-        if 'score' in item and item['score'] is not None and item['score'] < MEMORY_MIN_SCORE:
+        if item.get('score', 0.0) < MEMORY_MIN_SCORE:
             continue
         fact = (item.get('memory') or '').strip()
         if not fact:
@@ -136,10 +163,10 @@ async def summarize_history(history: list) -> list:
             summary = data['choices'][0]['message']['content']
             
             summary = re.sub(r'<think>.*?</think>', '', summary, flags=re.DOTALL).strip()
+            logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
+            
             if DEBUG:
-                logger.info(f"📝 Резюме истории:\n{summary}")
-            else:
-                logger.info(f"📝 Резюме истории получено ([green]{len(summary)}[/] символов)")
+                logger.debug(f"Содержание:\n{summary}")
             
             return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
             
@@ -188,58 +215,61 @@ async def send_llm_request(
 
     time_str += f"Times of Day: {time_of_day}."
 
-    if chat_tokens.get(key, 0) > MAX_CONTEXT_TOKENS * 0.85:
+    # Автосуммаризация при достижении 85% от лимита токенов
+    context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
+    if chat_tokens.get(key, 0) > context_threshold:
         logger.info(f"📝 [yellow]Автосуммаризация[/] для key={key}")
-        history = await summarize_history(history)
-        histories[key] = history
+        async with get_history_lock(key):
+            history = await summarize_history(history)
+            histories[key] = history
         
     system_prompt += f"\n\n=== CURRENT TIME ===\n{time_str}\n"
     payload_messages = [{"role": "system", "content": system_prompt}] + history
 
     if memory:
         try:
-            # C: ищем по чистому тексту пользователя, без описаний картинок/видео и тегов
-            query = _extract_plain_text(history[-1].get('content', '')) if history else user_name
-            if not query:
-                query = user_name
+            # Валидация ключа для безопасности
+            if not re.match(r'^(private|group)_-?\d+$', key):
+                logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
+            else:
+                # Ищем по чистому тексту пользователя
+                query = _extract_plain_text(history[-1].get('content', '')) if history else user_name
+                if not query:
+                    query = user_name
 
-            if DEBUG:
-                logger.info(f"🔍 [cyan]Mem0 поиск:[/] query='{query[:80]}', scope={key}")
-
-            # Память партиционируется по чату (key): в группе — общая на весь чат
-            # (group_<chat_id>), в личке — на пользователя (private_<user_id>).
-            mem_results = await asyncio.wait_for(
-                asyncio.to_thread(
-                    memory.search,
-                    query,
-                    filters={"user_id": key},
-                    limit=MEMORY_SEARCH_LIMIT
-                ),
-                timeout=30.0
-            )
-
-            if DEBUG:
-                results_count = len(mem_results.get('results', []))
-                logger.info(f"📊 [cyan]Mem0 результаты:[/] найдено {results_count} фактов")
-
-            # A + D: фильтрация по релевантности, ограничение количества и длины, аккуратный формат
-            mem_text = _format_memory_block(mem_results)
-            if mem_text and payload_messages[-1]["role"] == "user":
-                last_content = payload_messages[-1]["content"]
-                payload_messages[-1] = {
-                    "role": "user",
-                    "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
-                }
                 if DEBUG:
+                    logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
+
+                # Уменьшен таймаут до 15 секунд для быстрого ответа
+                mem_results = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        memory.search,
+                        query,
+                        filters={"user_id": key},
+                        limit=MEMORY_SEARCH_LIMIT
+                    ),
+                    timeout=15.0
+                )
+
+                results_count = len(mem_results.get('results', []))
+                mem_text = _format_memory_block(mem_results)
+                
+                if mem_text and payload_messages[-1]["role"] == "user":
+                    last_content = payload_messages[-1]["content"]
+                    payload_messages[-1] = {
+                        "role": "user",
+                        "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
+                    }
                     facts_count = mem_text.count('\n') if mem_text else 0
-                    logger.info(f"🧠 [magenta]Память:[/] {facts_count} фактов, {len(mem_text)} символов")
-                    logger.info(f"📝 [dim]Факты:[/]\n{mem_text}")
-                else:
-                    facts_count = mem_text.count('\n') if mem_text else 0
-                    logger.info(f"🧠 [magenta]Память[/] ({facts_count} фактов, {len(mem_text)} символов) scope={key}")
+                    
+                    # Краткий лог для INFO, детальный для DEBUG
+                    logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
+                    
+                    if DEBUG:
+                        logger.debug(f"📝 Факты:\n{mem_text}")
 
         except asyncio.TimeoutError:
-            logger.warning("⚠️ [yellow]Память: таймаут поиска, продолжаем без неё[/]")
+            logger.warning(f"⚠️ [yellow]Память: таймаут поиска (15s), продолжаем без неё[/] scope={key}")
         except Exception as e:
             logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
@@ -266,17 +296,29 @@ async def send_llm_request(
     
     async with httpx.AsyncClient(timeout=600.0) as client:
         if DEBUG:
-            messages_structure = []
-            for msg in payload_messages:
-                content_full = str(msg.get('content', ''))
-                messages_structure.append({
-                    "role": msg['role'],
-                    "length": len(content_full),
-                    "content": content_full
-                })
-            logger.info(f"📤 Структура запроса: {json.dumps(messages_structure, indent=2, ensure_ascii=False)}")
+            # В DEBUG режиме показываем полную структуру с содержимым
+            logger.debug("[cyan]" + "=" * 80 + "[/]")
+            logger.debug("[bright_green]📤 ЗАПРОС К МОДЕЛИ:[/]")
+            logger.debug("[cyan]" + "=" * 80 + "[/]")
+            for i, msg in enumerate(payload_messages, 1):
+                role = msg['role']
+                content = str(msg.get('content', ''))
+                
+                # Цвет в зависимости от роли
+                role_color = {
+                    'system': 'magenta',
+                    'user': 'cyan',
+                    'assistant': 'green'
+                }.get(role, 'white')
+                
+                logger.debug(f"\n[yellow][{i}][/] Role: [{role_color}]{role.upper()}[/]")
+                logger.debug(f"Length: [dim]{len(content)} символов[/]")
+                logger.debug(f"[{role_color}]Content:[/]")
+                logger.debug(f"[dim]{content[:2000]}{'...' if len(content) > 2000 else ''}[/]")
+                logger.debug("[dim]" + "-" * 80 + "[/]")
+            logger.debug("[cyan]" + "=" * 80 + "[/]")
 
-        for _ in range(5): 
+        for attempt in range(MAX_API_RETRIES): 
             payload = {
                 "model": MODEL,
                 "messages": payload_messages,
@@ -299,7 +341,18 @@ async def send_llm_request(
                     await update.message.reply_text("⚠️ История сброшена. Напишите ещё раз.")
                     return
 
+                # Обработка rate limiting
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 5))
+                    logger.warning(f"⚠️ [yellow]Rate limit (429), ждём {retry_after}s перед retry {attempt+1}/{MAX_API_RETRIES}[/]")
+                    await asyncio.sleep(retry_after)
+                    continue
+
                 if response.status_code != 200:
+                    logger.error(f"❌ [red]API error {response.status_code}:[/] {response.text[:200]}")
+                    if attempt < MAX_API_RETRIES - 1:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        continue
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
                     return
 
@@ -308,9 +361,6 @@ async def send_llm_request(
                 finish_reason = choice.get('finish_reason', '')
                 message = choice['message']
                 usage = data.get('usage', {})
-                prompt_tokens = 0
-                completion_tokens = 0
-                cached_tokens = 0
 
                 if usage:
                     prompt_tokens = usage.get('prompt_tokens', 0)
@@ -325,13 +375,13 @@ async def send_llm_request(
                     logger.info(f"📊 Токены: запрос=[cyan]{prompt_tokens}[/] (кэш=[cyan]{cached_tokens}[/]), "
                                 f"ответ=[cyan]{completion_tokens}[/], всего=[bright_green]{total_tokens}[/]")
                 
-                prompt_not_cached = prompt_tokens - cached_tokens
-                cost_prompt = (prompt_not_cached / 1_000_000) * PRICE_PROMPT_CACHE_MISS
-                cost_cached = (cached_tokens / 1_000_000) * PRICE_PROMPT_CACHE_HIT
-                cost_completion = (completion_tokens / 1_000_000) * PRICE_COMPLETION
+                    prompt_not_cached = prompt_tokens - cached_tokens
+                    cost_prompt = (prompt_not_cached / 1_000_000) * PRICE_PROMPT_CACHE_MISS
+                    cost_cached = (cached_tokens / 1_000_000) * PRICE_PROMPT_CACHE_HIT
+                    cost_completion = (completion_tokens / 1_000_000) * PRICE_COMPLETION
 
-                total_cost = cost_prompt + cost_cached + cost_completion
-                logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
+                    total_cost = cost_prompt + cost_cached + cost_completion
+                    logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
                 
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     payload_messages.append(message)
@@ -388,6 +438,25 @@ async def send_llm_request(
 
                 reply = message.get('content', '')
                 
+                # В DEBUG показываем полный ответ модели
+                if DEBUG:
+                    logger.debug("[blue]" + "=" * 80 + "[/]")
+                    logger.debug("[bright_green]📥 ОТВЕТ ОТ МОДЕЛИ:[/]")
+                    logger.debug("[blue]" + "=" * 80 + "[/]")
+                    
+                    # Цвет finish_reason
+                    finish_color = {
+                        'stop': 'green',
+                        'length': 'yellow',
+                        'tool_calls': 'cyan'
+                    }.get(finish_reason, 'white')
+                    
+                    logger.debug(f"Finish reason: [{finish_color}]{finish_reason}[/]")
+                    logger.debug(f"Content length: [dim]{len(reply)} символов[/]")
+                    logger.debug(f"[green]Content:[/]")
+                    logger.debug(f"[bright_green]{reply}[/]")
+                    logger.debug("[blue]" + "=" * 80 + "[/]")
+                
                 # Увеличиваем счётчик вызовов API
                 api_call_count[key] = api_call_count.get(key, 0) + 1
 
@@ -403,34 +472,34 @@ async def send_llm_request(
                     return
 
                 if finish_reason == 'length':
+                    logger.warning(f"⚠️ [yellow]Ответ обрезан по лимиту токенов[/] (ключ={key})")
                     reply += "\n\n_(ответ обрезан)_"
 
-                history.append({"role": "assistant", "content": reply})
-                histories[key] = history
+                async with get_history_lock(key):
+                    history.append({"role": "assistant", "content": reply})
+                    histories[key] = history
+                    touch_activity(key)  # Обновляем время активности
 
                 if memory:
                     async def save_memory_background():
                         try:
-                            # B1 + B3: в память кладём ТОЛЬКО чистую реплику пользователя
-                            # (без описаний картинок/видео и без реплик ассистента).
+                            # В память кладём только чистую реплику пользователя
                             raw_user_msg = history[-2].get('content', '') if len(history) >= 2 else ''
                             last_user_msg = _extract_plain_text(raw_user_msg)
 
                             if not last_user_msg:
-                                # Нечего извлекать (например, было только фото без подписи) — пропускаем
                                 if DEBUG:
                                     logger.info(f"🧠 [magenta]Память: нет текста для сохранения[/] (scope={key}), пропуск")
                                 return
 
-                            # В группе подставляем имя говорящего, чтобы mem0 корректно
-                            # атрибутировал факт нужному человеку (в общей памяти чата).
+                            # В группе подставляем имя для корректной атрибуции фактов
                             if is_group:
                                 speaker_msg = f"{user_name}: {last_user_msg}"
                             else:
                                 speaker_msg = last_user_msg
 
                             if DEBUG:
-                                logger.info(f"💾 [magenta]Mem0 сохранение:[/] '{speaker_msg[:80]}...' (scope={key})")
+                                logger.debug(f"💾 Mem0 сохранение: '{speaker_msg[:60]}...' (scope={key})")
 
                             result = await asyncio.to_thread(
                                 memory.add,
@@ -440,41 +509,40 @@ async def send_llm_request(
                                 user_id=key
                             )
                             
-                            if DEBUG:
-                                # result содержит информацию о добавленных/обновленных фактах
-                                added = len(result.get('results', []))
-                                logger.info(f"✅ [bright_green]Память сохранена:[/] {added} фактов (scope={key})")
-                            else:
-                                logger.info(f"✅ [bright_green]Память сохранена[/] (scope={key})")
+                            added = len(result.get('results', []))
+                            logger.info(f"✅ Память сохранена: {added} фактов")
                         except json.JSONDecodeError as e:
-                            logger.error(f"⚠️ [red]Ошибка парсинга JSON от mem0 (DeepSeek вернул невалидный JSON):[/] {e}")
+                            logger.error(f"⚠️ Ошибка парсинга JSON от mem0: {e}")
                             if DEBUG:
                                 logger.debug(f"Попытка сохранить: '{speaker_msg[:200]}'")
                         except Exception as e:
-                            logger.error(f"⚠️ [red]Ошибка сохранения памяти:[/] {e}")
+                            logger.error(f"⚠️ Ошибка сохранения памяти: {e}")
                     
                     asyncio.create_task(save_memory_background()) 
 
                 if is_group and not random_reply and reason != "reply":
                     reply = f"{reply}"
 
+                # Конвертируем Markdown в HTML для Telegram
+                reply_html = markdown_to_html(reply)
+                
                 if status_message:
                     try:
-                        if len(reply) <= 4096:
-                            await status_message.edit_text(reply)
+                        if len(reply_html) <= 4096:
+                            await status_message.edit_text(reply_html, parse_mode="HTML")
                         else:
                             await status_message.delete()
-                            for i in range(0, len(reply), 4096):
-                                await update.message.reply_text(reply[i:i+4096])
+                            for i in range(0, len(reply_html), 4096):
+                                await update.message.reply_text(reply_html[i:i+4096], parse_mode="HTML")
                     except Exception as e:
                         logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
-                        await update.message.reply_text(reply)
+                        await update.message.reply_text(reply_html, parse_mode="HTML")
                 else:
-                    if len(reply) <= 4096:
-                        await update.message.reply_text(reply)
+                    if len(reply_html) <= 4096:
+                        await update.message.reply_text(reply_html, parse_mode="HTML")
                     else:
-                        for i in range(0, len(reply), 4096):
-                            await update.message.reply_text(reply[i:i+4096])
+                        for i in range(0, len(reply_html), 4096):
+                            await update.message.reply_text(reply_html[i:i+4096], parse_mode="HTML")
                 return
 
             except httpx.ConnectError:
@@ -486,6 +554,9 @@ async def send_llm_request(
                 await update.message.reply_text("❌ Таймаут.")
                 return
             except Exception as e:
-                logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}")
+                logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}", exc_info=True)
+                if attempt < MAX_API_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return
