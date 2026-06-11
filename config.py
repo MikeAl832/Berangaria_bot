@@ -123,7 +123,7 @@ MEM0_CONFIG = {
     "vector_store": {
         "provider": "qdrant",
         "config": {
-            "host": "127.0.0.1",
+            "host": "qdrant",
             "port": 6333,
             "collection_name": "mem0",
             "embedding_model_dims": EMBEDDING_DIMS
