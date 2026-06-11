@@ -631,13 +631,25 @@ async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history
             reply_html = markdown_to_html(reply)
             
             logger.info(f"📤 Отправка рецензии в чат {chat_id} на сообщение {message_id}...")
-            await bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                reply_to_message_id=message_id,
-                text=reply_html,
-                parse_mode="HTML"
-            )
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    reply_to_message_id=message_id,
+                    text=reply_html,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                if "not found" in str(e).lower() or "reply" in str(e).lower():
+                    logger.warning(f"⚠️ Не удалось отправить реплай к сообщению {message_id}: {e}. Пробуем отправить без реплая...")
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        text=reply_html,
+                        parse_mode="HTML"
+                    )
+                else:
+                    raise
 
             async with get_history_lock(key):
                 # Reload history just in case
