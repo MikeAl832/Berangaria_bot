@@ -119,6 +119,7 @@ async def poll_tiktok_queue(bot):
                 media_files = data.get("media_files", [])
                 chat_id = data.get("chat_id")
                 message_id = data.get("message_id")
+                message_thread_id = data.get("message_thread_id")
                 username = data.get("username")
 
                 # Убедимся, что все медиафайлы существуют
@@ -176,7 +177,7 @@ async def poll_tiktok_queue(bot):
 
                 # Генерируем рецензию и отправляем в группу
                 logger.info(f"🧠 Генерация ответа DeepSeek для {video_id}...")
-                await generate_and_send_tiktok_review(bot, chat_id, message_id, key, history)
+                await generate_and_send_tiktok_review(bot, chat_id, message_id, key, history, message_thread_id)
 
                 # Удаляем обработанные файлы
                 try:

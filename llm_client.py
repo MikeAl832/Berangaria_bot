@@ -562,7 +562,7 @@ async def send_llm_request(
                 return
 
 
-async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history):
+async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history, message_thread_id=None):
     """Generates a review for a TikTok video using DeepSeek and replies to the Telegram message."""
     system_prompt = SYSTEM_PROMPT
     if VISION_MODE:
@@ -633,6 +633,7 @@ async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history
             logger.info(f"📤 Отправка рецензии в чат {chat_id} на сообщение {message_id}...")
             await bot.send_message(
                 chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 reply_to_message_id=message_id,
                 text=reply_html,
                 parse_mode="HTML"
