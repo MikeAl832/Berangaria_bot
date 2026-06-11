@@ -1,10 +1,9 @@
 httpx
 python-telegram-bot[job-queue]
-mem0ai[nlp]
+mem0ai
 google-genai
 python-dotenv
 pyyaml
 ddgs
 qdrant-client
-fastembed
 colorama
