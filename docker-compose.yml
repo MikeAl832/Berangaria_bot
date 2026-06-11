@@ -12,4 +12,6 @@ services:
     env_file: .env
     depends_on:
       - qdrant
+    volumes:
+      - /tmp/tiktok_queue:/tmp/tiktok_queue
     restart: always
