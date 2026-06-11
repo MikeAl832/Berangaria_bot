@@ -25,6 +25,9 @@ jobs:
           port: 4242
           proxy_agent: true 
           script: |
+            mkdir -p ~/.ssh
+            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+            
             mkdir -p ~/apps/Berangaria_bot
             cd ~/apps/Berangaria_bot
             
@@ -36,5 +39,4 @@ jobs:
               git pull origin main
             fi
             
-            docker compose down
             docker compose up -d --build --remove-orphans
