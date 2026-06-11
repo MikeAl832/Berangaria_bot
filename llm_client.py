@@ -560,3 +560,91 @@ async def send_llm_request(
                     continue
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return
+
+
+async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history):
+    """Generates a review for a TikTok video using DeepSeek and replies to the Telegram message."""
+    system_prompt = SYSTEM_PROMPT
+    if VISION_MODE:
+        system_prompt += ("""
+            === IMAGES AND VIDEO ===
+            When a user sends a photo, you receive it as [Image description: ...] inside the message.
+            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
+            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
+            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
+            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
+            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
+            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
+        """)
+
+    now = datetime.now()
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    months = ["January", "February", "March", "April", "May", "June", 
+              "July", "August", "September", "October", "November", "December"]
+
+    time_str = f"Today is {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} year. "
+    if 5 <= now.hour < 12:
+        time_of_day = "morning"
+    elif 12 <= now.hour < 17:
+        time_of_day = "daytime"
+    elif 17 <= now.hour < 23:
+        time_of_day = "evening"
+    else:
+        time_of_day = "night"
+    time_str += f"Times of Day: {time_of_day}."
+
+    system_prompt += f"\n\n=== CURRENT TIME ===\n{time_str}\n"
+    payload_messages = [{"role": "system", "content": system_prompt}] + history
+
+    payload = {
+        "model": MODEL,
+        "messages": payload_messages,
+        "max_tokens": MAX_REPLY_TOKENS,
+        **GENERATION_PARAMS
+    }
+
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
+            if response.status_code != 200:
+                logger.error(f"❌ [red]DeepSeek review API error {response.status_code}:[/] {response.text}")
+                return
+
+            data = response.json()
+            reply = data['choices'][0]['message']['content']
+
+            reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
+            reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+            reply = re.sub(r'<\|.*?\|>', '', reply).strip()
+            reply = reply.strip()
+            if reply.endswith('.') and not reply.endswith('...'):
+                reply = reply[:-1]
+
+            if not reply:
+                return
+
+            reply_html = markdown_to_html(reply)
+            
+            logger.info(f"📤 Отправка рецензии в чат {chat_id} на сообщение {message_id}...")
+            await bot.send_message(
+                chat_id=chat_id,
+                reply_to_message_id=message_id,
+                text=reply_html,
+                parse_mode="HTML"
+            )
+
+            async with get_history_lock(key):
+                # Reload history just in case
+                if key in histories:
+                    histories[key].append({"role": "assistant", "content": reply})
+                else:
+                    histories[key] = history + [{"role": "assistant", "content": reply}]
+                touch_activity(key)
+                
+    except Exception as e:
+        logger.error(f"❌ [red]Ошибка при генерации рецензии TikTok:[/] {e}", exc_info=True)
