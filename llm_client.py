@@ -8,14 +8,15 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import (
-    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS, 
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, DEBUG, PRICE_PROMPT_CACHE_MISS,
+    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, DEBUG, PRICE_PROMPT_CACHE_MISS,
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
-    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MAX_API_RETRIES,
+    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS, MAX_API_RETRIES,
 )
-from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity
+import state
+from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
 from memory_store import memory
-from tools import web_search, TOOLS
+from tools import web_search, read_url, TOOLS, ALLOWED_REACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -34,25 +35,96 @@ def markdown_to_html(text: str) -> str:
     # Инлайн код `code`
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     
+    # Жирный курсив ***text*** или ___text___
+    # ВАЖНО: тройные ДО двойных/одинарных, иначе ** «съест» *** и сломает разметку
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
+    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text)
+
     # Жирный текст **text** или __text__
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-    
+
     # Курсив *text* или _text_ (но не внутри слов)
     text = re.sub(r'(?<!\w)\*(.+?)\*(?!\w)', r'<i>\1</i>', text)
     text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
-    
-    # Жирный курсив ***text*** или ___text___
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
-    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text)
-    
+
     # Зачёркнутый ~~text~~
     text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
     
     # Ссылки [text](url)
     text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
-    
+
     return text
+
+
+def strip_markdown(text: str) -> str:
+    """
+    Убирает markdown-разметку, оставляя читаемый текст.
+    Используется как фолбэк, если HTML не распарсился Telegram'ом.
+    """
+    text = re.sub(r'```(.*?)```', r'\1', text, flags=re.DOTALL)        # блоки кода
+    text = re.sub(r'`([^`]+)`', r'\1', text)                           # инлайн код
+    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'\1 (\2)', text)       # ссылки → текст (url)
+    text = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', text, flags=re.DOTALL)  # *, **, ***
+    text = re.sub(r'~~(.+?)~~', r'\1', text, flags=re.DOTALL)          # зачёркнутый
+    text = re.sub(r'(?<!\w)_{1,3}(.+?)_{1,3}(?!\w)', r'\1', text, flags=re.DOTALL)  # _, __, ___
+    return text
+
+
+# Дополнение к системному промпту, когда включён vision-режим (общее для обычных ответов и TikTok-рецензий)
+VISION_PROMPT_SUFFIX = """
+            === IMAGES AND VIDEO ===
+            When a user sends a photo, you receive it as [Image description: ...] inside the message.
+            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
+            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
+            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
+            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
+            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
+            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
+            If the RECOGNITION section says «possibly this is …» — you may mention it with slight uncertainty. If it says «I don't recognize» — do not invent names.
+        """
+
+_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_MONTHS = ["January", "February", "March", "April", "May", "June",
+           "July", "August", "September", "October", "November", "December"]
+
+
+def _current_time_str() -> str:
+    """Формирует строку с текущей датой и временем суток для системного промпта."""
+    now = datetime.now()
+    time_str = f"Today is {_DAYS[now.weekday()]}, {now.day} {_MONTHS[now.month-1]} {now.year} year. "
+
+    if 5 <= now.hour < 12:
+        time_of_day = "morning"
+    elif 12 <= now.hour < 17:
+        time_of_day = "daytime"
+    elif 17 <= now.hour < 23:
+        time_of_day = "evening"
+    else:
+        time_of_day = "night"
+
+    time_str += f"Times of Day: {time_of_day}."
+    return time_str
+
+
+def _build_system_prompt() -> str:
+    """Собирает полный системный промпт: база + vision (если включён) + текущее время."""
+    system_prompt = SYSTEM_PROMPT
+    if VISION_MODE:
+        system_prompt += VISION_PROMPT_SUFFIX
+    system_prompt += f"\n\n=== CURRENT TIME ===\n{_current_time_str()}\n"
+    return system_prompt
+
+
+def _clean_reply(reply: str) -> str:
+    """Чистит ответ модели от служебных токенов и лишней финальной точки."""
+    reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
+    reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+    reply = re.sub(r'<\|.*?\|>', '', reply).strip()
+    reply = reply.strip()
+    if reply.endswith('.') and not reply.endswith('...'):
+        reply = reply[:-1]
+    return reply
 
 
 def _extract_plain_text(content) -> str:
@@ -109,6 +181,88 @@ def _format_memory_block(mem_results: dict) -> str:
             break
 
     return "\n".join(lines)
+
+
+# ========================================
+# 💾 ДОЛГОВРЕМЕННАЯ ПАМЯТЬ v2 (батчи под лимит эмбеддера)
+# ========================================
+
+def _chunk_lines_by_chars(lines: list, max_chars: int) -> list:
+    """Режет список строк на под-батчи, каждый не длиннее max_chars символов."""
+    chunks, cur, cur_len = [], [], 0
+    for line in lines:
+        # Если одна строка сама по себе больше лимита — режем её жёстко
+        if len(line) > max_chars:
+            if cur:
+                chunks.append(cur)
+                cur, cur_len = [], 0
+            for i in range(0, len(line), max_chars):
+                chunks.append([line[i:i + max_chars]])
+            continue
+        if cur and cur_len + len(line) > max_chars:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += len(line) + 1
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _add_memory_chunks(key: str, lines: list) -> None:
+    """Отправляет накопленные реплики в Mem0 батчами под лимит эмбеддера."""
+    if not memory or not lines:
+        return
+    for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
+        text = "\n".join(chunk)
+        try:
+            result = await asyncio.to_thread(
+                memory.add,
+                [{"role": "user", "content": text}],
+                user_id=key,
+            )
+            added = len(result.get('results', [])) if isinstance(result, dict) else 0
+            logger.info(f"✅ Память: батч {len(text)} симв. → [bright_green]{added}[/] фактов (scope={key})")
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка сохранения памяти (scope={key}): {e}")
+
+
+def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> None:
+    """
+    Кладёт реплику юзера в буфер памяти. При достижении лимита символов —
+    запускает фоновый флаш батчем. Вызывается из обработчика сообщений.
+    """
+    if not memory:
+        return
+    text = (text or "").strip()
+    if not text:
+        return
+
+    line = f"{user_name}: {text}" if is_group else text
+    buf = state.pending_memory.setdefault(key, [])
+    buf.append(line)
+
+    if sum(len(l) for l in buf) >= MEMORY_FLUSH_MAX_CHARS:
+        # Снимаем снимок и очищаем синхронно (без await) — без гонок в одном loop
+        lines = list(buf)
+        state.pending_memory[key] = []
+        asyncio.create_task(_add_memory_chunks(key, lines))
+
+
+def flush_pending_memory_blocking() -> None:
+    """Синхронно сохраняет остатки буфера при остановке бота (loop уже не крутится)."""
+    if not memory:
+        return
+    for key in list(state.pending_memory.keys()):
+        lines = state.pending_memory.get(key) or []
+        if not lines:
+            continue
+        state.pending_memory[key] = []
+        for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
+            try:
+                memory.add([{"role": "user", "content": "\n".join(chunk)}], user_id=key)
+            except Exception as e:
+                logger.error(f"⚠️ Ошибка финального сохранения памяти '{key}': {e}")
 
 
 async def summarize_history(history: list) -> list:
@@ -180,41 +334,6 @@ async def send_llm_request(
     history: list, user_name: str, user_id: int, is_group: bool, 
     random_reply: bool, reason: str):
 
-    system_prompt = SYSTEM_PROMPT
-
-    if VISION_MODE:
-        system_prompt += ("""
-            === IMAGES AND VIDEO ===
-            When a user sends a photo, you receive it as [Image description: ...] inside the message.
-            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
-            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
-            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
-            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
-            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
-            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
-            If the RECOGNITION section says «possibly this is …» — you may mention it with slight uncertainty. If it says «I don't recognize» — do not invent names.        
-        """)
-
-    now = datetime.now()
-    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    months = ["January", "February", "March", "April", "May", "June", 
-    "July", "August", "September", "October", "November", "December"]
-
-    time_str = (
-        f"Today is {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} year. "
-    )
-
-    if 5 <= now.hour < 12:
-        time_of_day = "morning"
-    elif 12 <= now.hour < 17:
-        time_of_day = "daytime"
-    elif 17 <= now.hour < 23:
-        time_of_day = "evening"
-    else:
-        time_of_day = "night"
-
-    time_str += f"Times of Day: {time_of_day}."
-
     # Автосуммаризация при достижении 85% от лимита токенов
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
     if chat_tokens.get(key, 0) > context_threshold:
@@ -222,8 +341,9 @@ async def send_llm_request(
         async with get_history_lock(key):
             history = await summarize_history(history)
             histories[key] = history
-        
-    system_prompt += f"\n\n=== CURRENT TIME ===\n{time_str}\n"
+            save_history(key)
+
+    system_prompt = _build_system_prompt()
     payload_messages = [{"role": "system", "content": system_prompt}] + history
 
     if memory:
@@ -293,7 +413,9 @@ async def send_llm_request(
         }
             
     status_message = None
-    
+    used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
+    reacted = False    # бот поставил реакцию — допускаем пустой текстовый ответ
+
     async with httpx.AsyncClient(timeout=600.0) as client:
         if DEBUG:
             # В DEBUG режиме показываем полную структуру с содержимым
@@ -318,13 +440,18 @@ async def send_llm_request(
                 logger.debug("[dim]" + "-" * 80 + "[/]")
             logger.debug("[cyan]" + "=" * 80 + "[/]")
 
-        for attempt in range(MAX_API_RETRIES): 
+        for attempt in range(MAX_API_RETRIES):
+            gen_params = dict(GENERATION_PARAMS)
+            if used_tool:
+                # Факты после поиска/чтения ссылки — холоднее, меньше выдумок
+                gen_params["temperature"] = FACTUAL_TEMPERATURE
+
             payload = {
                 "model": MODEL,
                 "messages": payload_messages,
                 "max_tokens": MAX_REPLY_TOKENS,
                 "tools": TOOLS,
-                **GENERATION_PARAMS 
+                **gen_params
             }
 
             try:
@@ -385,6 +512,7 @@ async def send_llm_request(
                 
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     payload_messages.append(message)
+                    used_tool = True  # дальше отвечаем на холодной температуре
 
                     for tool_call in message['tool_calls']:
                         func_name = tool_call['function']['name']
@@ -434,6 +562,56 @@ async def send_llm_request(
                                 "content": search_result
                             })
 
+                        elif func_name == 'read_url':
+                            url = args.get('url', '')
+                            await update.message.chat.send_action(action="typing")
+                            status_text = "🔗 Читаю ссылку..."
+                            if status_message is None:
+                                status_message = await update.message.reply_text(status_text)
+                            else:
+                                try:
+                                    await status_message.edit_text(status_text)
+                                except Exception:
+                                    pass
+
+                            logger.info(f"🔗 [blue]Чтение ссылки:[/] {url}")
+                            page_text = read_url(url)
+                            logger.debug(f"📄 Страница: {repr(page_text[:200])}")
+
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": page_text
+                            })
+
+                        elif func_name == 'react_to_message':
+                            emoji = (args.get('emoji') or '').strip()
+                            if emoji not in ALLOWED_REACTIONS:
+                                tool_result = f"Эмодзи '{emoji}' не разрешён Telegram. Ответь текстом или выбери из списка."
+                            else:
+                                try:
+                                    await update.message.set_reaction(reaction=emoji)
+                                    reacted = True
+                                    logger.info(f"😀 [magenta]Реакция:[/] {emoji}")
+                                    tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — верни пустой ответ."
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [yellow]Не удалось поставить реакцию {emoji}:[/] {e}")
+                                    tool_result = "Не удалось поставить реакцию, ответь текстом."
+
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": tool_result
+                            })
+
+                        else:
+                            # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": f"Инструмент '{func_name}' не поддерживается."
+                            })
+
                     continue
 
                 reply = message.get('content', '')
@@ -460,14 +638,17 @@ async def send_llm_request(
                 # Увеличиваем счётчик вызовов API
                 api_call_count[key] = api_call_count.get(key, 0) + 1
 
-                reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
-                reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
-                reply = re.sub(r'<\|.*?\|>', '', reply).strip()
-                reply = reply.strip()
-                if reply.endswith('.') and not reply.endswith('...'):
-                    reply = reply[:-1]
+                reply = _clean_reply(reply)
 
                 if not reply:
+                    if reacted:
+                        # Бот ограничился реакцией — это валидный ответ, текст не нужен
+                        if status_message:
+                            try:
+                                await status_message.delete()
+                            except Exception:
+                                pass
+                        return
                     await update.message.reply_text("❌ Пустой ответ от модели.")
                     return
 
@@ -479,70 +660,48 @@ async def send_llm_request(
                     history.append({"role": "assistant", "content": reply})
                     histories[key] = history
                     touch_activity(key)  # Обновляем время активности
+                    save_history(key)    # Персистим историю на диск
 
-                if memory:
-                    async def save_memory_background():
-                        try:
-                            # В память кладём только чистую реплику пользователя
-                            raw_user_msg = history[-2].get('content', '') if len(history) >= 2 else ''
-                            last_user_msg = _extract_plain_text(raw_user_msg)
-
-                            if not last_user_msg:
-                                if DEBUG:
-                                    logger.info(f"🧠 [magenta]Память: нет текста для сохранения[/] (scope={key}), пропуск")
-                                return
-
-                            # В группе подставляем имя для корректной атрибуции фактов
-                            if is_group:
-                                speaker_msg = f"{user_name}: {last_user_msg}"
-                            else:
-                                speaker_msg = last_user_msg
-
-                            if DEBUG:
-                                logger.debug(f"💾 Mem0 сохранение: '{speaker_msg[:60]}...' (scope={key})")
-
-                            result = await asyncio.to_thread(
-                                memory.add,
-                                [
-                                    {"role": "user", "content": speaker_msg}
-                                ],
-                                user_id=key
-                            )
-                            
-                            added = len(result.get('results', []))
-                            logger.info(f"✅ Память сохранена: {added} фактов")
-                        except json.JSONDecodeError as e:
-                            logger.error(f"⚠️ Ошибка парсинга JSON от mem0: {e}")
-                            if DEBUG:
-                                logger.debug(f"Попытка сохранить: '{speaker_msg[:200]}'")
-                        except Exception as e:
-                            logger.error(f"⚠️ Ошибка сохранения памяти: {e}")
-                    
-                    asyncio.create_task(save_memory_background()) 
+                # Сохранение в долговременную память происходит не здесь, а батчами:
+                # реплики юзеров копятся в state.pending_memory (см. record_user_memory)
+                # и флашатся по достижении лимита символов (memory v2).
 
                 if is_group and not random_reply and reason != "reply":
                     reply = f"{reply}"
 
-                # Конвертируем Markdown в HTML для Telegram
+                # Готовим HTML-версию и чистый текст на случай, если HTML не распарсится
                 reply_html = markdown_to_html(reply)
-                
-                if status_message:
-                    try:
-                        if len(reply_html) <= 4096:
-                            await status_message.edit_text(reply_html, parse_mode="HTML")
-                        else:
-                            await status_message.delete()
-                            for i in range(0, len(reply_html), 4096):
-                                await update.message.reply_text(reply_html[i:i+4096], parse_mode="HTML")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
-                        await update.message.reply_text(reply_html, parse_mode="HTML")
-                else:
+                reply_plain = strip_markdown(reply)
+
+                async def _send_reply_as_new():
+                    """Новым сообщением: HTML с фолбэком на чистый текст; длинное режем по 4096."""
                     if len(reply_html) <= 4096:
-                        await update.message.reply_text(reply_html, parse_mode="HTML")
+                        try:
+                            await update.message.reply_text(reply_html, parse_mode="HTML")
+                        except Exception as e:
+                            logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
+                            await update.message.reply_text(reply_plain)
                     else:
-                        for i in range(0, len(reply_html), 4096):
-                            await update.message.reply_text(reply_html[i:i+4096], parse_mode="HTML")
+                        # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
+                        for i in range(0, len(reply_plain), 4096):
+                            await update.message.reply_text(reply_plain[i:i + 4096])
+
+                if status_message:
+                    edited = False
+                    if len(reply_html) <= 4096:
+                        try:
+                            await status_message.edit_text(reply_html, parse_mode="HTML")
+                            edited = True
+                        except Exception as e:
+                            logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
+                    if not edited:
+                        try:
+                            await status_message.delete()
+                        except Exception:
+                            pass
+                        await _send_reply_as_new()
+                else:
+                    await _send_reply_as_new()
                 return
 
             except httpx.ConnectError:
@@ -564,36 +723,7 @@ async def send_llm_request(
 
 async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history, message_thread_id=None):
     """Generates a review for a TikTok video using DeepSeek and replies to the Telegram message."""
-    system_prompt = SYSTEM_PROMPT
-    if VISION_MODE:
-        system_prompt += ("""
-            === IMAGES AND VIDEO ===
-            When a user sends a photo, you receive it as [Image description: ...] inside the message.
-            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
-            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
-            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
-            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
-            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
-            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
-        """)
-
-    now = datetime.now()
-    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    months = ["January", "February", "March", "April", "May", "June", 
-              "July", "August", "September", "October", "November", "December"]
-
-    time_str = f"Today is {days[now.weekday()]}, {now.day} {months[now.month-1]} {now.year} year. "
-    if 5 <= now.hour < 12:
-        time_of_day = "morning"
-    elif 12 <= now.hour < 17:
-        time_of_day = "daytime"
-    elif 17 <= now.hour < 23:
-        time_of_day = "evening"
-    else:
-        time_of_day = "night"
-    time_str += f"Times of Day: {time_of_day}."
-
-    system_prompt += f"\n\n=== CURRENT TIME ===\n{time_str}\n"
+    system_prompt = _build_system_prompt()
     payload_messages = [{"role": "system", "content": system_prompt}] + history
 
     payload = {
@@ -618,12 +748,7 @@ async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history
             data = response.json()
             reply = data['choices'][0]['message']['content']
 
-            reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
-            reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
-            reply = re.sub(r'<\|.*?\|>', '', reply).strip()
-            reply = reply.strip()
-            if reply.endswith('.') and not reply.endswith('...'):
-                reply = reply[:-1]
+            reply = _clean_reply(reply)
 
             if not reply:
                 return
@@ -658,6 +783,7 @@ async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history
                 else:
                     histories[key] = history + [{"role": "assistant", "content": reply}]
                 touch_activity(key)
+                save_history(key)
                 
     except Exception as e:
         logger.error(f"❌ [red]Ошибка при генерации рецензии TikTok:[/] {e}", exc_info=True)

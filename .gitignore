@@ -4,5 +4,6 @@ prompt.txt
 mem0/
 qdrant_storage/
 *.db
+bot_data/
 __pycache__/
 venv

@@ -25,7 +25,7 @@ from config import (
 import state
 from handlers import (
     start, clear, stats, random_chance, summarize_command,
-    handle_message, handle_media, handle_video, error_handler
+    handle_message, handle_media, handle_video, handle_sticker, handle_voice, error_handler
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -69,6 +69,7 @@ async def periodic_summarization():
                         
                         if new_history is not history and len(new_history) < old_len:
                             state.histories[key] = new_history
+                            state.save_history(key)
                             summarized_count += 1
                             logger.info(f"  ✅ {key}: {old_len} → {len(new_history)} сообщений")
             
@@ -76,7 +77,12 @@ async def periodic_summarization():
                 logger.info(f"📝 [green]Суммаризировано {summarized_count} из {total_chats} чатов[/]")
             else:
                 logger.info(f"📝 [dim]Нет чатов для суммаризации[/]")
-                
+
+            # Чистим данные чатов, неактивных больше 72 часов (предотвращает рост словарей в памяти)
+            removed = state.cleanup_old_chats(max_age_hours=72)
+            if removed > 0:
+                logger.info(f"🧹 [green]Очищено {removed} неактивных чатов[/]")
+
         except Exception as e:
             logger.error(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}", exc_info=True)
 
@@ -174,6 +180,7 @@ async def poll_tiktok_queue(bot):
                     history.append({"role": "user", "content": user_msg})
                     histories[key] = history
                     touch_activity(key)
+                    state.save_history(key)
 
                 # Генерируем рецензию и отправляем в группу
                 logger.info(f"🧠 Генерация ответа DeepSeek для {video_id}...")
@@ -196,10 +203,15 @@ async def poll_tiktok_queue(bot):
 
 def main():
     logger.info("🤖 [cyan]Бот запускается...[/]")
-    
+
     # Инициализируем изменяемый шанс из config
     state.random_reply_chance = RANDOM_REPLY_CHANCE
-    
+
+    # Инициализируем БД и подгружаем сохранённые истории диалогов
+    state.init_db()
+    loaded_chats = state.load_all_histories()
+    logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -217,6 +229,8 @@ def main():
         filters.VIDEO | filters.VIDEO_NOTE | filters.ANIMATION,
         handle_video
     ))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
 
     app.add_error_handler(error_handler)
 
@@ -243,6 +257,20 @@ def main():
         # Graceful shutdown
         summarization_task.cancel()
         tiktok_queue_task.cancel()
+        # Финальный flush историй на диск (страховка поверх write-through)
+        try:
+            for k in list(state.histories.keys()):
+                state.save_history(k)
+            logger.info("💾 [green]Истории сохранены в БД[/]")
+        except Exception as e:
+            logger.error(f"❌ Ошибка финального сохранения историй: {e}")
+        # Флаш остатков буфера долговременной памяти
+        try:
+            from llm_client import flush_pending_memory_blocking
+            flush_pending_memory_blocking()
+            logger.info("🧠 [green]Остатки памяти сохранены[/]")
+        except Exception as e:
+            logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")
 
 if __name__ == '__main__':

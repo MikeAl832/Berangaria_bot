@@ -5,18 +5,21 @@ from functools import wraps
 from telegram import Update
 from telegram.ext import ContextTypes
 
+import time
+
 from config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
-    MESSAGE_DEBOUNCE_SECONDS, RANDOM_REPLY_COOLDOWN, MAX_MEDIA_ITEMS_IN_CONTEXT
+    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, RANDOM_REPLY_COOLDOWN,
+    MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID
 )
 from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count, get_history_lock, _buffer_lock, touch_activity
 import state
-from llm_client import summarize_history, send_llm_request
-from vision_provider import describe_image_bytes, describe_video
+from llm_client import summarize_history, send_llm_request, record_user_memory
+from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
-    download_media_as_base64, download_video_to_file, get_video_duration
+    download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration
 )
 
 logger = logging.getLogger(__name__)
@@ -126,6 +129,7 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if key in histories:
         del histories[key]
+        state.delete_history(key)  # Чистим и в БД
         await update.message.reply_text("🧹 История очищена!")
     else:
         await update.message.reply_text("История и так пуста!")
@@ -179,8 +183,9 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         histories[key] = new_history
+        state.save_history(key)
         new_len = len(new_history)
-        
+
         await status_msg.edit_text(
             f"✅ Диалог сжат: {old_len} → {new_len} сообщений.\n"
             f"Суть разговора сохранена, последние реплики остались нетронутыми."
@@ -250,6 +255,11 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         history.append({"role": "user", "content": message_content})
         histories[key] = history
         touch_activity(key)  # Обновляем время активности
+        state.save_history(key)  # Персистим историю на диск
+
+    # Копим слова юзера для долговременной памяти (медиа-описания не сохраняем).
+    # Делаем это для ВСЕХ сообщений, даже если бот не отвечает — память про всю беседу.
+    record_user_memory(key, combined_text, user_name, is_group)
 
     if not (mentioned or random_reply):
         return
@@ -416,8 +426,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_description = None
     try:
         photo = update.message.photo[-1]
-        image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
-        image_description = await describe_image_bytes(image_bytes, mime, caption=caption)
+        cached = state.get_cached_media_description(photo.file_unique_id)
+        if cached is not None:
+            logger.info(f"♻️ [dim]Фото уже разобрано ранее, берём из кэша[/]")
+            image_description = cached
+        else:
+            image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
+            image_description = await describe_image_bytes(image_bytes, mime, caption=caption)
+            if image_description:
+                state.cache_media_description(photo.file_unique_id, image_description)
     except Exception as e:
         logger.error(f"❌ [red]Ошибка обработки фото:[/] {e}")
 
@@ -467,10 +484,13 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        await update.message.chat.send_action(action="upload_video")
-    except Exception:
-        pass
+    # Проверяем кэш (повторное видео/гифку не качаем и не разбираем заново)
+    cached = state.get_cached_media_description(video_obj.file_unique_id)
+    if cached is not None:
+        logger.info(f"♻️ [dim]Видео уже разобрано ранее, берём из кэша[/]")
+        await queue_message(update, context, text=caption,
+                            media_description=cached, media_kind="video")
+        return
 
     video_description = None
     video_path = None
@@ -479,7 +499,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_path, mime, duration = await download_video_to_file(
             video_obj.file_id, context
         )
-        
+
         if not video_path:
             video_description = "(не удалось скачать видео)"
         else:
@@ -503,14 +523,172 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except OSError as err:
                 logger.warning(f"⚠️ Не удалось удалить временный файл {video_path}: {err}")
 
+    # Кэшируем только успешный разбор (плейсхолдеры ошибок не кэшируем)
+    if video_description and not video_description.startswith("(не удалось"):
+        state.cache_media_description(video_obj.file_unique_id, video_description)
+
     await queue_message(update, context, text=caption,
                         media_description=video_description, media_kind="video")
 
 
+async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
+
+    if update.effective_user.id == context.bot.id:
+        return
+
+    sticker = update.message.sticker
+    if sticker is None:
+        return
+
+    emoji = sticker.emoji or ""
+
+    if not VISION_MODE:
+        # Vision выключен — передаём хотя бы эмодзи стикера как текст
+        await queue_message(update, context, text=(emoji or "(стикер)"))
+        return
+
+    # Анимированные .tgs (Lottie/вектор) Gemini не разбирает как картинку — фолбэк на эмодзи
+    if sticker.is_animated:
+        desc = f"Анимированный стикер с эмодзи {emoji}" if emoji else "Анимированный стикер"
+        await queue_message(update, context, text="",
+                            media_description=desc, media_kind="image")
+        return
+
+    # Проверяем кэш (повторный стикер не разбираем заново)
+    cached = state.get_cached_media_description(sticker.file_unique_id)
+    if cached is not None:
+        logger.info(f"♻️ [dim]Стикер уже разобран ранее, берём из кэша[/]")
+        await queue_message(update, context, text="",
+                            media_description=cached, media_kind="image")
+        return
+
+    sticker_description = None
+    sticker_kind = "image"
+    hint = f"Это стикер из Telegram с эмодзи {emoji}." if emoji else "Это стикер из Telegram."
+
+    try:
+        if sticker.is_video:
+            # Видео-стикер .webm — разбираем как короткое видео
+            sticker_kind = "video"
+            video_path, mime, duration = await download_video_to_file(sticker.file_id, context)
+            if not video_path:
+                sticker_description = "(не удалось скачать стикер)"
+            else:
+                sticker_description = await describe_video(
+                    video_path=video_path, mime=mime, caption=hint, duration=duration
+                )
+        else:
+            # Статичный стикер .webp — обычная картинка
+            image_bytes, mime = await download_media_as_base64(
+                sticker.file_id, context, return_bytes=True
+            )
+            sticker_description = await describe_image_bytes(image_bytes, mime, caption=hint)
+    except Exception as e:
+        logger.error(f"❌ [red]Ошибка обработки стикера:[/] {e}")
+
+    if not sticker_description:
+        sticker_description = f"Стикер с эмодзи {emoji}" if emoji else "(не удалось разобрать стикер)"
+    elif not sticker_description.startswith("(не удалось"):
+        state.cache_media_description(sticker.file_unique_id, sticker_description)
+
+    await queue_message(update, context, text="",
+                        media_description=sticker_description, media_kind=sticker_kind)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
+
+    if update.effective_user.id == context.bot.id:
+        return
+
+    if not VISION_MODE:
+        return
+
+    audio_obj = update.message.voice or update.message.audio
+    if audio_obj is None:
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    is_group = update.effective_chat.type in ['group', 'supergroup']
+
+    if not _check_access_permissions(chat_id, user_id, is_group):
+        if not is_group:
+            await update.message.reply_text("Не разговариваю с незнакомцами.")
+        return
+
+    # Раннее отсечение слишком длинных аудио по метаданным Telegram
+    duration = get_video_duration(audio_obj)
+    if duration and duration > AUDIO_MAX_DURATION_SEC:
+        await update.message.reply_text(
+            f"Аудио длиннее {AUDIO_MAX_DURATION_SEC} сек — слушать не буду."
+        )
+        return
+
+    caption = update.message.caption or ""
+
+    # Кэш транскрипции (повторное аудио не распознаём заново)
+    transcript = state.get_cached_media_description(audio_obj.file_unique_id)
+
+    if transcript is None:
+        try:
+            await update.message.chat.send_action(action="typing")
+        except Exception:
+            pass
+
+        try:
+            audio_path, mime = await download_audio_to_file(audio_obj.file_id, context)
+            if not audio_path:
+                transcript = ""
+            else:
+                # transcribe_audio удаляет файл в своём finally
+                transcript = await transcribe_audio(audio_path=audio_path, mime=mime, caption=caption)
+        except Exception as e:
+            logger.error(f"❌ [red]Ошибка обработки голосового:[/] {e}", exc_info=True)
+            transcript = ""
+
+        if transcript:
+            state.cache_media_description(audio_obj.file_unique_id, transcript)
+
+    if not transcript:
+        # Не смогли распознать — отдадим хотя бы пометку, чтобы бот не молчал
+        await queue_message(update, context, text="",
+                            media_description="(голосовое сообщение, не удалось распознать)",
+                            media_kind="image")
+        return
+
+    logger.info(f"🎤 [cyan]Транскрипция:[/] {transcript[:80]}{'...' if len(transcript) > 80 else ''}")
+    # Транскрипт — это и есть слова пользователя, передаём как обычный текст
+    await queue_message(update, context, text=transcript)
+
+
+# Троттлинг алертов админу, чтобы не спамить при серии ошибок
+_last_alert_ts = 0.0
+_ALERT_COOLDOWN_SEC = 60
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _last_alert_ts
     logger.error(f"❌ [bright_red]Глобальная ошибка:[/] {context.error}", exc_info=True)
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text("Произошла ошибка. Попробуйте /clear.")
     except Exception as e:
         logger.error(f"❌ [red]Не удалось отправить сообщение об ошибке:[/] {e}")
+
+    # Алерт админу (если настроен и не спамим)
+    if ADMIN_ALERT_CHAT_ID:
+        now = time.time()
+        if now - _last_alert_ts >= _ALERT_COOLDOWN_SEC:
+            _last_alert_ts = now
+            try:
+                err_text = str(context.error)[:500]
+                await context.bot.send_message(
+                    chat_id=ADMIN_ALERT_CHAT_ID,
+                    text=f"⚠️ Ошибка бота:\n{err_text}"
+                )
+            except Exception as e:
+                logger.error(f"❌ [red]Не удалось отправить алерт админу:[/] {e}")

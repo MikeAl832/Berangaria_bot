@@ -323,6 +323,78 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
             asyncio.create_task(_gemini_delete_file(file_uri))
 
 
+_AUDIO_PROMPT = (
+    "Это голосовое или аудио сообщение. Транскрибируй РЕЧЬ дословно на языке оригинала "
+    "и верни ТОЛЬКО текст сказанного, без комментариев, без кавычек, без префиксов. "
+    "Если речи нет (музыка, шум, звук) — кратко опиши, что слышно, в скобках."
+)
+
+
+async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = "") -> str:
+    """Транскрибирует аудио через Gemini. Файл НЕ удаляет — это делает вызывающий код."""
+    if not GEMINI_API_KEY:
+        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
+        return ""
+
+    if not os.path.exists(audio_path):
+        logger.error(f"❌ [red]Аудиофайл не найден:[/] {audio_path}")
+        return ""
+
+    file_size = os.path.getsize(audio_path)
+    user_text = _AUDIO_PROMPT
+    if caption:
+        user_text += f"\n\nПодпись пользователя: «{caption}»."
+
+    file_uri: str | None = None
+
+    # Маленькие файлы — inline, крупные — через Files API
+    if file_size <= GEMINI_INLINE_MAX_BYTES:
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+        b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        parts = [
+            {"text": user_text},
+            {"inline_data": {"mime_type": mime, "data": b64}},
+        ]
+    else:
+        file_uri = await _gemini_upload_file(audio_path, mime)
+        if not file_uri:
+            return ""
+        parts = [
+            {"text": user_text},
+            {"file_data": {"mime_type": mime, "file_uri": file_uri}},
+        ]
+
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "maxOutputTokens": 2048,
+        },
+    }
+
+    url = f"{GEMINI_API_BASE}/models/{GEMINI_MODEL}:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            if r.status_code != 200:
+                logger.error(f"❌ [red]Gemini audio API {r.status_code}:[/] {r.text[:300]}")
+                return ""
+            data = r.json()
+            transcript = _gemini_extract_text(data)
+            _log_description(f"🎤 [Gemini:{GEMINI_MODEL}, {file_size} байт]", transcript)
+            return transcript
+    except Exception as e:
+        logger.error(f"❌ [red]Gemini audio error:[/] {e}")
+        return ""
+    finally:
+        if file_uri:
+            asyncio.create_task(_gemini_delete_file(file_uri))
+
+
 # ========================== ПУБЛИЧНЫЙ API ==========================
 
 async def describe_image_bytes(image_bytes: bytes, mime: str, caption: str = "") -> str:
@@ -356,3 +428,29 @@ async def describe_video(
                 logger.debug(f"🗑️ Удалён временный файл: {video_path}")
         except OSError as e:
             logger.debug(f"⚠️ Не удалось удалить временный файл {video_path}: {e}")
+
+
+async def transcribe_audio(
+    *,
+    audio_path: str,
+    mime: str = "audio/ogg",
+    caption: str = "",
+) -> str:
+    """
+    Возвращает транскрипцию голосового/аудио сообщения через Gemini.
+
+    ВАЖНО: Удаление временного файла происходит в finally блоке этой функции.
+    """
+    if not audio_path:
+        logger.error("❌ [red]audio_path обязателен[/]")
+        return ""
+
+    try:
+        return await _gemini_transcribe_audio(audio_path, mime, caption)
+    finally:
+        try:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+                logger.debug(f"🗑️ Удалён временный аудиофайл: {audio_path}")
+        except OSError as e:
+            logger.debug(f"⚠️ Не удалось удалить временный аудиофайл {audio_path}: {e}")

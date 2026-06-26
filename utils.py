@@ -187,3 +187,41 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
         except OSError:
             pass
         raise
+
+
+async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[str], str]:
+    """
+    Скачивает аудио/голосовое из Telegram во временный файл для Gemini.
+
+    Returns:
+        Tuple из (путь_к_файлу, mime_type). file_path может быть None при ошибке.
+
+    ВАЖНО: Вызывающий код должен удалить временный файл после использования!
+    """
+    file = await context.bot.get_file(file_id)
+
+    # Голосовые Telegram приходят как .oga (OGG/opus)
+    suffix, mime = ".oga", "audio/ogg"
+    if file.file_path:
+        ext = os.path.splitext(file.file_path)[1].lower()
+        audio_map = {
+            ".oga": ("audio/ogg"), ".ogg": ("audio/ogg"),
+            ".mp3": ("audio/mp3"), ".m4a": ("audio/mp4"),
+            ".aac": ("audio/aac"), ".wav": ("audio/wav"),
+            ".flac": ("audio/flac"), ".opus": ("audio/ogg"),
+        }
+        if ext in audio_map:
+            suffix, mime = ext, audio_map[ext]
+
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+
+    try:
+        await file.download_to_drive(tmp_path)
+        return tmp_path, mime
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise

@@ -10,8 +10,11 @@ services:
   bot:
     build: .
     env_file: .env
+    environment:
+      - BOT_DB_PATH=/data/bot_state.db
     depends_on:
       - qdrant
     volumes:
       - /tmp/tiktok_queue:/tmp/tiktok_queue
+      - ./bot_data:/data
     restart: always

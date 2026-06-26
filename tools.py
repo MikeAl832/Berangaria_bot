@@ -1,5 +1,7 @@
 import time
+import httpx
 from ddgs import DDGS
+from bs4 import BeautifulSoup
 
 # Простой rate limiter для web_search
 _search_timestamps = []
@@ -44,8 +46,64 @@ TOOLS = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "react_to_message",
+            "description": (
+                "Add an emoji reaction to the user's message — instead of or alongside a text reply. "
+                "Use when a reaction is more appropriate than words: agreement, laughter, shock, approval, trolling. "
+                "You can react silently: just return an empty response after calling this."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": (
+                            "Single emoji from allowed Telegram reactions: "
+                            "👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 💯 🤣 ⚡ "
+                            "🏆 💔 🤨 😐 🖕 😈 😴 😭 🤓 👻 👀 🙈 🤝 🫡 🤪 🗿 🆒 😘 😎 🤷 😡"
+                        )
+                    }
+                },
+                "required": ["emoji"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_url",
+            "description": (
+                "Download a web page by URL and read its text content. "
+                "Use when the user sends a link or asks to analyze/comment on a specific URL. "
+                "Don't use for general questions — use web_search for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full page URL (with http:// or https://)"
+                    }
+                },
+                "required": ["url"]
+            }
+        }
     }
 ]
+
+# Разрешённые Telegram эмодзи для реакций (для валидации перед вызовом API)
+ALLOWED_REACTIONS = {
+    "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉",
+    "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳", "❤‍🔥", "🌚",
+    "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕",
+    "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨", "🤝", "✍",
+    "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😘",
+    "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀", "😡",
+}
 
 def web_search(query: str, max_results: int = 5, timelimit: str = None, region: str = "ru-ru") -> str:
     # Проверка rate limit
@@ -72,3 +130,55 @@ def web_search(query: str, max_results: int = 5, timelimit: str = None, region: 
 
     except Exception as e:
         return f"Ошибка поиска: {e}"
+
+
+READ_URL_MAX_CHARS = 4000  # сколько символов текста страницы отдавать модели
+
+def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
+    """Скачивает страницу и возвращает её текст (заголовок + основной контент)."""
+    url = (url or "").strip()
+    if not url:
+        return "Пустой URL."
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    }
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            r = client.get(url)
+            r.raise_for_status()
+
+            content_type = r.headers.get("content-type", "").lower()
+            if "html" not in content_type and "text" not in content_type:
+                return f"Это не текстовая страница (тип: {content_type or 'неизвестен'})."
+
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            # Выкидываем неинформативные блоки
+            for tag in soup(["script", "style", "noscript", "header", "footer",
+                             "nav", "aside", "svg", "form", "iframe"]):
+                tag.decompose()
+
+            title = ""
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+
+            text = " ".join(soup.get_text(separator=" ").split())
+            if not text:
+                return "Страница загрузилась, но текста на ней нет."
+
+            result = f"Заголовок: {title}\n\n" if title else ""
+            result += text[:max_chars]
+            if len(text) > max_chars:
+                result += "…"
+            return result
+
+    except httpx.HTTPStatusError as e:
+        return f"Страница недоступна (HTTP {e.response.status_code})."
+    except Exception as e:
+        return f"Ошибка чтения страницы: {e}"
