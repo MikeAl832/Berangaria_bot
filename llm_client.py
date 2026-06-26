@@ -130,10 +130,30 @@ def _build_system_prompt() -> str:
 
 
 def _clean_reply(reply: str) -> str:
-    """Чистит ответ модели от служебных токенов и лишней финальной точки."""
+    """Чистит ответ модели от служебных токенов, эмодзи и лишней финальной точки."""
     reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
     reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
     reply = re.sub(r'<\|.*?\|>', '', reply).strip()
+    
+    # Удаляем все эмодзи из текста (диапазоны Unicode для эмодзи)
+    # Охватывает основные блоки эмодзи
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # эмотиконы
+        "\U0001F300-\U0001F5FF"  # символы и пиктограммы
+        "\U0001F680-\U0001F6FF"  # транспорт и карты
+        "\U0001F1E0-\U0001F1FF"  # флаги
+        "\U00002702-\U000027B0"  # дингбаты
+        "\U000024C2-\U0001F251"  # enclosed characters
+        "\U0001F900-\U0001F9FF"  # дополнительные эмодзи
+        "\U0001FA70-\U0001FAFF"  # расширенные эмодзи
+        "\U00002600-\U000026FF"  # разное
+        "\U00002700-\U000027BF"  # дингбаты
+        "]+", 
+        flags=re.UNICODE
+    )
+    reply = emoji_pattern.sub('', reply).strip()
+    
     reply = reply.strip()
     if reply.endswith('.') and not reply.endswith('...'):
         reply = reply[:-1]
