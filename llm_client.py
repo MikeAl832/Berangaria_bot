@@ -71,18 +71,31 @@ def strip_markdown(text: str) -> str:
     return text
 
 
-# Дополнение к системному промпту, когда включён vision-режим (общее для обычных ответов и TikTok-рецензий)
+# Дополнение к системному промпту, когда включён vision-режим
 VISION_PROMPT_SUFFIX = """
-            === IMAGES AND VIDEO ===
-            When a user sends a photo, you receive it as [Image description: ...] inside the message.
-            When a user sends a video, you receive it as [Video description: ...] — this is a description of several frames distributed along the timeline.
-            The description arrives in a structured format: sections «DETAILS» (what is visible), «RECOGNITION» (recognized characters/memes/brands), and «SUMMARY» (brief retelling).
-            Use the RECOGNITION section to mention the character/meme/brand by name — this is your main advantage. The SUMMARY sets the mood for the joke. DETAILS is raw material; do not read it out.
-            Consider that you saw the picture or video yourself. React naturally: joke, tease, or comment on interesting details.
-            NEVER write "visible in the picture", "visible in the video", "judging by the description", "according to the text", "in the details section" — this destroys the illusion.
-            DO NOT read the sections verbatim and do not quote the format «DETAILS/RECOGNITION/SUMMARY». Use the description only as context for a witty remark.
-            If the RECOGNITION section says «possibly this is …» — you may mention it with slight uncertainty. If it says «I don't recognize» — do not invent names.
-        """
+=== IMAGES AND VIDEO ===
+When a user sends a photo or video, you receive it as [Image description: ...] or [Video description: ...] inside their message.
+These descriptions come from a vision model that saw the media and described it naturally — like a friend telling you what's in the picture.
+
+The description includes:
+- What's visible: people, objects, text, logos, setting, colors
+- Recognized characters/memes/brands — specific names when identified (e.g., "Geralt from The Witcher", "Distracted Boyfriend meme")
+- Mood and atmosphere
+- For video: how the scene evolves over time
+
+How to use it:
+✓ React naturally as if you saw it yourself — joke, tease, or comment on interesting details
+✓ Reference recognized characters/memes/brands by name — this is your advantage
+✓ If the description says "похоже на..." (looks like) — you can mention it with slight uncertainty
+✓ If it says the vision model didn't recognize something — don't invent names
+
+What NOT to do:
+✗ NEVER write "visible in the picture", "judging by the description", "according to the text"
+✗ Don't say "the description mentions..." — you're supposed to have seen it
+✗ Don't quote the description structure or format
+
+Treat the description as your own observation. The user doesn't know you didn't see the media directly.
+"""
 
 _DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _MONTHS = ["January", "February", "March", "April", "May", "June",
@@ -393,24 +406,16 @@ async def send_llm_request(
         except Exception as e:
             logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
-    if random_reply and is_group and payload_messages[-1]["role"] == "user":
-        random_instruction = (
-            "\n\n=== IMPORTANT: YOU ARE RESPONDING RANDOMLY ===\n"
-            "You don't have to respond to every message. Several messages came in without your response. "
-            "You decided to respond now.\n"
-            "RULES FOR THIS CASE:\n"
-            "- Reply ONLY to the LAST message in history\n"
-            "- Ignore older messages — nobody expects a reply to them anymore\n"
-            "- If the last message wasn't addressed to you, comment on it as you wish\n"
-            "- DO NOT list all the messages you didn't reply to earlier\n"
-            "- Just give a short remark on the current moment\n"
-            "=== END OF RULES ==="
-        )
-        last_content = payload_messages[-1]["content"]
-        payload_messages[-1] = {
-            "role": "user",
-            "content": f"{last_content}{random_instruction}"
-        }
+    if random_reply and is_group:
+        # Добавляем system message перед последним user сообщением
+        payload_messages.insert(-1, {
+            "role": "system",
+            "content": (
+                "You decided to respond randomly to the next message. "
+                "Reply only to it, ignore any older unanswered messages. "
+                "Don't mention that you were silent before — just give a natural reaction to the current moment."
+            )
+        })
             
     status_message = None
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой

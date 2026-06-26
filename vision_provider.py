@@ -20,47 +20,59 @@ def _log_description(prefix: str, description: str, meta: str = "") -> None:
     DEBUG=False → metadata only (model, tokens, length).
     """
     head = f"{prefix} {meta}".rstrip()
-    logger.info(f"{head} | {len(description)} chars")
+    # Обрезаем длинные описания для INFO режима (80 символов), в DEBUG будет полное
+    short_desc = description[:80] + "..." if len(description) > 80 else description
+    logger.info(f"{head} | {len(description)} chars | {short_desc}")
     
     if DEBUG:
-        logger.debug(f"Описание:\n{description}")
+        logger.debug(f"Полное описание:\n{description}")
 
 
 # ========================== PROMPTS ==========================
 
 _IMAGE_PROMPT = (
-    "Проанализируй изображение в три шага и оформи ответ строго по этим разделам.\n\n"
-    "1. ДЕТАЛИ: подробно перечисли всё важное, что видишь — людей и их внешность/одежду/позы, "
-    "объекты, текст и логотипы (процитируй дословно), цвета, фон, обстановку, освещение. "
-    "Не сокращай, не обобщай.\n\n"
-    "2. УЗНАВАНИЕ: попробуй опознать конкретных персонажей, людей, мемы, бренды, локации, "
-    "произведения. Если узнал — назови имя и франшизу/источник (например: «Геральт из The Witcher», "
-    "«мем Distracted Boyfriend», «логотип NVIDIA»). Если не уверен — пиши «возможно, это …» с "
-    "альтернативами. Если ничего не узнаёшь — честно напиши «не узнаю конкретных персонажей/брендов».\n\n"
-    "3. ИТОГ: 2-3 предложения для разговорного пересказа — суть и настроение картинки. "
-    "Без вступительных фраз вроде 'на картинке'.\n\n"
-    "Отвечай на русском языке."
+    "Опиши это изображение так, как ты рассказал бы другу в переписке. "
+    "Твой ответ будет передан в текстовый чат, где тебя не видят — только читают твои слова.\n\n"
+    
+    "Что упомянуть обязательно:\n"
+    "• Кто/что в кадре — люди (внешность, одежда, эмоции), объекты, обстановка\n"
+    "• Текст и логотипы (процитируй дословно, если видишь надписи)\n"
+    "• Узнаваемые персонажи, мемы, бренды — назови конкретно (например: «Геральт из The Witcher», "
+    "«мем Distracted Boyfriend», «логотип NVIDIA»). Если не уверен — скажи «похоже на...\". "
+    "Если не узнаёшь — честно напиши, что не опознал\n"
+    "• Настроение, атмосферу, цветовую гамму\n\n"
+    
+    "Важно:\n"
+    "- Говори естественно, без заголовков и пунктов — как в сообщении мессенджера\n"
+    "- Не начинай с «На картинке...» или «Изображение показывает...» — сразу к делу\n"
+    "- Если что-то смешное или странное — можешь добавить лёгкий комментарий\n\n"
+    
+    "Пиши на русском языке."
 )
 
 
 def _video_prompt(duration: float) -> str:
-    intro = "Тебе дано видео"
+    intro = "Это видео"
     if duration > 0:
-        intro += f" длительностью около {duration:.0f} сек"
-    intro += "."
+        intro += f" длиной {duration:.0f} секунд"
+    intro += ". Опиши его так, как рассказал бы другу в переписке — твой ответ уйдёт в текстовый чат."
 
     return (
         f"{intro}\n\n"
-        "Проанализируй видео в три шага и оформи ответ строго по этим разделам.\n\n"
-        "1. ДЕТАЛИ: подробно перечисли что видишь — людей и их внешность/одежду, "
-        "объекты, текст и логотипы (процитируй дословно), обстановку, ключевые действия и "
-        "как сцена меняется со временем.\n\n"
-        "2. УЗНАВАНИЕ: попробуй опознать конкретных персонажей, людей, мемы, бренды, локации, "
-        "произведения, игры, фильмы. Если узнал — назови имя и франшизу/источник. Если не уверен — "
-        "пиши «возможно, это …» с альтернативами. Если ничего не узнаёшь — честно скажи об этом.\n\n"
-        "3. ИТОГ: 3-4 предложения для разговорного пересказа — что происходит и какое настроение. "
-        "Без вступительных фраз вроде 'на видео' или 'в кадрах'.\n\n"
-        "Отвечай на русском языке."
+        "Что упомянуть обязательно:\n"
+        "• Кто/что в кадре, как выглядят, что делают\n"
+        "• Текст и логотипы (процитируй, если видишь надписи)\n"
+        "• Узнаваемые персонажи, мемы, бренды, игры, фильмы — назови конкретно. "
+        "Если не уверен — «похоже на...\". Если не узнал — так и скажи\n"
+        "• Как меняется сцена: начало → развитие → концовка\n"
+        "• Настроение, музыка (если слышна), общая атмосфера\n\n"
+        
+        "Важно:\n"
+        "- Рассказывай естественно, без заголовков и разделов — как в сообщении мессенджера\n"
+        "- Не начинай с «На видео...» или «В кадрах...» — сразу к делу\n"
+        "- Если что-то смешное или странное — можешь прокомментировать\n\n"
+        
+        "Пиши на русском языке."
     )
 
 # ========================== GEMINI API ==========================
@@ -93,9 +105,9 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
     user_text = _IMAGE_PROMPT
     if caption:
         user_text += (
-            f"\n\nПодпись пользователя к картинке: «{caption}». "
-            "Используй её как подсказку — проверь, согласуется ли подпись с тем, что видишь, "
-            "и при узнавании персонажей учитывай её контекст."
+            f"\n\nПользователь добавил подпись к картинке: «{caption}»\n"
+            "Учитывай её при описании — проверь, совпадает ли подпись с тем, что видишь, "
+            "и используй как подсказку для узнавания персонажей."
         )
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -127,14 +139,14 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
             data = r.json()
             description = _gemini_extract_text(data)
             usage = data.get("usageMetadata") or {}
-            _log_description(
-                f"[Gemini:{GEMINI_MODEL}]",
-                description,
-                meta=(
-                    f"tokens prompt={usage.get('promptTokenCount', '?')}, "
-                    f"out={usage.get('candidatesTokenCount', '?')}"
-                ),
+            
+            # Логирование с превью для INFO, полное для DEBUG
+            meta = (
+                f"tokens prompt={usage.get('promptTokenCount', '?')}, "
+                f"out={usage.get('candidatesTokenCount', '?')}"
             )
+            _log_description(f"🖼️ [Gemini:{GEMINI_MODEL}]", description, meta=meta)
+            
             return description
     except Exception as e:
         logger.error(f"Gemini image error: {e}")
@@ -147,6 +159,11 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
     Возвращает file_uri вида files/abc123 или None при ошибке.
     """
     if not GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY not set in .env")
+        return None
+    
+    if not os.path.exists(file_path):
+        logger.error(f"File not found for upload: {file_path}")
         return None
 
     file_size = os.path.getsize(file_path)
@@ -170,10 +187,10 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             r.raise_for_status()
             upload_url = r.headers.get("X-Goog-Upload-URL") or r.headers.get("x-goog-upload-url")
             if not upload_url:
-                logger.error(f"❌ [red]Gemini upload: нет upload URL в ответе[/] ({dict(r.headers)})")
+                logger.error(f"Gemini upload: нет upload URL в ответе")
                 return None
         except Exception as e:
-            logger.error(f"❌ [red]Gemini upload start:[/] {e}")
+            logger.error(f"Gemini upload start: {e}")
             return None
 
         # 2) Загрузка содержимого
@@ -192,9 +209,9 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             file_uri = file_info.get("uri")
             file_name_id = file_info.get("name")  # files/abc123
             if not file_uri:
-                logger.error(f"❌ [red]Gemini upload finalize: нет uri в ответе:[/] {data}")
+                logger.error(f"Gemini upload finalize: нет uri в ответе: {data}")
                 return None
-            logger.info(f"📤 [green]Gemini Files: загружено[/] {file_name_id} ({file_size} байт)")
+            logger.info(f"📤 Gemini Files: загружено {file_name_id} ({file_size} байт)")
 
             # 3) Дождаться, пока файл станет ACTIVE (для видео идёт препроцессинг)
             poll_url = f"{GEMINI_API_BASE}/{file_name_id}"
@@ -205,7 +222,7 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             while wait_time < max_wait_time:
                 pr = await client.get(poll_url, headers={"x-goog-api-key": GEMINI_API_KEY})
                 if pr.status_code != 200:
-                    logger.warning(f"⚠️ [yellow]Gemini poll {pr.status_code}:[/] {pr.text[:200]}")
+                    logger.warning(f"Gemini poll {pr.status_code}: {pr.text[:200]}")
                     await asyncio.sleep(backoff)
                     wait_time += backoff
                     backoff = min(backoff * 1.5, GEMINI_UPLOAD_BACKOFF_MAX)
@@ -215,17 +232,17 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
                 if state == "ACTIVE":
                     return file_uri
                 if state == "FAILED":
-                    logger.error(f"❌ [red]Gemini обработка файла FAILED:[/] {pr.json()}")
+                    logger.error(f"Gemini обработка файла FAILED: {pr.json()}")
                     return None
                 
                 await asyncio.sleep(backoff)
                 wait_time += backoff
                 backoff = min(backoff * 1.5, GEMINI_UPLOAD_BACKOFF_MAX)
 
-            logger.error(f"❌ [red]Gemini upload: файл не стал ACTIVE за {max_wait_time} сек[/]")
+            logger.error(f"Gemini upload: файл не стал ACTIVE за {max_wait_time} сек")
             return None
         except Exception as e:
-            logger.error(f"❌ [red]Gemini upload finalize:[/] {e}")
+            logger.error(f"Gemini upload finalize: {e}")
             return None
 
 
@@ -249,19 +266,19 @@ async def _gemini_delete_file(file_uri: str) -> None:
 async def _gemini_describe_video(video_path: str, mime: str, caption: str, duration: float) -> str:
     """Описывает видео через Gemini API. Не удаляет файл - это ответственность вызывающего кода."""
     if not GEMINI_API_KEY:
-        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
+        logger.error("GEMINI_API_KEY не задан в .env")
         return ""
 
     if not os.path.exists(video_path):
-        logger.error(f"❌ [red]Файл видео не найден:[/] {video_path}")
+        logger.error(f"Файл видео не найден: {video_path}")
         return ""
 
     file_size = os.path.getsize(video_path)
     user_text = _video_prompt(duration)
     if caption:
         user_text += (
-            f"\n\nПодпись пользователя к видео: «{caption}». "
-            "Используй её как подсказку и при узнавании учитывай контекст."
+            f"\n\nПользователь добавил подпись к видео: «{caption}»\n"
+            "Учитывай её при описании — используй как подсказку для узнавания и контекста."
         )
 
     file_uri: str | None = None
@@ -300,7 +317,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"❌ [red]Gemini video API {r.status_code}:[/] {r.text[:300]}")
+                logger.error(f"Gemini video API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             description = _gemini_extract_text(data)
@@ -315,7 +332,8 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
             )
             return description
     except Exception as e:
-        logger.error(f"❌ [red]Gemini video error:[/] {e}")
+        logger.error(f"Gemini video error: {e}")
+        return ""
         return ""
     finally:
         # Подчищаем за собой загруженный файл из Gemini Files API
@@ -324,26 +342,30 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
 
 
 _AUDIO_PROMPT = (
-    "Это голосовое или аудио сообщение. Транскрибируй РЕЧЬ дословно на языке оригинала "
-    "и верни ТОЛЬКО текст сказанного, без комментариев, без кавычек, без префиксов. "
-    "Если речи нет (музыка, шум, звук) — кратко опиши, что слышно, в скобках."
+    "Это голосовое или аудио сообщение из чата. "
+    "Транскрибируй РЕЧЬ дословно на языке оригинала — так, как человек это сказал.\n\n"
+    
+    "Верни ТОЛЬКО текст сказанного:\n"
+    "- Без комментариев, без кавычек, без префиксов «Человек сказал:»\n"
+    "- Если речи нет (музыка, шум, тишина) — кратко опиши, что слышно, в скобках\n"
+    "- Мат, сленг, оговорки — всё как есть, дословно\n"
 )
 
 
 async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = "") -> str:
     """Транскрибирует аудио через Gemini. Файл НЕ удаляет — это делает вызывающий код."""
     if not GEMINI_API_KEY:
-        logger.error("❌ [red]GEMINI_API_KEY не задан в .env[/]")
+        logger.error("GEMINI_API_KEY не задан в .env")
         return ""
 
     if not os.path.exists(audio_path):
-        logger.error(f"❌ [red]Аудиофайл не найден:[/] {audio_path}")
+        logger.error(f"Аудиофайл не найден: {audio_path}")
         return ""
 
     file_size = os.path.getsize(audio_path)
     user_text = _AUDIO_PROMPT
     if caption:
-        user_text += f"\n\nПодпись пользователя: «{caption}»."
+        user_text += f"\n\nПользователь добавил подпись: «{caption}»"
 
     file_uri: str | None = None
 
@@ -381,14 +403,14 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
         async with httpx.AsyncClient(timeout=300.0) as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
-                logger.error(f"❌ [red]Gemini audio API {r.status_code}:[/] {r.text[:300]}")
+                logger.error(f"Gemini audio API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             transcript = _gemini_extract_text(data)
             _log_description(f"🎤 [Gemini:{GEMINI_MODEL}, {file_size} байт]", transcript)
             return transcript
     except Exception as e:
-        logger.error(f"❌ [red]Gemini audio error:[/] {e}")
+        logger.error(f"Gemini audio error: {e}")
         return ""
     finally:
         if file_uri:
@@ -415,7 +437,7 @@ async def describe_video(
     ВАЖНО: Удаление временного файла происходит в finally блоке этой функции.
     """
     if not video_path:
-        logger.error("❌ [red]video_path обязателен[/]")
+        logger.error("video_path обязателен")
         return ""
     
     try:
@@ -442,7 +464,7 @@ async def transcribe_audio(
     ВАЖНО: Удаление временного файла происходит в finally блоке этой функции.
     """
     if not audio_path:
-        logger.error("❌ [red]audio_path обязателен[/]")
+        logger.error("audio_path обязателен")
         return ""
 
     try:

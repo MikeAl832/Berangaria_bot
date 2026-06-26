@@ -52,13 +52,11 @@ TOOLS = [
         "function": {
             "name": "react_to_message",
             "description": (
-                "Set a Telegram emoji reaction on the user's message. This is a real action — "
-                "the emoji appears as a reaction badge on their message, NOT in your text. "
-                "Call this whenever a reaction fits the moment (agreement, laughter, shock, approval, "
-                "trolling, dismissal) — it's a natural part of how you chat, use it freely, not only when asked. "
-                "You may react and also reply with text, or react silently and return an empty response. "
-                "NEVER describe reacting in your text (no '*reacts*', no writing the emoji in the message) — "
-                "call this function instead."
+                "Put an emoji reaction badge on the user's message (NOT in your text). "
+                "This is a real Telegram action — the emoji appears next to their message. "
+                "Use it freely and often to show emotions: agreement 👍, laughter 😂, shock 😱, "
+                "trolling 🤡, approval 🔥. You can react with text reply, or react silently with empty response. "
+                "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
             ),
             "parameters": {
                 "type": "object",

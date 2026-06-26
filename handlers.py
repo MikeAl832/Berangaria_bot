@@ -25,6 +25,28 @@ from utils import (
 logger = logging.getLogger(__name__)
 
 
+def truncate_at_sentence(text: str, max_chars: int) -> str:
+    """Обрезает текст по последнему полному предложению, чтобы не ломать мысль."""
+    if len(text) <= max_chars:
+        return text
+    
+    truncated = text[:max_chars]
+    
+    # Ищем последнюю точку, вопросительный или восклицательный знак
+    for delimiter in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+        last_pos = truncated.rfind(delimiter)
+        if last_pos > max_chars * 0.6:  # нашли в последних 40%
+            return truncated[:last_pos + 1]
+    
+    # Фоллбэк: ищем запятую
+    last_comma = truncated.rfind(', ')
+    if last_comma > max_chars * 0.7:
+        return truncated[:last_comma] + "..."
+    
+    # Последний фоллбэк: обрезаем жёстко
+    return truncated + "..."
+
+
 # ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
 
 def admin_required(func):
@@ -238,8 +260,8 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     ]
     for kind, desc in media_items[:MAX_MEDIA_ITEMS_IN_CONTEXT]:
         tag = "Video description" if kind == "video" else "Image description"
-        # Обрезаем слишком длинные описания
-        desc_truncated = desc[:MAX_DESC_CHARS] + ("..." if len(desc) > MAX_DESC_CHARS else "")
+        # Обрезаем слишком длинные описания по полным предложениям
+        desc_truncated = truncate_at_sentence(desc, MAX_DESC_CHARS)
         message_parts.append(f"[{tag}: {escape_user_text(desc_truncated)}]")
     
     if len(media_items) > MAX_MEDIA_ITEMS_IN_CONTEXT:
