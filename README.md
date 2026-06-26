@@ -5,20 +5,25 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 ## Architecture
 
 - **Main LLM**: DeepSeek v4 Flash (chat, summarization, memory extraction)
-- **Vision**: Google Gemini API (image/video understanding)
-- **Embeddings**: Google Gemini API (memory vectors)
+  - Alternative: DeepSeek v4 Pro for better instruction following
+  - Alternative: Grok-4.3 for superior humor and character consistency
+- **Vision**: Google Gemini 3.1 Flash Lite (image/video/audio understanding)
+- **Embeddings**: Google Gemini Embedding v2 (memory vectors)
 - **Vector Store**: Qdrant (local Docker container)
 - **Memory**: Mem0 (fact extraction and retrieval)
 
 ## Key Features
 
-- Persistent memory scoped per chat (shared in groups, private in DMs)
-- Vision mode for analyzing images and videos
-- Web search tool for current information
-- Automatic conversation summarization
-- Token usage tracking and cost estimation
-- Configurable random replies in groups
-- Message buffering for rapid consecutive messages
+- **Long-term memory** scoped per chat (shared in groups, private in DMs)
+- **Multi-modal understanding**: images, videos, stickers, voice messages, and audio
+- **Web search tool** for current information with URL reading capability
+- **Telegram reactions** via function calling for natural emoji responses
+- **Automatic conversation summarization** with token budget management
+- **Smart message buffering** for rapid consecutive messages (4-second debounce)
+- **Configurable random replies** in groups with cooldown
+- **Token usage tracking** and cost estimation with cache hit rates
+- **Media description caching** to avoid re-processing repeated content
+- **Emoji-free text responses** with strict filtering (reactions via function only)
 
 ## Prerequisites
 
@@ -93,19 +98,37 @@ Only user messages are stored (bot replies and media descriptions excluded). Fac
 ### Vision Processing
 
 When media is received:
-1. Gemini API analyzes the image/video
-2. Structured description generated (DETAILS / RECOGNITION / SUMMARY)
-3. Description injected as `[Image description: ...]` or `[Video description: ...]`
-4. Main LLM responds to description as if it saw the media
+1. **Images/Stickers**: Gemini analyzes and provides natural conversational description
+2. **Videos**: Full video processing (no frame extraction) with timeline understanding
+3. **Voice/Audio**: Speech transcription with diarization support
+4. Description injected as `[Image description: ...]`, `[Video description: ...]`, or transcript
+5. Main LLM responds as if it observed the media directly
 
-Video processing: Gemini handles full video natively (no frame extraction needed). Max duration controlled by `video_max_duration_sec`.
+**Supported formats:**
+- Images: JPEG, PNG, WebP (static stickers)
+- Video: MP4, WebM (including video stickers and circles)
+- Audio: OGG, MP3, WAV (voice messages and audio files)
+
+**Smart features:**
+- Inline processing for small files (<18MB)
+- Resumable upload for larger files via Gemini Files API
+- Automatic cleanup of temporary files
+- Media description caching (keyed by `file_unique_id`)
+- Duration limits: 60s for video, 300s for audio (configurable)
+
+**Natural language prompts:**
+Vision prompts redesigned for conversational output instead of structured reports. Gemini describes media as if explaining to a friend, making integration with chat LLM seamless.
 
 ### Conversation Management
 
-- Token budgeting per chat with automatic summarization at 85% capacity
-- Manual summarization via `/summarize` command
-- Summary generation uses DeepSeek with specialized prompt
-- History preserved as `[Previous conversation summary: ...]`
+- **Token budgeting** per chat with automatic summarization at 85% capacity (configurable via `max_context_tokens`)
+- **Manual summarization** via `/summarize` command (admin-only in groups if `admin_mode: true`)
+- **Summary generation** uses DeepSeek with specialized prompt preserving key facts
+- **History preservation** as `[Previous conversation summary: ...]` message
+- **Message debouncing** (4 seconds) to merge rapid consecutive messages from same user
+- **Smart media handling**: descriptions truncated at sentence boundaries (max 800 chars/item)
+- **Random reply system**: system-level instructions for natural spontaneous responses
+- **Time-aware context**: 3+ hour gaps treated as new conversations
 
 ## Commands
 
@@ -149,16 +172,33 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### DeepSeek (per 1M tokens)
+### DeepSeek v4 Flash (per 1M tokens)
 - Regular input: $0.14
 - Cached input: $0.0028 (50x cheaper)
 - Output: $0.28
+- **Typical usage**: 1000 messages ≈ $1 (with 70-80% cache hit rate)
 
-Typical usage: 1000 messages ~$1.00 (with 80% cache hit rate)
+### DeepSeek v4 Pro (per 1M tokens)
+- Regular input: $0.55
+- Cached input: $0.011
+- Output: $2.19
+- **Typical usage**: 1000 messages ≈ $4 (better instruction following)
 
-### Gemini
-- Vision: Free (free tier)
-- Embeddings: Free (free tier)
+### Grok-4.3 (per 1M tokens)
+- Input: $1.25
+- Output: $2.50
+- **Typical usage**: 1000 messages ≈ $9 (best for character/humor)
+
+### Gemini (Vision & Embeddings)
+- Vision: Free tier (15 requests/min, 1500 requests/day)
+- Embeddings: Free tier (1500 requests/day)
+- Files API: Free tier (20GB storage)
+
+**Model selection guide:**
+- **Flash**: Best value for general conversations ($1/1000)
+- **Pro**: Better instruction following, less drift ($4/1000)
+- **Grok**: Superior character consistency and humor ($9/1000)
+- **Hybrid**: Use Grok for banter, Flash for facts (≈$4-5/1000)
 
 ## Debug Mode
 
@@ -171,29 +211,76 @@ Set `debug: true` in config.yaml for detailed logging:
 
 ## Troubleshooting
 
-**Vision not working**: Check `GEMINI_API_KEY` in .env and `vision_mode: true` in config.yaml
+**Vision not working**: 
+- Check `GEMINI_API_KEY` in .env
+- Verify `vision_mode: true` in config.yaml
+- Check Gemini API quota (free tier: 15 req/min)
 
-**Memory errors**: Ensure Qdrant is running (`docker ps`) and embedding model name is correct (`models/text-embedding-004`)
+**Memory errors**: 
+- Ensure Qdrant is running: `docker ps`
+- Verify embedding model: `gemini-embedding-2` (768 dimensions)
+- Check Qdrant logs: `docker logs qdrant`
 
-**High costs**: Check cache hit rate in logs (should be 70-90% after warmup)
+**High costs**: 
+- Check cache hit rate in logs (should be 70-90% after warmup)
+- Consider switching to DeepSeek v4 Pro if Flash hallucinates
+- Monitor token usage with `/stats` command
 
-**Nothing remembered**: Enable debug mode, check memory saves in logs, lower `memory_min_score` to 0.1
+**Bot uses emojis in text**:
+- Emojis are automatically filtered from responses
+- Check logs for `_clean_reply` function output
+- Ensure bot restarted after recent updates
 
-For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md).
+**Random replies too frequent/rare**:
+- Adjust with `/random <0-100>` command
+- Check cooldown settings in config.yaml
+- Verify `random_reply_chance` and `random_reply_cooldown`
 
-## Changes from Previous Version
+**Media descriptions cut off**:
+- Descriptions auto-truncate at sentence boundaries (800 chars)
+- Increase `MAX_DESC_CHARS` in handlers.py if needed
+- Check logs for truncation warnings
 
-**Removed**:
-- LM Studio support (full cloud migration)
-- Local vision models (Qwen3-VL)
-- Local embedding models (HuggingFace)
-- Multi-provider complexity
+For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md) and [PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md).
 
-**Simplified**:
-- Single LLM provider (DeepSeek)
-- Single vision provider (Gemini)
-- Single embedding provider (Gemini)
-- Cleaner configuration structure
+## Documentation
+
+- **[CONFIG_README.md](CONFIG_README.md)**: Complete configuration reference
+- **[PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md)**: Deep analysis of system prompts and quality improvements
+- **[VISION_QUALITY_GUIDE.md](VISION_QUALITY_GUIDE.md)**: Vision prompt optimization guide
+- **[LOGGING_GUIDE.md](LOGGING_GUIDE.md)**: Logging system documentation
+- **[LOGGING_CHEATSHEET.md](LOGGING_CHEATSHEET.md)**: Quick logging reference
+
+## Recent Improvements (January 2026)
+
+**System prompt optimization**:
+- Clearer separation: "read tags vs don't write tags" to prevent confusion
+- New `EMOJIS AND REACTIONS` section with explicit examples
+- Removed duplicate CRITICAL RULE statements
+- Added emoji auto-filtering in `_clean_reply()` function
+
+**Vision prompt redesign**:
+- Natural conversational style instead of structured reports
+- Prompts designed for seamless integration with chat LLM
+- Removed technical section headers (DETAILS/RECOGNITION/SUMMARY)
+- Better recognition instructions with "похоже на..." for uncertainty
+
+**Smart truncation**:
+- Media descriptions now truncate at sentence boundaries
+- Prevents broken thoughts in context injection
+- Falls back to comma-based or hard truncation if needed
+
+**Random reply improvements**:
+- Moved from user message injection to system-level instruction
+- Clearer directive: "reply only to current, ignore older"
+- Added "don't mention silence" to avoid meta-commentary
+
+**Tools optimization**:
+- Shortened `react_to_message` description (180→80 words)
+- Cross-reference between SYSTEM_PROMPT and tool definitions
+- Emphasis on reaction frequency and silent-reaction option
+
+See [PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md) for detailed analysis.
 
 ## License
 
