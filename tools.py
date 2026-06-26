@@ -52,20 +52,20 @@ TOOLS = [
         "function": {
             "name": "react_to_message",
             "description": (
-                "Add an emoji reaction to the user's message — instead of or alongside a text reply. "
-                "Use when a reaction is more appropriate than words: agreement, laughter, shock, approval, trolling. "
-                "You can react silently: just return an empty response after calling this."
+                "Set a Telegram emoji reaction on the user's message. This is a real action — "
+                "the emoji appears as a reaction badge on their message, NOT in your text. "
+                "Call this whenever a reaction fits the moment (agreement, laughter, shock, approval, "
+                "trolling, dismissal) — it's a natural part of how you chat, use it freely, not only when asked. "
+                "You may react and also reply with text, or react silently and return an empty response. "
+                "NEVER describe reacting in your text (no '*reacts*', no writing the emoji in the message) — "
+                "call this function instead."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "emoji": {
                         "type": "string",
-                        "description": (
-                            "Single emoji from allowed Telegram reactions: "
-                            "👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 💯 🤣 ⚡ "
-                            "🏆 💔 🤨 😐 🖕 😈 😴 😭 🤓 👻 👀 🙈 🤝 🫡 🤪 🗿 🆒 😘 😎 🤷 😡"
-                        )
+                        "description": "A single emoji character to react with (a common Telegram reaction)."
                     }
                 },
                 "required": ["emoji"]
