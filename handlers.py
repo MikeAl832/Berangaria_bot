@@ -259,7 +259,12 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         for m in messages if m.get("media_description")
     ]
     for kind, desc in media_items[:MAX_MEDIA_ITEMS_IN_CONTEXT]:
-        tag = "Video description" if kind == "video" else "Image description"
+        if kind == "video":
+            tag = "Video description"
+        elif kind == "audio":
+            tag = "Audio description"
+        else:
+            tag = "Image description"
         # Обрезаем слишком длинные описания по полным предложениям
         desc_truncated = truncate_at_sentence(desc, MAX_DESC_CHARS)
         message_parts.append(f"[{tag}: {escape_user_text(desc_truncated)}]")
@@ -679,12 +684,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Не смогли распознать — отдадим хотя бы пометку, чтобы бот не молчал
         await queue_message(update, context, text="",
                             media_description="(голосовое сообщение, не удалось распознать)",
-                            media_kind="image")
+                            media_kind="audio")
         return
 
     logger.info(f"🎤 [cyan]Транскрипция:[/] {transcript[:80]}{'...' if len(transcript) > 80 else ''}")
-    # Транскрипт — это и есть слова пользователя, передаём как обычный текст
-    await queue_message(update, context, text=transcript)
+    # Транскрипт передаём как audio description, чтобы модель понимала что это услышанное
+    await queue_message(update, context, text=caption,
+                        media_description=transcript, media_kind="audio")
 
 
 # Троттлинг алертов админу, чтобы не спамить при серии ошибок

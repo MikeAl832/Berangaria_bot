@@ -55,7 +55,8 @@ TOOLS = [
                 "Put an emoji reaction badge on the user's message (NOT in your text). "
                 "This is a real Telegram action — the emoji appears next to their message. "
                 "Use it freely and often to show emotions: agreement 👍, laughter 😂, shock 😱, "
-                "trolling 🤡, approval 🔥. You can react with text reply, or react silently with empty response. "
+                "trolling 🤡, approval 🔥. PREFER reaction-only (silent, no text) for simple acknowledgment. "
+                "Add text only if you have something specific to say. "
                 "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
             ),
             "parameters": {
