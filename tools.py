@@ -52,11 +52,12 @@ TOOLS = [
         "function": {
             "name": "react_to_message",
             "description": (
-                "Put an emoji reaction badge on the user's message (NOT in your text). "
-                "This is a real Telegram action — the emoji appears next to their message. "
+                "Put an emoji reaction badge on a message (NOT in your text). "
+                "This is a real Telegram action — the emoji appears next to that message. "
                 "Use it freely and often to show emotions: agreement 👍, laughter 😂, shock 😱, "
-                "trolling 🤡, approval 🔥. PREFER reaction-only (silent, no text) for simple acknowledgment. "
+                "trolling 🤡, approval 🔥. PREFER reaction-only (no text) for simple acknowledgment. "
                 "Add text only if you have something specific to say. "
+                "By default it reacts to the latest message; pass the [#N] handle as 'id' to react to a specific earlier one. "
                 "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
             ),
             "parameters": {
@@ -65,9 +66,41 @@ TOOLS = [
                     "emoji": {
                         "type": "string",
                         "description": "A single emoji character to react with (a common Telegram reaction)."
+                    },
+                    "id": {
+                        "type": "integer",
+                        "description": "Optional [#N] handle of the message to react to. Omit to react to the latest message."
                     }
                 },
                 "required": ["emoji"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reply_to_message",
+            "description": (
+                "Send your message as a Telegram REPLY to a specific earlier message, identified by its [#N] handle "
+                "(shown at the very start of each incoming message, e.g. [#7]). "
+                "In a normal back-and-forth you do NOT need this — just answer with plain text. "
+                "Use it only when you deliberately want to answer an EARLIER or different message than the latest one "
+                "(e.g. you were pinged and want to pick up something said a few messages ago). "
+                "Pass the number from [#N] as 'id' and your reply as 'text'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The [#N] handle number of the message you want to reply to."
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Your reply text (plain text, no service tags, no emoji)."
+                    }
+                },
+                "required": ["id", "text"]
             }
         }
     },

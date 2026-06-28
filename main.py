@@ -25,7 +25,8 @@ from config import (
 import state
 from handlers import (
     start, clear, stats, random_chance, summarize_command,
-    handle_message, handle_media, handle_video, handle_sticker, handle_voice, error_handler
+    handle_message, handle_media, handle_video, handle_sticker, handle_voice,
+    handle_edited_message, handle_chat_event, error_handler
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -220,6 +221,10 @@ def main():
     app.add_handler(CommandHandler("random", random_chance))
     app.add_handler(CommandHandler("summarize", summarize_command))
 
+    # Правки сообщений: ловим раньше основных хендлеров, чтобы обновить текст в буфере,
+    # пока сообщение ещё не ушло в DeepSeek (фильтр матчит только edited_message)
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_edited_message))
+
     # Текстовые сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
@@ -231,6 +236,12 @@ def main():
     ))
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+
+    # Служебные события группы: смена названия / фото / удаление фото
+    app.add_handler(MessageHandler(
+        filters.StatusUpdate.NEW_CHAT_TITLE | filters.StatusUpdate.NEW_CHAT_PHOTO | filters.StatusUpdate.DELETE_CHAT_PHOTO,
+        handle_chat_event
+    ))
 
     app.add_error_handler(error_handler)
 

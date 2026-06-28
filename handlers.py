@@ -277,9 +277,13 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     async with get_history_lock(key):
         if key not in histories:
             histories[key] = []
-        
+
         history = histories[key]
-        history.append({"role": "user", "content": message_content})
+        # Стабильный уникальный номер сообщения для reply по [#N] (не меняется до суммаризации/clear)
+        # и telegram message_id последнего сообщения буфера — на него ляжет реплай.
+        next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
+        last_mid = messages[-1].get("message_id")
+        history.append({"role": "user", "content": message_content, "sid": next_sid, "mid": last_mid})
         histories[key] = history
         touch_activity(key)  # Обновляем время активности
         state.save_history(key)  # Персистим историю на диск
@@ -292,7 +296,7 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         return
 
     await update.message.chat.send_action(action="typing")
-    await send_llm_request(update, context, key, history, user_name, user_id, is_group, random_reply, reason)
+    await send_llm_request(update, context, key, history, user_name, user_id, is_group, random_reply, reason, mentioned)
 
 
 def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> bool:
@@ -375,7 +379,8 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text,
-        "forward_info": forward_info
+        "forward_info": forward_info,
+        "message_id": update.message.message_id
     }
 
     # Запускаем новый таймер
@@ -433,6 +438,106 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await queue_message(update, context, text=user_text)
+
+
+async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Пользователь отредактировал сообщение. Если оно ещё НЕ ушло в DeepSeek
+    (лежит в дебаунс-буфере), обновляем его текст по message_id, чтобы модель
+    увидела финальную версию. Уже сброшенные в историю/отправленные — не трогаем.
+    """
+    edited = update.edited_message
+    if edited is None or edited.from_user is None:
+        return
+    if edited.from_user.id == context.bot.id:
+        return
+
+    chat_id = edited.chat.id
+    user_id = edited.from_user.id
+    new_text = edited.text or edited.caption or ""
+    buffer_key = f"{chat_id}_{user_id}"
+
+    async with _buffer_lock:
+        data = message_buffer.get(buffer_key)
+        if not data:
+            # Буфер уже сброшен — правка опоздала, ничего не делаем
+            return
+        for m in data["messages"]:
+            if m.get("message_id") == edited.message_id:
+                old_text = m.get("text", "")
+                m["text"] = new_text
+                logger.info(
+                    f"✏️ [cyan]Правка в буфере[/] (msg_id={edited.message_id}): "
+                    f"'{old_text[:40]}' → '{new_text[:40]}'"
+                )
+                break
+
+
+async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Служебные события группы: смена названия / фото / удаление фото.
+    Пишем событие в историю (бот в курсе изменений) и всегда реагируем в характере.
+    При смене фото — прогоняем новое фото через vision, чтобы Ber комментировал картинку.
+    """
+    msg = update.message
+    if msg is None or msg.from_user is None:
+        return
+    if msg.from_user.id == context.bot.id:
+        return
+
+    chat_id = msg.chat.id
+    user_id = msg.from_user.id
+    user_name = msg.from_user.first_name
+    is_group = msg.chat.type in ['group', 'supergroup']
+    if not is_group:
+        return
+
+    if not _check_access_permissions(chat_id, user_id, is_group):
+        return
+
+    # Описываем событие
+    media_desc = None
+    if msg.new_chat_title:
+        event_text = f'changed the group name to "{escape_user_text(msg.new_chat_title)}"'
+    elif msg.delete_chat_photo:
+        event_text = "removed the group photo"
+    elif msg.new_chat_photo:
+        event_text = "changed the group photo"
+        if VISION_MODE:
+            try:
+                photo = msg.new_chat_photo[-1]  # самый крупный размер
+                image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
+                media_desc = await describe_image_bytes(image_bytes, mime, caption="Это новое фото группы.")
+            except Exception as e:
+                logger.error(f"❌ [red]Не удалось разобрать новое фото группы:[/] {e}")
+    else:
+        return
+
+    logger.info(f"📢 [magenta]Событие группы[/] [[blue]{msg.chat.title or chat_id}[/]] {user_name}: {event_text}")
+
+    now = datetime.now()
+    timestamp = f"{now.hour:02d}:{now.minute:02d}"
+
+    parts = [f"[User: {user_name}] [Time: {timestamp}] [Event: {event_text}]"]
+    if media_desc:
+        parts.append(f"[Image description: {escape_user_text(media_desc)}]")
+    content = " ".join(parts)
+
+    key = get_history_key(chat_id, False)
+
+    async with get_history_lock(key):
+        if key not in histories:
+            histories[key] = []
+        history = histories[key]
+        next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
+        history.append({"role": "user", "content": content, "sid": next_sid, "mid": msg.message_id})
+        histories[key] = history
+        touch_activity(key)
+        state.save_history(key)
+
+    await msg.chat.send_action(action="typing")
+    # mentioned=True — событие заметное, реагируем всегда; reply ляжет на служебное сообщение
+    await send_llm_request(update, context, key, history, user_name, user_id, is_group, False, "event", True)
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):

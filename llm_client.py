@@ -129,6 +129,46 @@ def _build_system_prompt() -> str:
     return system_prompt
 
 
+def _render_history_for_api(history: list) -> list:
+    """
+    Готовит копию истории для отправки в API.
+    - В начало каждого user-сообщения подставляет стабильный reply-хэндл [#sid].
+    - Выкидывает служебные ключи (sid/mid), которых не должно быть в payload.
+    Сам тег [#N] нигде не хранится — он живёт только в этой эфемерной копии,
+    поэтому история, память и суммаризация остаются чистыми, а префикс стабилен (cache hit).
+    """
+    out = []
+    for m in history:
+        content = m.get("content", "")
+        sid = m.get("sid")
+        if sid is not None and m.get("role") == "user":
+            content = f"[#{sid}] {content}"
+        out.append({"role": m.get("role"), "content": content})
+    return out
+
+
+def _build_sid_map(history: list) -> dict:
+    """Карта {sid -> telegram message_id} по текущей истории (для reply/react по [#N])."""
+    return {
+        m["sid"]: m.get("mid")
+        for m in history
+        if m.get("role") == "user" and m.get("sid") is not None
+    }
+
+
+def _renumber_sids(entries: list) -> None:
+    """
+    Перенумеровывает [#N] у user-сообщений с 1. Вызывается после суммаризации:
+    старые сообщения ушли в резюме, оставшиеся свежие получают новые номера с #1.
+    Бесплатно для кэша, т.к. суммаризация и так перестраивает префикс.
+    """
+    seq = 0
+    for m in entries:
+        if m.get("role") == "user" and m.get("sid") is not None:
+            seq += 1
+            m["sid"] = seq
+
+
 def _clean_reply(reply: str) -> str:
     """Чистит ответ модели от служебных токенов, эмодзи и лишней финальной точки."""
     reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
@@ -301,9 +341,13 @@ def flush_pending_memory_blocking() -> None:
 async def summarize_history(history: list) -> list:
     to_summarize = history[:-SUMMARY_INTERVAL]
     keep_recent = history[-SUMMARY_INTERVAL:]
-    
+
     if not to_summarize:
         return history
+
+    # Старые сообщения уходят в резюме (их [#N] исчезают), у оставшихся свежих
+    # сбрасываем нумерацию с #1, чтобы номера не росли бесконечно.
+    _renumber_sids(keep_recent)
     
     # Формируем текст для локальной модели
     text_to_summarize = "\n".join([
@@ -363,9 +407,9 @@ async def summarize_history(history: list) -> list:
 
 
 async def send_llm_request(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, 
-    history: list, user_name: str, user_id: int, is_group: bool, 
-    random_reply: bool, reason: str):
+    update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
+    history: list, user_name: str, user_id: int, is_group: bool,
+    random_reply: bool, reason: str, mentioned: bool = False):
 
     # Автосуммаризация при достижении 85% от лимита токенов
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
@@ -377,7 +421,9 @@ async def send_llm_request(
             save_history(key)
 
     system_prompt = _build_system_prompt()
-    payload_messages = [{"role": "system", "content": system_prompt}] + history
+    # В payload подставляем reply-хэндлы [#N] (только в копию, история остаётся чистой)
+    payload_messages = [{"role": "system", "content": system_prompt}] + _render_history_for_api(history)
+    sid_to_mid = _build_sid_map(history)
 
     if memory:
         try:
@@ -426,20 +472,61 @@ async def send_llm_request(
         except Exception as e:
             logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
-    if random_reply and is_group:
-        # Добавляем system message перед последним user сообщением
-        payload_messages.insert(-1, {
-            "role": "system",
-            "content": (
-                "You decided to respond randomly to the next message. "
-                "Reply only to it, ignore any older unanswered messages. "
-                "Don't mention that you were silent before — just give a natural reaction to the current moment."
-            )
-        })
-            
     status_message = None
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
-    reacted = False    # бот поставил реакцию — допускаем пустой текстовый ответ
+    reacted = False    # бот поставил реакцию — допускаем ответ без текста
+
+    async def _deliver(text: str, target_mid, status_msg):
+        """
+        Отправляет text в чат.
+        target_mid is not None — реплаем на это сообщение; None — обычным сообщением без reply.
+        Переиспользует статусную плашку поиска только если ответ идёт на текущее сообщение.
+        HTML с фолбэком на чистый текст; длинное режет по 4096.
+        """
+        reply_html = markdown_to_html(text)
+        reply_plain = strip_markdown(text)
+        chat_id = update.effective_chat.id
+        thread_id = getattr(update.message, "message_thread_id", None)
+
+        # Статусную плашку (она висит реплаем на триггере) можно дописать только
+        # если итоговый ответ адресован тому же триггерному сообщению.
+        if status_msg is not None:
+            if target_mid == update.message.message_id and len(reply_html) <= 4096:
+                try:
+                    await status_msg.edit_text(reply_html, parse_mode="HTML")
+                    return
+                except Exception as e:
+                    logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+        async def _raw(body: str, html: bool):
+            kw = {"chat_id": chat_id, "text": body}
+            if thread_id is not None:
+                kw["message_thread_id"] = thread_id
+            if target_mid is not None:
+                kw["reply_to_message_id"] = target_mid
+                kw["allow_sending_without_reply"] = True  # если целевое удалено — шлём без реплая
+            if html:
+                kw["parse_mode"] = "HTML"
+            await context.bot.send_message(**kw)
+
+        if len(reply_html) <= 4096:
+            try:
+                await _raw(reply_html, True)
+            except Exception as e:
+                logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
+                await _raw(reply_plain, False)
+        else:
+            # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
+            for i in range(0, len(reply_plain), 4096):
+                chunk = reply_plain[i:i + 4096]
+                if thread_id is not None:
+                    await context.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=chunk)
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         if DEBUG:
@@ -538,6 +625,7 @@ async def send_llm_request(
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     payload_messages.append(message)
                     used_tool = True  # дальше отвечаем на холодной температуре
+                    pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
 
                     for tool_call in message['tool_calls']:
                         func_name = tool_call['function']['name']
@@ -611,14 +699,25 @@ async def send_llm_request(
 
                         elif func_name == 'react_to_message':
                             emoji = (args.get('emoji') or '').strip()
+                            try:
+                                react_sid = int(args.get('id'))
+                            except (TypeError, ValueError):
+                                react_sid = None
+                            react_mid = sid_to_mid.get(react_sid) if react_sid is not None else None
+                            if react_mid is None:
+                                react_mid = update.message.message_id
                             if emoji not in ALLOWED_REACTIONS:
                                 tool_result = f"Эмодзи '{emoji}' не разрешён Telegram. Ответь текстом или выбери из списка."
                             else:
                                 try:
-                                    await update.message.set_reaction(reaction=emoji)
+                                    await context.bot.set_message_reaction(
+                                        chat_id=update.effective_chat.id,
+                                        message_id=react_mid,
+                                        reaction=emoji
+                                    )
                                     reacted = True
-                                    logger.info(f"😀 [magenta]Реакция:[/] {emoji}")
-                                    tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — верни пустой ответ."
+                                    logger.info(f"😀 [magenta]Реакция:[/] {emoji} → [#{react_sid if react_sid is not None else 'текущее'}]")
+                                    tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — можешь обойтись без текста."
                                 except Exception as e:
                                     logger.warning(f"⚠️ [yellow]Не удалось поставить реакцию {emoji}:[/] {e}")
                                     tool_result = "Не удалось поставить реакцию, ответь текстом."
@@ -629,6 +728,23 @@ async def send_llm_request(
                                 "content": tool_result
                             })
 
+                        elif func_name == 'reply_to_message':
+                            try:
+                                reply_sid = int(args.get('id'))
+                            except (TypeError, ValueError):
+                                reply_sid = None
+                            reply_text = args.get('text', '') or ''
+                            reply_mid = sid_to_mid.get(reply_sid)
+                            if reply_mid is None:
+                                # Невалидный/устаревший [#N] — отвечаем на текущее сообщение
+                                reply_mid = update.message.message_id
+                            pending_reply = (reply_mid, reply_text, reply_sid)
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": "Ответ отправлен пользователю."
+                            })
+
                         else:
                             # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
                             payload_messages.append({
@@ -636,6 +752,32 @@ async def send_llm_request(
                                 "tool_call_id": tool_call['id'],
                                 "content": f"Инструмент '{func_name}' не поддерживается."
                             })
+
+                    # reply_to_message терминальный и приоритетный: если модель его вызвала,
+                    # отправляем выбранный ответ и завершаем — без ещё одного витка к API
+                    # и без дефолтного реплая ниже (двойной отправки не будет).
+                    if pending_reply is not None:
+                        reply_mid, reply_text, reply_sid = pending_reply
+                        reply_text = _clean_reply(reply_text)
+                        api_call_count[key] = api_call_count.get(key, 0) + 1
+                        if reply_text:
+                            async with get_history_lock(key):
+                                history.append({"role": "assistant", "content": reply_text})
+                                histories[key] = history
+                                touch_activity(key)
+                                save_history(key)
+                            logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
+                            await _deliver(reply_text, reply_mid, status_message)
+                        else:
+                            # reply без текста — отправлять нечего (пустых сообщений не шлём)
+                            if not reacted:
+                                logger.warning("⚠️ [yellow]reply_to_message без текста и без реакции — ничего не отправляю[/]")
+                            if status_message:
+                                try:
+                                    await status_message.delete()
+                                except Exception:
+                                    pass
+                        return
 
                     continue
 
@@ -666,15 +808,15 @@ async def send_llm_request(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    if reacted:
-                        # Бот ограничился реакцией — это валидный ответ, текст не нужен
-                        if status_message:
-                            try:
-                                await status_message.delete()
-                            except Exception:
-                                pass
-                        return
-                    await update.message.reply_text("❌ Пустой ответ от модели.")
+                    # Реакция без текста — валидный ответ. Если ни текста, ни реакции —
+                    # это вырожденный случай: пустых сообщений в чат не шлём, просто молча выходим.
+                    if not reacted:
+                        logger.warning(f"⚠️ [yellow]Пустой ответ модели без реакции[/] (ключ={key}) — ничего не отправляю")
+                    if status_message:
+                        try:
+                            await status_message.delete()
+                        except Exception:
+                            pass
                     return
 
                 if finish_reason == 'length':
@@ -691,42 +833,11 @@ async def send_llm_request(
                 # реплики юзеров копятся в state.pending_memory (см. record_user_memory)
                 # и флашатся по достижении лимита символов (memory v2).
 
-                if is_group and not random_reply and reason != "reply":
-                    reply = f"{reply}"
-
-                # Готовим HTML-версию и чистый текст на случай, если HTML не распарсится
-                reply_html = markdown_to_html(reply)
-                reply_plain = strip_markdown(reply)
-
-                async def _send_reply_as_new():
-                    """Новым сообщением: HTML с фолбэком на чистый текст; длинное режем по 4096."""
-                    if len(reply_html) <= 4096:
-                        try:
-                            await update.message.reply_text(reply_html, parse_mode="HTML")
-                        except Exception as e:
-                            logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
-                            await update.message.reply_text(reply_plain)
-                    else:
-                        # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
-                        for i in range(0, len(reply_plain), 4096):
-                            await update.message.reply_text(reply_plain[i:i + 4096])
-
-                if status_message:
-                    edited = False
-                    if len(reply_html) <= 4096:
-                        try:
-                            await status_message.edit_text(reply_html, parse_mode="HTML")
-                            edited = True
-                        except Exception as e:
-                            logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
-                    if not edited:
-                        try:
-                            await status_message.delete()
-                        except Exception:
-                            pass
-                        await _send_reply_as_new()
-                else:
-                    await _send_reply_as_new()
+                # Модель не выбрала инструмент reply_to_message:
+                # адресное обращение → реплай на триггер (как раньше);
+                # ambient (случайный пинг) → обычное сообщение без reply.
+                target_mid = update.message.message_id if mentioned else None
+                await _deliver(reply, target_mid, status_message)
                 return
 
             except httpx.ConnectError:
@@ -749,7 +860,7 @@ async def send_llm_request(
 async def generate_and_send_tiktok_review(bot, chat_id, message_id, key, history, message_thread_id=None):
     """Generates a review for a TikTok video using DeepSeek and replies to the Telegram message."""
     system_prompt = _build_system_prompt()
-    payload_messages = [{"role": "system", "content": system_prompt}] + history
+    payload_messages = [{"role": "system", "content": system_prompt}] + _render_history_for_api(history)
 
     payload = {
         "model": MODEL,

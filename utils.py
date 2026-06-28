@@ -105,9 +105,9 @@ def escape_user_text(text: str) -> str:
     
     # Список служебных тегов, которые могут конфликтовать с форматом промпта
     service_tags = [
-        'User', 'Time', 'Message', 'Reply to', 'Quoted message',
-        'Image description', 'Video description', 'Context from memory',
-        'Forwarded from'
+        'User', 'Time', 'Message', 'Event', 'Reply to', 'Quoted message',
+        'Image description', 'Video description', 'Audio description',
+        'Context from memory', 'Forwarded from'
     ]
     
     # Экранируем только потенциально опасные паттерны
@@ -119,7 +119,11 @@ def escape_user_text(text: str) -> str:
             text,
             flags=re.DOTALL | re.IGNORECASE
         )
-    
+
+    # Нейтрализуем поддельные reply-хэндлы [#5] в тексте пользователя, чтобы их
+    # нельзя было выдать за наш служебный тег. Наш настоящий [#N] добавляется отдельно.
+    text = re.sub(r'\[#(\d+)\]', r'(#\1)', text)
+
     return text
 
 
