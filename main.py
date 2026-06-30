@@ -16,7 +16,8 @@ from config import DEBUG, VERBOSE
 
 setup_logging(level=logging.INFO, log_file='bot.log', debug=DEBUG, verbose=VERBOSE)
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters
 
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
@@ -26,7 +27,7 @@ import state
 from handlers import (
     start, clear, stats, random_chance, summarize_command,
     handle_message, handle_media, handle_video, handle_sticker, handle_voice,
-    handle_edited_message, handle_chat_event, error_handler
+    handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -243,6 +244,10 @@ def main():
         handle_chat_event
     ))
 
+    # Реакции на сообщения бота (пассивно фиксируем, чтобы он о них знал).
+    # Требует allowed_updates с message_reaction (ниже) и админства бота в группах.
+    app.add_handler(MessageReactionHandler(handle_message_reaction))
+
     app.add_error_handler(error_handler)
 
     logger.info(f"🎲 Шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]")
@@ -261,7 +266,9 @@ def main():
     tiktok_queue_task = loop.create_task(poll_tiktok_queue(app.bot))
     
     try:
-        app.run_polling(drop_pending_updates=True)
+        # allowed_updates=ALL_TYPES — иначе Telegram НЕ присылает message_reaction.
+        # Лишние типы без хендлеров просто игнорируются.
+        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         logger.info("🛑 [yellow]Получен сигнал остановки...[/]")
     finally:

@@ -139,11 +139,40 @@ def _render_history_for_api(history: list) -> list:
     """
     out = []
     for m in history:
+        role = m.get("role")
         content = m.get("content", "")
         sid = m.get("sid")
-        if sid is not None and m.get("role") == "user":
+        if sid is not None and role == "user":
             content = f"[#{sid}] {content}"
-        out.append({"role": m.get("role"), "content": content})
+
+        # Реакции (свои и входящие) отдаём ОТДЕЛЬНОЙ системной строкой, а не текстом ассистента:
+        # так модель воспринимает это как факт-действие и не начинает печатать «(реакция…)»
+        # в свои реплики. В историю/память/суммарайз попадают только структурные поля,
+        # сама нота эфемерна — живёт лишь в этой копии (как тег [#N]).
+        reactions = m.get("reactions") if role == "assistant" else None          # что бот поставил сам
+        incoming = m.get("incoming_reactions") if role == "assistant" else None  # что поставили ему
+        if reactions or incoming:
+            if content:
+                out.append({"role": "assistant", "content": content})
+            notes = []
+            if reactions:
+                parts = []
+                for r in reactions:
+                    on = (r.get("on") or "").strip()
+                    parts.append(f"{r.get('emoji', '')} на «{on}»" if on else r.get("emoji", ""))
+                notes.append("Ты поставила реакцию " + ", ".join(parts) + ".")
+            if incoming:
+                quote = content.strip()
+                quote = (quote[:40] + "…") if len(quote) > 40 else quote
+                who = ", ".join(f"{r.get('emoji', '')} ({r.get('from', 'кто-то')})" for r in incoming)
+                target = f"твоё сообщение «{quote}»" if quote else "твоё сообщение"
+                notes.append(f"На {target} поставили реакции: {who}.")
+            out.append({
+                "role": "system",
+                "content": " ".join(notes) + " (это действия в чате, не текст).",
+            })
+        else:
+            out.append({"role": role, "content": content})
     return out
 
 
@@ -167,6 +196,17 @@ def _renumber_sids(entries: list) -> None:
         if m.get("role") == "user" and m.get("sid") is not None:
             seq += 1
             m["sid"] = seq
+
+
+# Плейсхолдеры, которыми модель «проговаривает» молчание вместо пустого ответа.
+# Матчит сообщение целиком: только пунктуация/обёртки, либо короткая мета-фраза тишины.
+_SILENCE_RE = re.compile(
+    r"^[\s.…\-—–·*\"'()]*"
+    r"(?:молчу|молчит|молчание|промолч\w*|ничего\s+не\s+(?:скажу|отвечу)|"
+    r"без\s+комментари\w*|воздержусь|пропущу)?"
+    r"[\s.…\-—–·*\"'()!?]*$",
+    re.IGNORECASE,
+)
 
 
 def _clean_reply(reply: str) -> str:
@@ -197,6 +237,10 @@ def _clean_reply(reply: str) -> str:
     reply = reply.strip()
     if reply.endswith('.') and not reply.endswith('...'):
         reply = reply[:-1]
+    # Модель иногда «проговаривает» молчание (… / — / «промолчу» / «(молчит)») вместо
+    # пустого ответа. Сводим такие плейсхолдеры к пустой строке → уходит в ветку тишины.
+    if _SILENCE_RE.match(reply):
+        return ''
     return reply
 
 
@@ -350,10 +394,12 @@ async def summarize_history(history: list) -> list:
     _renumber_sids(keep_recent)
     
     # Формируем текст для локальной модели
+    # Берём только содержательные реплики. Реакция-без-текста (content="") сюда не идёт:
+    # её эмодзи живут в поле reactions, которое в резюме не нужно — старые реакции забываются.
     text_to_summarize = "\n".join([
-        f"{m['role']}: {m['content']}" 
-        for m in to_summarize 
-        if isinstance(m.get('content'), str)
+        f"{m['role']}: {m['content']}"
+        for m in to_summarize
+        if isinstance(m.get('content'), str) and m.get('content').strip()
     ])
     
     summary_payload = {
@@ -408,8 +454,7 @@ async def summarize_history(history: list) -> list:
 
 async def send_llm_request(
     update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
-    history: list, user_name: str, user_id: int, is_group: bool,
-    random_reply: bool, reason: str, mentioned: bool = False):
+    history: list, user_name: str, user_id: int, mentioned: bool = False):
 
     # Автосуммаризация при достижении 85% от лимита токенов
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
@@ -475,6 +520,7 @@ async def send_llm_request(
     status_message = None
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
     reacted = False    # бот поставил реакцию — допускаем ответ без текста
+    reactions_made = []  # [{"emoji", "on"}] — реакции этого хода, чтобы записать их в историю
 
     async def _deliver(text: str, target_mid, status_msg):
         """
@@ -482,6 +528,8 @@ async def send_llm_request(
         target_mid is not None — реплаем на это сообщение; None — обычным сообщением без reply.
         Переиспользует статусную плашку поиска только если ответ идёт на текущее сообщение.
         HTML с фолбэком на чистый текст; длинное режет по 4096.
+        Возвращает message_id отправленного ботом сообщения (для привязки входящих реакций)
+        или None. Для длинного ответа — id первого чанка.
         """
         reply_html = markdown_to_html(text)
         reply_plain = strip_markdown(text)
@@ -494,7 +542,7 @@ async def send_llm_request(
             if target_mid == update.message.message_id and len(reply_html) <= 4096:
                 try:
                     await status_msg.edit_text(reply_html, parse_mode="HTML")
-                    return
+                    return status_msg.message_id  # отредактированная плашка и есть сообщение бота
                 except Exception as e:
                     logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
             try:
@@ -511,22 +559,56 @@ async def send_llm_request(
                 kw["allow_sending_without_reply"] = True  # если целевое удалено — шлём без реплая
             if html:
                 kw["parse_mode"] = "HTML"
-            await context.bot.send_message(**kw)
+            sent = await context.bot.send_message(**kw)
+            return sent.message_id
 
         if len(reply_html) <= 4096:
             try:
-                await _raw(reply_html, True)
+                return await _raw(reply_html, True)
             except Exception as e:
                 logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
-                await _raw(reply_plain, False)
+                return await _raw(reply_plain, False)
         else:
             # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
+            first_mid = None
             for i in range(0, len(reply_plain), 4096):
                 chunk = reply_plain[i:i + 4096]
                 if thread_id is not None:
-                    await context.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
+                    sent = await context.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
                 else:
-                    await context.bot.send_message(chat_id=chat_id, text=chunk)
+                    sent = await context.bot.send_message(chat_id=chat_id, text=chunk)
+                if first_mid is None:
+                    first_mid = sent.message_id
+            return first_mid
+
+    async def _save_assistant(text: str):
+        """
+        Пишет ход бота в историю. Если за ход были реакции — прикрепляет их
+        к этой же записи (поле reactions), чтобы модель помнила, что среагировала.
+        Реакция-без-текста сохраняется как пустой content + reactions.
+        Дописывает в хвост — префикс не меняется, cache hit сохраняется.
+        Возвращает созданную запись (чтобы потом проставить ей mid) или None.
+        """
+        if not text and not reactions_made:
+            return None
+        entry = {"role": "assistant", "content": text}
+        if reactions_made:
+            entry["reactions"] = list(reactions_made)
+        async with get_history_lock(key):
+            history.append(entry)
+            histories[key] = history
+            touch_activity(key)
+            save_history(key)
+        return entry
+
+    async def _remember_bot_mid(entry, sent_mid):
+        """Проставляет mid отправленного сообщения на assistant-запись — чтобы потом
+        привязать к ней входящие реакции. mid в payload не рендерится → кэш не трогает."""
+        if entry is None or not sent_mid:
+            return
+        async with get_history_lock(key):
+            entry["mid"] = sent_mid
+            save_history(key)
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         if DEBUG:
@@ -551,6 +633,8 @@ async def send_llm_request(
                 logger.debug(f"[dim]{content[:2000]}{'...' if len(content) > 2000 else ''}[/]")
                 logger.debug("[dim]" + "-" * 80 + "[/]")
             logger.debug("[cyan]" + "=" * 80 + "[/]")
+
+        forced_answer_nudge = False  # один раз подтолкнём ответить, если промолчала при прямом обращении
 
         for attempt in range(MAX_API_RETRIES):
             gen_params = dict(GENERATION_PARAMS)
@@ -698,7 +782,10 @@ async def send_llm_request(
                             })
 
                         elif func_name == 'react_to_message':
-                            emoji = (args.get('emoji') or '').strip()
+                            # Модель часто шлёт эмодзи с вариативным селектором U+FE0F (❤️),
+                            # а Telegram и ALLOWED_REACTIONS хранят каноничную форму без него (❤).
+                            # Срезаем FE0F, иначе сердце/☃/✍/🕊/❤‍🔥/🤷‍♂ молча не проходят валидацию.
+                            emoji = (args.get('emoji') or '').strip().replace(chr(0xFE0F), '')
                             try:
                                 react_sid = int(args.get('id'))
                             except (TypeError, ValueError):
@@ -716,6 +803,17 @@ async def send_llm_request(
                                         reaction=emoji
                                     )
                                     reacted = True
+                                    # Привязку храним как короткую цитату, БЕЗ числового [#N]:
+                                    # хэндлы перенумеровываются → старый номер протух бы и провоцировал
+                                    # галлюцинации. Цитата самодостаточна и не теряет смысл со временем.
+                                    on_quote = None
+                                    if react_mid != update.message.message_id:
+                                        for _m in history:
+                                            if _m.get("role") == "user" and _m.get("mid") == react_mid:
+                                                _t = (_m.get("content") or "").strip()
+                                                on_quote = (_t[:40] + "…") if len(_t) > 40 else _t
+                                                break
+                                    reactions_made.append({"emoji": emoji, "on": on_quote})
                                     logger.info(f"😀 [magenta]Реакция:[/] {emoji} → [#{react_sid if react_sid is not None else 'текущее'}]")
                                     tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — можешь обойтись без текста."
                                 except Exception as e:
@@ -739,11 +837,8 @@ async def send_llm_request(
                                 # Невалидный/устаревший [#N] — отвечаем на текущее сообщение
                                 reply_mid = update.message.message_id
                             pending_reply = (reply_mid, reply_text, reply_sid)
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": "Ответ отправлен пользователю."
-                            })
+                            # Терминальный инструмент: ниже делаем return, нового запроса к API
+                            # не будет — поэтому tool-result в payload не добавляем.
 
                         else:
                             # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
@@ -761,17 +856,18 @@ async def send_llm_request(
                         reply_text = _clean_reply(reply_text)
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
-                            async with get_history_lock(key):
-                                history.append({"role": "assistant", "content": reply_text})
-                                histories[key] = history
-                                touch_activity(key)
-                                save_history(key)
+                            saved = await _save_assistant(reply_text)
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
-                            await _deliver(reply_text, reply_mid, status_message)
+                            sent_mid = await _deliver(reply_text, reply_mid, status_message)
+                            await _remember_bot_mid(saved, sent_mid)
                         else:
-                            # reply без текста — отправлять нечего (пустых сообщений не шлём)
-                            if not reacted:
-                                logger.warning("⚠️ [yellow]reply_to_message без текста и без реакции — ничего не отправляю[/]")
+                            # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
+                            if reacted:
+                                await _save_assistant("")  # запоминаем реакцию, текста нет
+                            elif not mentioned:
+                                logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
+                            else:
+                                logger.warning("⚠️ [yellow]reply_to_message без текста при прямом обращении[/]")
                             if status_message:
                                 try:
                                     await status_message.delete()
@@ -808,10 +904,34 @@ async def send_llm_request(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    # Реакция без текста — валидный ответ. Если ни текста, ни реакции —
-                    # это вырожденный случай: пустых сообщений в чат не шлём, просто молча выходим.
-                    if not reacted:
-                        logger.warning(f"⚠️ [yellow]Пустой ответ модели без реакции[/] (ключ={key}) — ничего не отправляю")
+                    if reacted:
+                        # Ограничилась реакцией — валидный ответ. Запоминаем реакцию в истории.
+                        await _save_assistant("")
+                        if status_message:
+                            try:
+                                await status_message.delete()
+                            except Exception:
+                                pass
+                        return
+                    if not mentioned:
+                        # Ambient-пинг: к Ber не обращались — осознанное молчание, это норма.
+                        logger.info(f"🤫 [dim]Промолчала (ambient)[/] (ключ={key})")
+                        if status_message:
+                            try:
+                                await status_message.delete()
+                            except Exception:
+                                pass
+                        return
+                    # Прямое обращение / личка / событие — молчать нельзя. Один раз подталкиваем ответить.
+                    if not forced_answer_nudge:
+                        forced_answer_nudge = True
+                        payload_messages.append({
+                            "role": "system",
+                            "content": "Тебе адресовали сообщение напрямую — нельзя молчать. Дай короткий ответ в своём стиле."
+                        })
+                        logger.info(f"↩️ [yellow]Пустой ответ при прямом обращении — подталкиваю ответить[/] (ключ={key})")
+                        continue
+                    logger.warning(f"⚠️ [yellow]Пустой ответ при прямом обращении даже после напоминания[/] (ключ={key})")
                     if status_message:
                         try:
                             await status_message.delete()
@@ -823,11 +943,7 @@ async def send_llm_request(
                     logger.warning(f"⚠️ [yellow]Ответ обрезан по лимиту токенов[/] (ключ={key})")
                     reply += "\n\n_(ответ обрезан)_"
 
-                async with get_history_lock(key):
-                    history.append({"role": "assistant", "content": reply})
-                    histories[key] = history
-                    touch_activity(key)  # Обновляем время активности
-                    save_history(key)    # Персистим историю на диск
+                saved = await _save_assistant(reply)  # пишет ход + прикрепляет реакции этого хода
 
                 # Сохранение в долговременную память происходит не здесь, а батчами:
                 # реплики юзеров копятся в state.pending_memory (см. record_user_memory)
@@ -837,7 +953,8 @@ async def send_llm_request(
                 # адресное обращение → реплай на триггер (как раньше);
                 # ambient (случайный пинг) → обычное сообщение без reply.
                 target_mid = update.message.message_id if mentioned else None
-                await _deliver(reply, target_mid, status_message)
+                sent_mid = await _deliver(reply, target_mid, status_message)
+                await _remember_bot_mid(saved, sent_mid)
                 return
 
             except httpx.ConnectError:

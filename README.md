@@ -176,18 +176,18 @@ Berangaria_bot/
 - Regular input: $0.14
 - Cached input: $0.0028 (50x cheaper)
 - Output: $0.28
-- **Typical usage**: 1000 messages ≈ $1 (with 70-80% cache hit rate)
+- **Typical usage**: 1000 messages ≈ $0.4 (with 70-80% cache hit rate)
 
 ### DeepSeek v4 Pro (per 1M tokens)
-- Regular input: $0.55
-- Cached input: $0.011
-- Output: $2.19
-- **Typical usage**: 1000 messages ≈ $4 (better instruction following)
+- Regular input: $0.435
+- Cached input: $0.003625
+- Output: $0.87
+- **Typical usage**: 1000 messages ≈ $1.27 (better instruction following)
 
 ### Grok-4.3 (per 1M tokens)
 - Input: $1.25
 - Output: $2.50
-- **Typical usage**: 1000 messages ≈ $9 (best for character/humor)
+- **Typical usage**: 1000 messages ≈ $4 (best for character/humor)
 
 ### Gemini (Vision & Embeddings)
 - Vision: Free tier (15 requests/min, 1500 requests/day)
@@ -195,10 +195,9 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Flash**: Best value for general conversations ($1/1000)
-- **Pro**: Better instruction following, less drift ($4/1000)
-- **Grok**: Superior character consistency and humor ($9/1000)
-- **Hybrid**: Use Grok for banter, Flash for facts (≈$4-5/1000)
+- **Flash**: Best value for general conversations ($0.4/1000)
+- **Pro**: Better instruction following, less drift ($1.27/1000)
+- **Grok**: Superior character consistency and humor ($4/1000)
 
 ## Debug Mode
 

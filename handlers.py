@@ -2,7 +2,7 @@ import logging
 import asyncio
 from datetime import datetime
 from functools import wraps
-from telegram import Update
+from telegram import Update, ReactionTypeEmoji
 from telegram.ext import ContextTypes
 
 import time
@@ -10,10 +10,11 @@ import time
 from config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
+    VIDEO_MAX_FILE_SIZE_BYTES,
     AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, RANDOM_REPLY_COOLDOWN,
     MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID
 )
-from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count, get_history_lock, _buffer_lock, touch_activity
+from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count, get_history_lock, _buffer_lock, touch_activity, save_history
 import state
 from llm_client import summarize_history, send_llm_request, record_user_memory
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
@@ -220,7 +221,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
-async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool, random_reply: bool, reason: str):
+async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool, random_reply: bool):
     # Эта функция вызывается после задержки
     async with _buffer_lock:
         data = message_buffer.get(buffer_key)
@@ -295,8 +296,11 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     if not (mentioned or random_reply):
         return
 
-    await update.message.chat.send_action(action="typing")
-    await send_llm_request(update, context, key, history, user_name, user_id, is_group, random_reply, reason, mentioned)
+    # «печатает…» показываем только при прямом обращении: ambient-пинг может закончиться
+    # молчанием, и призрачный индикатор «Ber печатает» без сообщения выглядел бы как баг.
+    if mentioned:
+        await update.message.chat.send_action(action="typing")
+    await send_llm_request(update, context, key, history, user_name, user_id, mentioned)
 
 
 def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> bool:
@@ -367,7 +371,7 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
     forward_info = _extract_forward_info(update.message)
 
     # Определяем, должен ли бот ответить
-    mentioned, reason = is_bot_mentioned(update, context)
+    mentioned, _ = is_bot_mentioned(update, context)
     random_reply = should_reply_randomly(chat_id) if is_group else False
     if not is_group:
         mentioned = True
@@ -391,7 +395,7 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if data:
                 await process_buffered_messages(
                     buffer_key, update, context, key, is_group, user_id, user_name,
-                    data["mentioned"], data["random_reply"], data["reason"]
+                    data["mentioned"], data["random_reply"]
                 )
         except asyncio.CancelledError:
             pass  # Таймер был отменен из-за нового сообщения
@@ -406,7 +410,6 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Обновляем флаги вызова
             if mentioned:
                 message_buffer[buffer_key]["mentioned"] = True
-                message_buffer[buffer_key]["reason"] = reason
             if random_reply:
                 message_buffer[buffer_key]["random_reply"] = True
         else:
@@ -414,7 +417,6 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "messages": [msg_data],
                 "mentioned": mentioned,
                 "random_reply": random_reply,
-                "reason": reason
             }
         
         # Создаём таску внутри блокировки для атомарности
@@ -537,7 +539,67 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.chat.send_action(action="typing")
     # mentioned=True — событие заметное, реагируем всегда; reply ляжет на служебное сообщение
-    await send_llm_request(update, context, key, history, user_name, user_id, is_group, False, "event", True)
+    await send_llm_request(update, context, key, history, user_name, user_id, True)
+
+
+async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Пассивно фиксирует реакции, которые ставят на сообщения САМОГО бота.
+    Ничего не отправляет — лишь дописывает структурное поле incoming_reactions
+    к assistant-записи (найденной по mid), чтобы бот «узнал» о реакции при следующем
+    своём ходе. Сама заметка рендерится эфемерно в _render_history_for_api,
+    мимо суммаризации и памяти.
+    """
+    mr = update.message_reaction
+    if mr is None or mr.user is None:
+        return  # аноним/канал/не тот апдейт — пропускаем (реакции ботов Telegram и так не шлёт)
+
+    chat_id = mr.chat.id
+    is_group = mr.chat.type in ['group', 'supergroup']
+    key = get_history_key(chat_id, not is_group, mr.user.id)
+
+    history = histories.get(key)
+    if not history:
+        return
+
+    def _emojis(reaction_tuple):
+        return [r.emoji for r in (reaction_tuple or []) if isinstance(r, ReactionTypeEmoji)]
+
+    new_e = _emojis(mr.new_reaction)
+    old_e = _emojis(mr.old_reaction)
+    added = [e for e in new_e if e not in old_e]
+    removed = [e for e in old_e if e not in new_e]
+    if not added and not removed:
+        return  # изменились только кастом/платные реакции — нам нечего записывать
+
+    name = mr.user.first_name
+    async with get_history_lock(key):
+        # Привязываемся к сообщению бота по mid. Не нашли (реакция на чужое сообщение
+        # или на наше, отправленное до фичи / ушедшее в резюме) — тихо выходим.
+        target = next(
+            (m for m in history
+             if m.get("role") == "assistant" and m.get("mid") == mr.message_id),
+            None,
+        )
+        if target is None:
+            return
+        inc = target.setdefault("incoming_reactions", [])
+        for e in added:
+            inc.append({"from": name, "emoji": e})
+        for e in removed:
+            for i, rec in enumerate(inc):
+                if rec.get("from") == name and rec.get("emoji") == e:
+                    inc.pop(i)
+                    break
+        if not inc:
+            target.pop("incoming_reactions", None)
+        histories[key] = history
+        save_history(key)
+
+    if added:
+        logger.info(f"💟 [magenta]Реакция на сообщение бота:[/] {' '.join(added)} от {name}")
+    if removed:
+        logger.info(f"🚫 [dim]Сняли реакцию с сообщения бота:[/] {' '.join(removed)} ({name})")
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,6 +678,13 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Telegram не отдаёт боту файлы тяжелее 20 МБ — отсекаем до скачивания
+    if video_obj.file_size and video_obj.file_size > VIDEO_MAX_FILE_SIZE_BYTES:
+        await update.message.reply_text(
+            f"Видео больше {VIDEO_MAX_FILE_SIZE_BYTES // (1024 * 1024)} МБ — Telegram не даёт мне такое скачать."
+        )
+        return
+
     # Проверяем кэш (повторное видео/гифку не качаем и не разбираем заново)
     cached = state.get_cached_media_description(video_obj.file_unique_id)
     if cached is not None:
@@ -628,17 +697,18 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_path = None
 
     try:
-        video_path, mime, duration = await download_video_to_file(
+        video_path, mime, _ = await download_video_to_file(
             video_obj.file_id, context
         )
 
         if not video_path:
             video_description = "(не удалось скачать видео)"
         else:
-            # describe_video удаляет файл в своём finally блоке
+            # describe_video удаляет файл в своём finally блоке.
+            # Длительность берём из метаданных Telegram (download возвращает 0.0)
             video_description = await describe_video(
                 video_path=video_path, mime=mime,
-                caption=caption, duration=duration
+                caption=caption, duration=tg_duration
             )
             video_path = None  # Файл удалён в describe_video
     except Exception as e:

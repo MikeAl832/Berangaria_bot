@@ -306,7 +306,7 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
         "generationConfig": {
             "temperature": 0.4,
             "topP": 0.95,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 4096,
         },
     }
 
