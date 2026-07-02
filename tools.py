@@ -110,9 +110,10 @@ TOOLS = [
             "name": "find_stickers",
             "description": (
                 "Search your sticker collection by vibe. Returns a NUMBERED list of matching stickers "
-                "with short descriptions — it does NOT send anything. Use it when you feel like reacting "
+                "with descriptions and tags — it does NOT send anything. Use it when you feel like reacting "
                 "with a sticker: browse the options, then send the one that best fits via send_sticker(id). "
-                "If none fit, don't send — or search again with a different query. Don't overuse stickers."
+                "You CAN call find_stickers several times with different wording to compare options before "
+                "choosing — just like refining a web search. If none fit, don't send at all. Don't overuse stickers."
             ),
             "parameters": {
                 "type": "object",
