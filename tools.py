@@ -107,15 +107,12 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "send_sticker",
+            "name": "find_stickers",
             "description": (
-                "Send a Telegram sticker that fits the moment. This is a real action — the sticker "
-                "appears in the chat, like reacting but as a full sticker. "
-                "Use it the way people use stickers: to react with emotion, land a joke, troll, agree, "
-                "show shock/laughter/boredom — instead of, or on top of, a short text. Don't overuse it. "
-                "Pass 'query' as a vivid description of the sticker you want (mood, emotion, what's on it) — "
-                "the best matching sticker is picked by meaning. If nothing fitting exists, none is sent. "
-                "You may still add short text in your reply, or send only the sticker."
+                "Search your sticker collection by vibe. Returns a NUMBERED list of matching stickers "
+                "with short descriptions — it does NOT send anything. Use it when you feel like reacting "
+                "with a sticker: browse the options, then send the one that best fits via send_sticker(id). "
+                "If none fit, don't send — or search again with a different query. Don't overuse stickers."
             ),
             "parameters": {
                 "type": "object",
@@ -123,12 +120,38 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "Description of the sticker's mood/content, in Russian, e.g. "
+                            "Vivid description of the sticker's mood/content, in Russian, e.g. "
                             "'недоумение, кто-то сморозил глупость' or 'ржу в голос' or 'одобряю, огонь'."
                         )
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "How many candidates to return, 3-10 (default 6)."
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_sticker",
+            "description": (
+                "Send ONE specific sticker to the chat, chosen from the latest find_stickers results by its number. "
+                "Call this only AFTER find_stickers, passing the id of the option you liked best. "
+                "You may add short text in your reply too, or send only the sticker. "
+                "NEVER describe a sticker in text ('*кидает стикер*') — send it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The number of the sticker from find_stickers results (e.g. 3)."
+                    }
+                },
+                "required": ["id"]
             }
         }
     },

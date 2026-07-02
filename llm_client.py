@@ -530,6 +530,8 @@ async def send_llm_request(
     reactions_made = []  # [{"emoji", "on"}] — реакции этого хода, чтобы записать их в историю
     sticker_sent = False  # бот отправил стикер — тоже допускаем ответ без текста
     stickers_made = []  # [{"desc"}] — стикеры этого хода, чтобы модель помнила, что отправила
+    sticker_candidates = {}  # {номер: {"file_id", "desc"}} — кандидаты из find_stickers за этот ход
+    sticker_seq = 0          # сквозная нумерация кандидатов (не сбрасывается между поисками одного хода)
 
     async def _deliver(text: str, target_mid, status_msg):
         """
@@ -792,44 +794,84 @@ async def send_llm_request(
                                 "content": page_text
                             })
 
-                        elif func_name == 'send_sticker':
-                            query = (args.get('query') or '').strip()
+                        elif func_name == 'find_stickers':
+                            fquery = (args.get('query') or '').strip()
+                            try:
+                                fcount = int(args.get('count') or 6)
+                            except (TypeError, ValueError):
+                                fcount = 6
+                            fcount = max(1, min(fcount, 10))
                             if not STICKER_ENABLED:
-                                tool_result = "Стикеры отключены. Ответь текстом."
-                            elif not query:
-                                tool_result = "Пустой запрос стикера. Ответь текстом."
+                                tool_result = "Стикеры отключены."
+                            elif not fquery:
+                                tool_result = "Пустой запрос. Опиши, какой стикер ищешь."
                             else:
                                 try:
                                     await update.message.chat.send_action(action="choose_sticker")
                                 except Exception:
                                     pass
-                                # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток,
-                                # чтобы не блокировать event loop.
-                                candidates = await asyncio.to_thread(search_stickers, query)
-                                if not candidates:
-                                    logger.info(f"🎨 [dim]Стикер под '{query}' не найден (ниже порога)[/]")
-                                    tool_result = "Подходящего стикера не нашлось. Ответь обычным способом."
+                                # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток.
+                                cands = await asyncio.to_thread(search_stickers, fquery, fcount)
+                                if not cands:
+                                    logger.info(f"🎨 [dim]find_stickers '{fquery}' — ничего выше порога[/]")
+                                    tool_result = ("Под этот запрос ничего не нашлось. "
+                                                   "Попробуй другой запрос или ответь без стикера.")
                                 else:
-                                    # Берём лучший; рандомим ТОЛЬКО среди near-ties (скор в пределах
-                                    # 0.03 от топа) — так не теряем качество, но даём разнообразие
-                                    # на реальных ничьих, а не на явно худших кандидатах.
-                                    best_score = candidates[0].get('score') or 0.0
-                                    pool = [c for c in candidates if best_score - (c.get('score') or 0.0) <= 0.03]
-                                    chosen = random.choice(pool or candidates[:1])
-                                    file_id = chosen.get('file_id')
+                                    lines = []
+                                    for c in cands:
+                                        sticker_seq += 1
+                                        sticker_candidates[sticker_seq] = {
+                                            "file_id": c.get("file_id"),
+                                            "desc": c.get("description") or fquery,
+                                        }
+                                        emo = c.get("emotion") or "—"
+                                        desc = (c.get("description") or "").replace("\n", " ")[:90]
+                                        lines.append(f"#{sticker_seq} [{emo}] {desc}")
+                                    logger.info(f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт.")
+                                    tool_result = (
+                                        "Нашла стикеры (выбери подходящий ПО ОПИСАНИЮ и вызови send_sticker "
+                                        "с его номером; если ни один не в тему — не отправляй, можешь поискать иначе):\n"
+                                        + "\n".join(lines)
+                                    )
+
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": tool_result
+                            })
+
+                        elif func_name == 'send_sticker':
+                            if not STICKER_ENABLED:
+                                tool_result = "Стикеры отключены."
+                            else:
+                                # Основной путь: id из результатов find_stickers.
+                                chosen = None
+                                if args.get('id') is not None:
+                                    try:
+                                        chosen = sticker_candidates.get(int(args.get('id')))
+                                    except (TypeError, ValueError):
+                                        chosen = None
+                                # Совместимость: если вместо id передали query — разовый подбор лучшего.
+                                if chosen is None and (args.get('query') or '').strip():
+                                    q = args['query'].strip()
+                                    cands = await asyncio.to_thread(search_stickers, q)
+                                    if cands:
+                                        chosen = {"file_id": cands[0].get("file_id"),
+                                                  "desc": cands[0].get("description") or q}
+                                if not chosen or not chosen.get("file_id"):
+                                    tool_result = ("Не поняла, какой стикер слать. Сначала вызови find_stickers "
+                                                   "и передай номер найденного: send_sticker(id).")
+                                else:
                                     thread_id = getattr(update.message, "message_thread_id", None)
                                     try:
-                                        kw = {"chat_id": update.effective_chat.id, "sticker": file_id}
+                                        kw = {"chat_id": update.effective_chat.id, "sticker": chosen["file_id"]}
                                         if thread_id is not None:
                                             kw["message_thread_id"] = thread_id
                                         await context.bot.send_sticker(**kw)
                                         sticker_sent = True
-                                        stickers_made.append({"desc": chosen.get('description') or query})
-                                        logger.info(
-                                            f"🎨 [magenta]Стикер отправлен[/] под '{query}' "
-                                            f"(score={chosen.get('score'):.3f}, «{(chosen.get('description') or '')[:40]}»)"
-                                        )
-                                        tool_result = "Стикер отправлен. Если добавить нечего — можешь обойтись без текста."
+                                        stickers_made.append({"desc": chosen.get("desc")})
+                                        logger.info(f"🎨 [magenta]Стикер отправлен[/] «{(chosen.get('desc') or '')[:40]}»")
+                                        tool_result = "Стикер отправлен. Если добавить нечего — можешь без текста."
                                     except Exception as e:
                                         logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
                                         tool_result = "Стикер отправить не удалось. Ответь текстом."
