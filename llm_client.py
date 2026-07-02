@@ -1,5 +1,6 @@
 import re
 import json
+import random
 import logging
 import asyncio
 import httpx
@@ -17,6 +18,8 @@ import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
 from memory_store import memory
 from tools import web_search, read_url, TOOLS, ALLOWED_REACTIONS
+from sticker_store import search_stickers
+from config import STICKER_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +154,8 @@ def _render_history_for_api(history: list) -> list:
         # сама нота эфемерна — живёт лишь в этой копии (как тег [#N]).
         reactions = m.get("reactions") if role == "assistant" else None          # что бот поставил сам
         incoming = m.get("incoming_reactions") if role == "assistant" else None  # что поставили ему
-        if reactions or incoming:
+        stickers = m.get("stickers") if role == "assistant" else None            # какие стикеры отправил
+        if reactions or incoming or stickers:
             if content:
                 out.append({"role": "assistant", "content": content})
             notes = []
@@ -161,6 +165,9 @@ def _render_history_for_api(history: list) -> list:
                     on = (r.get("on") or "").strip()
                     parts.append(f"{r.get('emoji', '')} на «{on}»" if on else r.get("emoji", ""))
                 notes.append("Ты поставила реакцию " + ", ".join(parts) + ".")
+            if stickers:
+                sp = ", ".join(f"«{(s.get('desc') or '')[:40]}»" for s in stickers)
+                notes.append("Ты отправила стикер " + sp + ".")
             if incoming:
                 quote = content.strip()
                 quote = (quote[:40] + "…") if len(quote) > 40 else quote
@@ -521,6 +528,8 @@ async def send_llm_request(
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
     reacted = False    # бот поставил реакцию — допускаем ответ без текста
     reactions_made = []  # [{"emoji", "on"}] — реакции этого хода, чтобы записать их в историю
+    sticker_sent = False  # бот отправил стикер — тоже допускаем ответ без текста
+    stickers_made = []  # [{"desc"}] — стикеры этого хода, чтобы модель помнила, что отправила
 
     async def _deliver(text: str, target_mid, status_msg):
         """
@@ -589,11 +598,13 @@ async def send_llm_request(
         Дописывает в хвост — префикс не меняется, cache hit сохраняется.
         Возвращает созданную запись (чтобы потом проставить ей mid) или None.
         """
-        if not text and not reactions_made:
+        if not text and not reactions_made and not stickers_made:
             return None
         entry = {"role": "assistant", "content": text}
         if reactions_made:
             entry["reactions"] = list(reactions_made)
+        if stickers_made:
+            entry["stickers"] = list(stickers_made)
         async with get_history_lock(key):
             history.append(entry)
             histories[key] = history
@@ -781,6 +792,50 @@ async def send_llm_request(
                                 "content": page_text
                             })
 
+                        elif func_name == 'send_sticker':
+                            query = (args.get('query') or '').strip()
+                            if not STICKER_ENABLED:
+                                tool_result = "Стикеры отключены. Ответь текстом."
+                            elif not query:
+                                tool_result = "Пустой запрос стикера. Ответь текстом."
+                            else:
+                                try:
+                                    await update.message.chat.send_action(action="choose_sticker")
+                                except Exception:
+                                    pass
+                                # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток,
+                                # чтобы не блокировать event loop.
+                                candidates = await asyncio.to_thread(search_stickers, query)
+                                if not candidates:
+                                    logger.info(f"🎨 [dim]Стикер под '{query}' не найден (ниже порога)[/]")
+                                    tool_result = "Подходящего стикера не нашлось. Ответь обычным способом."
+                                else:
+                                    # Случайный из топ-3 — чтобы не слать один и тот же на похожие запросы.
+                                    chosen = random.choice(candidates[:3])
+                                    file_id = chosen.get('file_id')
+                                    thread_id = getattr(update.message, "message_thread_id", None)
+                                    try:
+                                        kw = {"chat_id": update.effective_chat.id, "sticker": file_id}
+                                        if thread_id is not None:
+                                            kw["message_thread_id"] = thread_id
+                                        await context.bot.send_sticker(**kw)
+                                        sticker_sent = True
+                                        stickers_made.append({"desc": chosen.get('description') or query})
+                                        logger.info(
+                                            f"🎨 [magenta]Стикер отправлен[/] под '{query}' "
+                                            f"(score={chosen.get('score'):.3f}, «{(chosen.get('description') or '')[:40]}»)"
+                                        )
+                                        tool_result = "Стикер отправлен. Если добавить нечего — можешь обойтись без текста."
+                                    except Exception as e:
+                                        logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
+                                        tool_result = "Стикер отправить не удалось. Ответь текстом."
+
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call['id'],
+                                "content": tool_result
+                            })
+
                         elif func_name == 'react_to_message':
                             # Модель часто шлёт эмодзи с вариативным селектором U+FE0F (❤️),
                             # а Telegram и ALLOWED_REACTIONS хранят каноничную форму без него (❤).
@@ -862,8 +917,8 @@ async def send_llm_request(
                             await _remember_bot_mid(saved, sent_mid)
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
-                            if reacted:
-                                await _save_assistant("")  # запоминаем реакцию, текста нет
+                            if reacted or sticker_sent:
+                                await _save_assistant("")  # запоминаем реакцию/стикер, текста нет
                             elif not mentioned:
                                 logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
                             else:
@@ -904,8 +959,8 @@ async def send_llm_request(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    if reacted:
-                        # Ограничилась реакцией — валидный ответ. Запоминаем реакцию в истории.
+                    if reacted or sticker_sent:
+                        # Ограничилась реакцией/стикером — валидный ответ. Запоминаем в истории.
                         await _save_assistant("")
                         if status_message:
                             try:

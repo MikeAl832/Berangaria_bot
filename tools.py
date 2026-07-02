@@ -107,6 +107,34 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "send_sticker",
+            "description": (
+                "Send a Telegram sticker that fits the moment. This is a real action — the sticker "
+                "appears in the chat, like reacting but as a full sticker. "
+                "Use it the way people use stickers: to react with emotion, land a joke, troll, agree, "
+                "show shock/laughter/boredom — instead of, or on top of, a short text. Don't overuse it. "
+                "Pass 'query' as a vivid description of the sticker you want (mood, emotion, what's on it) — "
+                "the best matching sticker is picked by meaning. If nothing fitting exists, none is sent. "
+                "You may still add short text in your reply, or send only the sticker."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Description of the sticker's mood/content, in Russian, e.g. "
+                            "'недоумение, кто-то сморозил глупость' or 'ржу в голос' or 'одобряю, огонь'."
+                        )
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_url",
             "description": (
                 "Download a web page by URL and read its text content. "

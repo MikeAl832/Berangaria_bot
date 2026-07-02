@@ -203,6 +203,31 @@ async def poll_tiktok_queue(bot):
             logger.error(f"❌ Ошибка в цикле опроса очереди TikTok: {e}", exc_info=True)
 
 
+async def sync_stickers_on_start():
+    """Доливает недостающие стикеры в Qdrant при старте (в потоке, чтобы не блокировать loop).
+    Идемпотентно: если новых нет — почти бесплатно (пара запросов в Qdrant)."""
+    import os
+    from config import (
+        STICKER_ENABLED, STICKER_AUTO_SYNC, STICKER_SYNC_FILE, STICKER_SYNC_MAX_PER_START,
+    )
+    if not (STICKER_ENABLED and STICKER_AUTO_SYNC):
+        return
+    if not os.path.exists(STICKER_SYNC_FILE):
+        logger.warning(f"🎨 [yellow]Файл стикеров '{STICKER_SYNC_FILE}' не найден — синк пропущен[/]")
+        return
+    try:
+        from sticker_store import sync_from_file
+        limit = STICKER_SYNC_MAX_PER_START or None
+        logger.info(f"🎨 [cyan]Синхронизация стикеров из '{STICKER_SYNC_FILE}'...[/]")
+        res = await asyncio.to_thread(sync_from_file, STICKER_SYNC_FILE, limit)
+        if res["added"]:
+            logger.info(f"🎨 [green]Стикеры: добавлено {res['added']}, всего в коллекции {res['total']}[/]")
+        else:
+            logger.info(f"🎨 [dim]Стикеры: новых нет (в коллекции {res['already']})[/]")
+    except Exception as e:
+        logger.error(f"🎨 [red]Синк стикеров при старте не удался:[/] {e}", exc_info=True)
+
+
 def main():
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
@@ -264,6 +289,7 @@ def main():
     loop = asyncio.get_event_loop()
     summarization_task = loop.create_task(periodic_summarization())
     tiktok_queue_task = loop.create_task(poll_tiktok_queue(app.bot))
+    sticker_sync_task = loop.create_task(sync_stickers_on_start())
     
     try:
         # allowed_updates=ALL_TYPES — иначе Telegram НЕ присылает message_reaction.
@@ -275,6 +301,7 @@ def main():
         # Graceful shutdown
         summarization_task.cancel()
         tiktok_queue_task.cancel()
+        sticker_sync_task.cancel()
         # Финальный flush историй на диск (страховка поверх write-through)
         try:
             for k in list(state.histories.keys()):

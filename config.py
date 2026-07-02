@@ -58,6 +58,26 @@ MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
 MEMORY_FLUSH_MAX_CHARS = config_yaml.get("memory_flush_max_chars", 2000)
 
 # ========================================
+# 🗄️ QDRANT (общий для mem0 и стикеров)
+# ========================================
+# В докере бот ходит в сервис "qdrant", с хоста — в "localhost".
+# Переопределяется переменной окружения QDRANT_HOST (напр. при запуске скрипта с хоста).
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+
+# ========================================
+# 🎨 СТИКЕРЫ (векторный поиск)
+# ========================================
+STICKER_ENABLED = config_yaml.get("sticker_enabled", True)
+STICKER_COLLECTION = config_yaml.get("sticker_collection", "stickers")
+STICKER_DIMS = config_yaml.get("sticker_dims", 768)
+STICKER_MIN_SCORE = config_yaml.get("sticker_min_score", 0.35)
+STICKER_TOP_K = config_yaml.get("sticker_top_k", 5)
+STICKER_AUTO_SYNC = config_yaml.get("sticker_auto_sync", True)
+STICKER_SYNC_FILE = config_yaml.get("sticker_sync_file", "stickers_clean.jsonl")
+STICKER_SYNC_MAX_PER_START = config_yaml.get("sticker_sync_max_per_start", 0)
+
+# ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА
 # ========================================
 BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
@@ -143,8 +163,8 @@ MEM0_CONFIG = {
     "vector_store": {
         "provider": "qdrant",
         "config": {
-            "host": "qdrant",
-            "port": 6333,
+            "host": QDRANT_HOST,
+            "port": QDRANT_PORT,
             "collection_name": "mem0",
             "embedding_model_dims": EMBEDDING_DIMS
         }
@@ -248,6 +268,10 @@ SYSTEM_PROMPT = ("""
     - Every incoming message starts with a short handle [#N] (e.g. [#7]). It is for YOU only — never write it in your reply.
     - In a normal dialogue you do NOT need this tool: just answer with plain text and it lands naturally.
     - Call reply_to_message(id, text) ONLY when you deliberately want to answer an EARLIER or different message than the latest one — pass the [#N] number as id. Otherwise just write text.
+    5. Stickers (send_sticker):
+    - Send a real Telegram sticker when it fits the vibe — the same way people drop stickers: to react with emotion, land a joke, troll, agree, show shock/laughter/boredom. It works like a reaction but as a full sticker in the chat.
+    - Call send_sticker(query) with a vivid Russian description of the mood/content you want (e.g. "недоумение, кто-то сморозил глупость", "ржу в голос", "одобряю, огонь") — the closest sticker is chosen by meaning. If nothing fits, none is sent.
+    - You can send only a sticker (no text), or a sticker plus a short line. Don't overuse it — like reactions, a sticker on every message is annoying. NEVER describe a sticker in text ("*кидает стикер*") — call the function.
 
     === GROUP CHAT: STRUCTURE AND BEHAVIOR ===
     Messages arrive in this format:
