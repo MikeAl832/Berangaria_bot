@@ -204,11 +204,17 @@ async def poll_tiktok_queue(bot):
 
 
 async def sync_stickers_on_start():
-    """Доливает недостающие стикеры в Qdrant при старте (в потоке, чтобы не блокировать loop).
-    Идемпотентно: если новых нет — почти бесплатно (пара запросов в Qdrant)."""
+    """
+    При старте синхронизирует стикеры в Qdrant (в потоке, чтобы не блокировать loop).
+      - если версия формата эмбеддинга в коде новее записанной → ОДИН РАЗ переэмбеддит всё
+        (миграция без стирания коллекции), затем пишет новую версию;
+      - иначе просто доливает недостающие. Если новых нет — почти бесплатно.
+    Rate limit переживается внутри (retry на 429), рестарты не нужны.
+    """
     import os
     from config import (
-        STICKER_ENABLED, STICKER_AUTO_SYNC, STICKER_SYNC_FILE, STICKER_SYNC_MAX_PER_START,
+        STICKER_ENABLED, STICKER_AUTO_SYNC, STICKER_SYNC_FILE,
+        STICKER_SYNC_MAX_PER_START, STICKER_INDEX_VERSION,
     )
     if not (STICKER_ENABLED and STICKER_AUTO_SYNC):
         return
@@ -216,16 +222,33 @@ async def sync_stickers_on_start():
         logger.warning(f"🎨 [yellow]Файл стикеров '{STICKER_SYNC_FILE}' не найден — синк пропущен[/]")
         return
     try:
-        from sticker_store import sync_from_file
-        limit = STICKER_SYNC_MAX_PER_START or None
-        logger.info(f"🎨 [cyan]Синхронизация стикеров из '{STICKER_SYNC_FILE}'...[/]")
-        res = await asyncio.to_thread(sync_from_file, STICKER_SYNC_FILE, limit)
-        if res["added"]:
-            logger.info(f"🎨 [green]Стикеры: добавлено {res['added']}, всего в коллекции {res['total']}[/]")
+        from sticker_store import sync_from_file, get_applied_version, set_applied_version
+        applied = get_applied_version()
+        if applied < STICKER_INDEX_VERSION:
+            # Миграция формата: переэмбеддить ВСЕ (без лимита, retry вытянет через rate limit).
+            logger.info(
+                f"🎨 [cyan]Миграция индекса стикеров: формат v{applied} → v{STICKER_INDEX_VERSION}, "
+                f"переэмбеддинг всех стикеров (один раз)...[/]"
+            )
+            res = await asyncio.to_thread(
+                lambda: sync_from_file(STICKER_SYNC_FILE, limit=None, force_all=True)
+            )
+            set_applied_version(STICKER_INDEX_VERSION)
+            logger.info(
+                f"🎨 [green]Миграция завершена: переэмбеддено {res['added']}, "
+                f"всего в коллекции {res['total']}. Формат v{STICKER_INDEX_VERSION} записан.[/]"
+            )
         else:
-            logger.info(f"🎨 [dim]Стикеры: новых нет (в коллекции {res['already']})[/]")
+            limit = STICKER_SYNC_MAX_PER_START or None
+            logger.info(f"🎨 [cyan]Синхронизация стикеров из '{STICKER_SYNC_FILE}'...[/]")
+            res = await asyncio.to_thread(lambda: sync_from_file(STICKER_SYNC_FILE, limit=limit))
+            if res["added"]:
+                logger.info(f"🎨 [green]Стикеры: добавлено {res['added']}, всего в коллекции {res['total']}[/]")
+            else:
+                logger.info(f"🎨 [dim]Стикеры: новых нет (в коллекции {res['already']})[/]")
     except Exception as e:
-        logger.error(f"🎨 [red]Синк стикеров при старте не удался:[/] {e}", exc_info=True)
+        # Версию НЕ пишем → на следующем старте попробует снова (миграция идемпотентна).
+        logger.error(f"🎨 [red]Синк/миграция стикеров при старте не удались:[/] {e}", exc_info=True)
 
 
 def main():

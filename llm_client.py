@@ -810,8 +810,12 @@ async def send_llm_request(
                                     logger.info(f"🎨 [dim]Стикер под '{query}' не найден (ниже порога)[/]")
                                     tool_result = "Подходящего стикера не нашлось. Ответь обычным способом."
                                 else:
-                                    # Случайный из топ-3 — чтобы не слать один и тот же на похожие запросы.
-                                    chosen = random.choice(candidates[:3])
+                                    # Берём лучший; рандомим ТОЛЬКО среди near-ties (скор в пределах
+                                    # 0.03 от топа) — так не теряем качество, но даём разнообразие
+                                    # на реальных ничьих, а не на явно худших кандидатах.
+                                    best_score = candidates[0].get('score') or 0.0
+                                    pool = [c for c in candidates if best_score - (c.get('score') or 0.0) <= 0.03]
+                                    chosen = random.choice(pool or candidates[:1])
                                     file_id = chosen.get('file_id')
                                     thread_id = getattr(update.message, "message_thread_id", None)
                                     try:

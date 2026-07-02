@@ -76,6 +76,7 @@ STICKER_TOP_K = config_yaml.get("sticker_top_k", 5)
 STICKER_AUTO_SYNC = config_yaml.get("sticker_auto_sync", True)
 STICKER_SYNC_FILE = config_yaml.get("sticker_sync_file", "stickers_clean.jsonl")
 STICKER_SYNC_MAX_PER_START = config_yaml.get("sticker_sync_max_per_start", 0)
+STICKER_INDEX_VERSION = config_yaml.get("sticker_index_version", 1)
 
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА
