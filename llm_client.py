@@ -17,9 +17,8 @@ from config import (
 import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
 from memory_store import memory
-from tools import web_search, read_url, TOOLS, ALLOWED_REACTIONS
-from sticker_store import search_stickers
-from config import STICKER_ENABLED
+from tools import TOOLS
+from tool_handlers import ToolTurn, dispatch_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -530,14 +529,10 @@ async def send_llm_request(
         except Exception as e:
             logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
-    status_message = None
+    # Мутируемое состояние хода (статусная плашка, реакции, стикеры, pending_reply) —
+    # см. tool_handlers.ToolTurn. Живёт весь retry-цикл.
+    turn = ToolTurn()
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
-    reacted = False    # бот поставил реакцию — допускаем ответ без текста
-    reactions_made = []  # [{"emoji", "on"}] — реакции этого хода, чтобы записать их в историю
-    sticker_sent = False  # бот отправил стикер — тоже допускаем ответ без текста
-    stickers_made = []  # [{"desc"}] — стикеры этого хода, чтобы модель помнила, что отправила
-    sticker_candidates = {}  # {номер: {"file_id", "desc"}} — кандидаты из find_stickers за этот ход
-    sticker_seq = 0          # сквозная нумерация кандидатов (не сбрасывается между поисками одного хода)
 
     async def _deliver(text: str, target_mid, status_msg):
         """
@@ -606,13 +601,13 @@ async def send_llm_request(
         Дописывает в хвост — префикс не меняется, cache hit сохраняется.
         Возвращает созданную запись (чтобы потом проставить ей mid) или None.
         """
-        if not text and not reactions_made and not stickers_made:
+        if not text and not turn.reactions_made and not turn.stickers_made:
             return None
         entry = {"role": "assistant", "content": text}
-        if reactions_made:
-            entry["reactions"] = list(reactions_made)
-        if stickers_made:
-            entry["stickers"] = list(stickers_made)
+        if turn.reactions_made:
+            entry["reactions"] = list(turn.reactions_made)
+        if turn.stickers_made:
+            entry["stickers"] = list(turn.stickers_made)
         async with get_history_lock(key):
             history.append(entry)
             histories[key] = history
@@ -728,268 +723,36 @@ async def send_llm_request(
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     payload_messages.append(message)
                     used_tool = True  # дальше отвечаем на холодной температуре
-                    pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
+                    turn.pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
 
                     for tool_call in message['tool_calls']:
-                        func_name = tool_call['function']['name']
-                        args = json.loads(tool_call['function']['arguments'])
-
-                        if func_name == 'web_search':
-                            await update.message.chat.send_action(action="typing")
-                            status_text = f"🔍 Выполняю поиск: *{args['query']}*..."
-
-                            if status_message is None:
-                                status_message = await update.message.reply_text(
-                                    status_text,
-                                    parse_mode="Markdown"
-                                )
-                            else:
-                                try:
-                                    await status_message.edit_text(
-                                        status_text,
-                                        parse_mode="Markdown"
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
-
-                            logger.info(f"🔍 [blue]Поиск:[/] {args['query']}")
-
-                            search_result = web_search(
-                                query=args['query'],
-                                max_results=args.get('max_results', 5),
-                                timelimit=args.get('timelimit', None),
-                                region=args.get('region', 'ru-ru')
-                            )
-
-                            if status_message:
-                                try:
-                                    await status_message.edit_text("🔍 Поиск завершён, обрабатываю результаты...")
-                                except Exception:
-                                    pass
-
-                            logger.debug(f"📄 Результат: {repr(search_result[:200])}")
-
-                            if not search_result:
-                                search_result = "Поиск не дал результатов."
-
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": search_result
-                            })
-
-                        elif func_name == 'read_url':
-                            url = args.get('url', '')
-                            await update.message.chat.send_action(action="typing")
-                            status_text = "🔗 Читаю ссылку..."
-                            if status_message is None:
-                                status_message = await update.message.reply_text(status_text)
-                            else:
-                                try:
-                                    await status_message.edit_text(status_text)
-                                except Exception:
-                                    pass
-
-                            logger.info(f"🔗 [blue]Чтение ссылки:[/] {url}")
-                            page_text = read_url(url)
-                            logger.debug(f"📄 Страница: {repr(page_text[:200])}")
-
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": page_text
-                            })
-
-                        elif func_name == 'find_stickers':
-                            fquery = (args.get('query') or '').strip()
-                            try:
-                                fcount = int(args.get('count') or 6)
-                            except (TypeError, ValueError):
-                                fcount = 6
-                            fcount = max(1, min(fcount, 10))
-                            if not STICKER_ENABLED:
-                                tool_result = "Стикеры отключены."
-                            elif not fquery:
-                                tool_result = "Пустой запрос. Опиши, какой стикер ищешь."
-                            else:
-                                try:
-                                    await update.message.chat.send_action(action="choose_sticker")
-                                except Exception:
-                                    pass
-                                # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток.
-                                cands = await asyncio.to_thread(search_stickers, fquery, fcount)
-                                if not cands:
-                                    logger.info(f"🎨 [dim]find_stickers '{fquery}' — ничего выше порога[/]")
-                                    tool_result = ("Под этот запрос ничего не нашлось. "
-                                                   "Попробуй другой запрос или ответь без стикера.")
-                                else:
-                                    lines = []
-                                    for c in cands:
-                                        sticker_seq += 1
-                                        sticker_candidates[sticker_seq] = {
-                                            "file_id": c.get("file_id"),
-                                            "desc": c.get("description") or fquery,
-                                            "emotion": c.get("emotion"),
-                                        }
-                                        # При ВЫБОРЕ показываем всё: эмоцию, полное описание и теги —
-                                        # чтобы модель судила по содержанию, а не по обрывку.
-                                        emo = c.get("emotion") or "—"
-                                        desc = (c.get("description") or "").replace("\n", " ").strip()
-                                        kws = ", ".join(c.get("keywords") or [])
-                                        line = f"#{sticker_seq} [{emo}] {desc}"
-                                        if kws:
-                                            line += f" | теги: {kws}"
-                                        lines.append(line)
-                                    logger.info(f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт.")
-                                    tool_result = (
-                                        "Нашла стикеры (выбери подходящий ПО ОПИСАНИЮ и вызови send_sticker "
-                                        "с его номером; если ни один не в тему — не отправляй, можешь поискать иначе):\n"
-                                        + "\n".join(lines)
-                                    )
-
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": tool_result
-                            })
-
-                        elif func_name == 'send_sticker':
-                            if not STICKER_ENABLED:
-                                tool_result = "Стикеры отключены."
-                            else:
-                                # Основной путь: id из результатов find_stickers.
-                                chosen = None
-                                if args.get('id') is not None:
-                                    try:
-                                        chosen = sticker_candidates.get(int(args.get('id')))
-                                    except (TypeError, ValueError):
-                                        chosen = None
-                                # Совместимость: если вместо id передали query — разовый подбор лучшего.
-                                if chosen is None and (args.get('query') or '').strip():
-                                    q = args['query'].strip()
-                                    cands = await asyncio.to_thread(search_stickers, q)
-                                    if cands:
-                                        chosen = {"file_id": cands[0].get("file_id"),
-                                                  "desc": cands[0].get("description") or q,
-                                                  "emotion": cands[0].get("emotion")}
-                                if not chosen or not chosen.get("file_id"):
-                                    tool_result = ("Не поняла, какой стикер слать. Сначала вызови find_stickers "
-                                                   "и передай номер найденного: send_sticker(id).")
-                                else:
-                                    thread_id = getattr(update.message, "message_thread_id", None)
-                                    try:
-                                        kw = {"chat_id": update.effective_chat.id, "sticker": chosen["file_id"]}
-                                        if thread_id is not None:
-                                            kw["message_thread_id"] = thread_id
-                                        await context.bot.send_sticker(**kw)
-                                        sticker_sent = True
-                                        stickers_made.append({"desc": chosen.get("desc"),
-                                                              "emotion": chosen.get("emotion")})
-                                        logger.info(f"🎨 [magenta]Стикер отправлен[/] «{(chosen.get('desc') or '')[:40]}»")
-                                        tool_result = ("Стикер отправлен. Обычно он говорит сам за себя — "
-                                                       "оставь ответ ПУСТЫМ, если нет чёткой мысли добавить словами "
-                                                       "(стикер-только — нормальный и сильный ход). Текст пиши, "
-                                                       "только если реально есть что сказать.")
-                                    except Exception as e:
-                                        logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
-                                        tool_result = "Стикер отправить не удалось. Ответь текстом."
-
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": tool_result
-                            })
-
-                        elif func_name == 'react_to_message':
-                            # Модель часто шлёт эмодзи с вариативным селектором U+FE0F (❤️),
-                            # а Telegram и ALLOWED_REACTIONS хранят каноничную форму без него (❤).
-                            # Срезаем FE0F, иначе сердце/☃/✍/🕊/❤‍🔥/🤷‍♂ молча не проходят валидацию.
-                            emoji = (args.get('emoji') or '').strip().replace(chr(0xFE0F), '')
-                            try:
-                                react_sid = int(args.get('id'))
-                            except (TypeError, ValueError):
-                                react_sid = None
-                            react_mid = sid_to_mid.get(react_sid) if react_sid is not None else None
-                            if react_mid is None:
-                                react_mid = update.message.message_id
-                            if emoji not in ALLOWED_REACTIONS:
-                                tool_result = f"Эмодзи '{emoji}' не разрешён Telegram. Ответь текстом или выбери из списка."
-                            else:
-                                try:
-                                    await context.bot.set_message_reaction(
-                                        chat_id=update.effective_chat.id,
-                                        message_id=react_mid,
-                                        reaction=emoji
-                                    )
-                                    reacted = True
-                                    # Привязку храним как короткую цитату, БЕЗ числового [#N]:
-                                    # хэндлы перенумеровываются → старый номер протух бы и провоцировал
-                                    # галлюцинации. Цитата самодостаточна и не теряет смысл со временем.
-                                    on_quote = None
-                                    if react_mid != update.message.message_id:
-                                        for _m in history:
-                                            if _m.get("role") == "user" and _m.get("mid") == react_mid:
-                                                _t = (_m.get("content") or "").strip()
-                                                on_quote = (_t[:40] + "…") if len(_t) > 40 else _t
-                                                break
-                                    reactions_made.append({"emoji": emoji, "on": on_quote})
-                                    logger.info(f"😀 [magenta]Реакция:[/] {emoji} → [#{react_sid if react_sid is not None else 'текущее'}]")
-                                    tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — можешь обойтись без текста."
-                                except Exception as e:
-                                    logger.warning(f"⚠️ [yellow]Не удалось поставить реакцию {emoji}:[/] {e}")
-                                    tool_result = "Не удалось поставить реакцию, ответь текстом."
-
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": tool_result
-                            })
-
-                        elif func_name == 'reply_to_message':
-                            try:
-                                reply_sid = int(args.get('id'))
-                            except (TypeError, ValueError):
-                                reply_sid = None
-                            reply_text = args.get('text', '') or ''
-                            reply_mid = sid_to_mid.get(reply_sid)
-                            if reply_mid is None:
-                                # Невалидный/устаревший [#N] — отвечаем на текущее сообщение
-                                reply_mid = update.message.message_id
-                            pending_reply = (reply_mid, reply_text, reply_sid)
-                            # Терминальный инструмент: ниже делаем return, нового запроса к API
-                            # не будет — поэтому tool-result в payload не добавляем.
-
-                        else:
-                            # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
-                            payload_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": f"Инструмент '{func_name}' не поддерживается."
-                            })
+                        await dispatch_tool_call(
+                            turn, payload_messages, update, context, tool_call, sid_to_mid, history
+                        )
 
                     # reply_to_message терминальный и приоритетный: если модель его вызвала,
                     # отправляем выбранный ответ и завершаем — без ещё одного витка к API
                     # и без дефолтного реплая ниже (двойной отправки не будет).
-                    if pending_reply is not None:
-                        reply_mid, reply_text, reply_sid = pending_reply
+                    if turn.pending_reply is not None:
+                        reply_mid, reply_text, reply_sid = turn.pending_reply
                         reply_text = _clean_reply(reply_text)
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
                             saved = await _save_assistant(reply_text)
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
-                            sent_mid = await _deliver(reply_text, reply_mid, status_message)
+                            sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
                             await _remember_bot_mid(saved, sent_mid)
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
-                            if reacted or sticker_sent:
+                            if turn.reacted or turn.sticker_sent:
                                 await _save_assistant("")  # запоминаем реакцию/стикер, текста нет
                             elif not mentioned:
                                 logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
                             else:
                                 logger.warning("⚠️ [yellow]reply_to_message без текста при прямом обращении[/]")
-                            if status_message:
+                            if turn.status_message:
                                 try:
-                                    await status_message.delete()
+                                    await turn.status_message.delete()
                                 except Exception:
                                     pass
                         return
@@ -1023,21 +786,21 @@ async def send_llm_request(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    if reacted or sticker_sent:
+                    if turn.reacted or turn.sticker_sent:
                         # Ограничилась реакцией/стикером — валидный ответ. Запоминаем в истории.
                         await _save_assistant("")
-                        if status_message:
+                        if turn.status_message:
                             try:
-                                await status_message.delete()
+                                await turn.status_message.delete()
                             except Exception:
                                 pass
                         return
                     if not mentioned:
                         # Ambient-пинг: к Ber не обращались — осознанное молчание, это норма.
                         logger.info(f"🤫 [dim]Промолчала (ambient)[/] (ключ={key})")
-                        if status_message:
+                        if turn.status_message:
                             try:
-                                await status_message.delete()
+                                await turn.status_message.delete()
                             except Exception:
                                 pass
                         return
@@ -1051,9 +814,9 @@ async def send_llm_request(
                         logger.info(f"↩️ [yellow]Пустой ответ при прямом обращении — подталкиваю ответить[/] (ключ={key})")
                         continue
                     logger.warning(f"⚠️ [yellow]Пустой ответ при прямом обращении даже после напоминания[/] (ключ={key})")
-                    if status_message:
+                    if turn.status_message:
                         try:
-                            await status_message.delete()
+                            await turn.status_message.delete()
                         except Exception:
                             pass
                     return
@@ -1072,7 +835,7 @@ async def send_llm_request(
                 # адресное обращение → реплай на триггер (как раньше);
                 # ambient (случайный пинг) → обычное сообщение без reply.
                 target_mid = update.message.message_id if mentioned else None
-                sent_mid = await _deliver(reply, target_mid, status_message)
+                sent_mid = await _deliver(reply, target_mid, turn.status_message)
                 await _remember_bot_mid(saved, sent_mid)
                 return
 

@@ -99,7 +99,10 @@ async def poll_tiktok_queue(bot):
     from llm_client import generate_and_send_tiktok_review
     from state import histories
 
-    QUEUE_DIR = "/tmp/tiktok_queue"
+    # По умолчанию — /tmp/tiktok_queue (совпадает с монтированием в docker-compose и путём,
+    # куда пишет внешний TikTok-продюсер). На не-Linux/локальном запуске можно переопределить
+    # через переменную окружения TIKTOK_QUEUE_DIR, чтобы не упираться в отсутствие /tmp.
+    QUEUE_DIR = os.environ.get("TIKTOK_QUEUE_DIR", "/tmp/tiktok_queue")
     os.makedirs(QUEUE_DIR, exist_ok=True)
     try:
         os.chmod(QUEUE_DIR, 0o777)
