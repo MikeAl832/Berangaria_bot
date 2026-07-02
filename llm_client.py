@@ -166,8 +166,14 @@ def _render_history_for_api(history: list) -> list:
                     parts.append(f"{r.get('emoji', '')} на «{on}»" if on else r.get("emoji", ""))
                 notes.append("Ты поставила реакцию " + ", ".join(parts) + ".")
             if stickers:
-                sp = ", ".join(f"«{(s.get('desc') or '')[:40]}»" for s in stickers)
-                notes.append("Ты отправила стикер " + sp + ".")
+                parts = []
+                for s in stickers:
+                    d = (s.get('desc') or '').strip()
+                    if len(d) > 80:
+                        d = d[:80] + "…"
+                    e = s.get('emotion')
+                    parts.append(f"[{e}] «{d}»" if e else f"«{d}»")
+                notes.append("Ты отправила стикер " + ", ".join(parts) + ".")
             if incoming:
                 quote = content.strip()
                 quote = (quote[:40] + "…") if len(quote) > 40 else quote
@@ -823,10 +829,17 @@ async def send_llm_request(
                                         sticker_candidates[sticker_seq] = {
                                             "file_id": c.get("file_id"),
                                             "desc": c.get("description") or fquery,
+                                            "emotion": c.get("emotion"),
                                         }
+                                        # При ВЫБОРЕ показываем всё: эмоцию, полное описание и теги —
+                                        # чтобы модель судила по содержанию, а не по обрывку.
                                         emo = c.get("emotion") or "—"
-                                        desc = (c.get("description") or "").replace("\n", " ")[:90]
-                                        lines.append(f"#{sticker_seq} [{emo}] {desc}")
+                                        desc = (c.get("description") or "").replace("\n", " ").strip()
+                                        kws = ", ".join(c.get("keywords") or [])
+                                        line = f"#{sticker_seq} [{emo}] {desc}"
+                                        if kws:
+                                            line += f" | теги: {kws}"
+                                        lines.append(line)
                                     logger.info(f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт.")
                                     tool_result = (
                                         "Нашла стикеры (выбери подходящий ПО ОПИСАНИЮ и вызови send_sticker "
@@ -857,7 +870,8 @@ async def send_llm_request(
                                     cands = await asyncio.to_thread(search_stickers, q)
                                     if cands:
                                         chosen = {"file_id": cands[0].get("file_id"),
-                                                  "desc": cands[0].get("description") or q}
+                                                  "desc": cands[0].get("description") or q,
+                                                  "emotion": cands[0].get("emotion")}
                                 if not chosen or not chosen.get("file_id"):
                                     tool_result = ("Не поняла, какой стикер слать. Сначала вызови find_stickers "
                                                    "и передай номер найденного: send_sticker(id).")
@@ -869,7 +883,8 @@ async def send_llm_request(
                                             kw["message_thread_id"] = thread_id
                                         await context.bot.send_sticker(**kw)
                                         sticker_sent = True
-                                        stickers_made.append({"desc": chosen.get("desc")})
+                                        stickers_made.append({"desc": chosen.get("desc"),
+                                                              "emotion": chosen.get("emotion")})
                                         logger.info(f"🎨 [magenta]Стикер отправлен[/] «{(chosen.get('desc') or '')[:40]}»")
                                         tool_result = ("Стикер отправлен. Обычно он говорит сам за себя — "
                                                        "оставь ответ ПУСТЫМ, если нет чёткой мысли добавить словами "

@@ -391,6 +391,8 @@ def search_stickers(query: str, top_k: int = None, min_score: float = None):
                 "file_id": pl.get("file_id"),
                 "description": pl.get("description"),
                 "emotion": pl.get("emotion"),
+                "keywords": pl.get("keywords") or [],
+                "franchise": pl.get("franchise"),
                 "score": p.score,
             })
         return out
