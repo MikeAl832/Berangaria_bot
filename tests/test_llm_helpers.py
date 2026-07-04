@@ -63,8 +63,9 @@ def test_clean_reply_strips_think_block():
     assert _clean_reply("<think>рассуждения</think>ответ") == "ответ"
 
 
-def test_clean_reply_removes_emoji():
-    assert _clean_reply("текст 😀🔥") == "текст"
+def test_clean_reply_keeps_emoji():
+    # Эмодзи больше не вырезаются — промпт отговаривает, но не затыкает.
+    assert _clean_reply("текст 😀🔥") == "текст 😀🔥"
 
 
 def test_clean_reply_silence_word():
