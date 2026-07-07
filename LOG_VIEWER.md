@@ -45,14 +45,19 @@ Create a Cloudflare DNS record:
 logs.titlo10.fun -> VPS public IPv4
 ```
 
-After DNS resolves to the VPS, run on the server:
+The current VPS has a Let's Encrypt certificate at:
 
-```bash
-sudo certbot --nginx -d logs.titlo10.fun
+```text
+/etc/letsencrypt/live/logs.titlo10.fun/fullchain.pem
 ```
 
-Until TLS is issued, the host Nginx config serves the log viewer on HTTP. If
-Cloudflare proxying is enabled, keep Basic Auth at the origin anyway.
+Nginx redirects HTTP to HTTPS and keeps `/.well-known/acme-challenge/` open for
+certbot renewal. If the host is recreated, issue the certificate with:
+
+```bash
+sudo mkdir -p /var/www/letsencrypt/.well-known/acme-challenge
+sudo certbot certonly --webroot -w /var/www/letsencrypt -d logs.titlo10.fun
+```
 
 ## Credentials
 
