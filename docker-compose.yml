@@ -15,6 +15,5 @@ services:
     depends_on:
       - qdrant
     volumes:
-      - /tmp/tiktok_queue:/tmp/tiktok_queue
       - ./bot_data:/data
     restart: always

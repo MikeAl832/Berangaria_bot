@@ -89,123 +89,6 @@ async def periodic_summarization():
             logger.error(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}", exc_info=True)
 
 
-async def poll_tiktok_queue(bot):
-    """Фоновая задача опроса очереди новых видео/слайд-шоу из TikTok."""
-    import os
-    import json
-    import glob
-    from handlers import get_history_key, get_history_lock, touch_activity
-    from vision_provider import describe_video, describe_image_bytes
-    from llm_client import generate_and_send_tiktok_review
-    from state import histories
-
-    # По умолчанию — /tmp/tiktok_queue (совпадает с монтированием в docker-compose и путём,
-    # куда пишет внешний TikTok-продюсер). На не-Linux/локальном запуске можно переопределить
-    # через переменную окружения TIKTOK_QUEUE_DIR, чтобы не упираться в отсутствие /tmp.
-    QUEUE_DIR = os.environ.get("TIKTOK_QUEUE_DIR", "/tmp/tiktok_queue")
-    os.makedirs(QUEUE_DIR, exist_ok=True)
-    try:
-        os.chmod(QUEUE_DIR, 0o777)
-    except Exception:
-        pass
-
-    logger.info("⏱️ [cyan]Запущен опрос очереди TikTok для Berangaria...[/]")
-
-    while True:
-        await asyncio.sleep(5)
-        try:
-            json_files = glob.glob(os.path.join(QUEUE_DIR, "*.json"))
-            for json_file in json_files:
-                logger.info(f"📦 Найдена запись в очереди TikTok: {json_file}")
-                
-                try:
-                    with open(json_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                except Exception as e:
-                    logger.error(f"❌ Ошибка чтения JSON {json_file}: {e}")
-                    continue
-
-                video_id = data.get("video_id")
-                media_type = data.get("type")
-                media_files = data.get("media_files", [])
-                chat_id = data.get("chat_id")
-                message_id = data.get("message_id")
-                message_thread_id = data.get("message_thread_id")
-                username = data.get("username")
-
-                # Убедимся, что все медиафайлы существуют
-                media_exists = all(os.path.exists(f) for f in media_files)
-                if not media_exists:
-                    logger.warning(f"⚠️ Медиафайлы для {video_id} еще не записаны на диск. Пропускаем.")
-                    continue
-
-                logger.info(f"👁️ Описание медиа {video_id} ({media_type}) через Gemini Vision...")
-                description = ""
-
-                if media_type == "video" and media_files:
-                    video_path = media_files[0]
-                    try:
-                        description = await describe_video(
-                            video_path=video_path,
-                            mime="video/mp4",
-                            caption="",
-                            duration=0.0
-                        )
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка describe_video: {e}")
-                        description = "(не удалось распознать видео)"
-                elif media_type == "slideshow" and media_files:
-                    descriptions = []
-                    for idx, img_path in enumerate(media_files[:3]):
-                        try:
-                            with open(img_path, 'rb') as f_img:
-                                img_bytes = f_img.read()
-                            desc = await describe_image_bytes(img_bytes, "image/jpeg", caption="")
-                            descriptions.append(f"Кадр {idx+1}: {desc}")
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка describe_image {img_path}: {e}")
-                    description = "\n\n".join(descriptions) if descriptions else "(не удалось распознать изображения)"
-
-                if not description:
-                    description = "(медиафайл пустой или не распознан)"
-
-                # Формируем контекст истории
-                key = get_history_key(chat_id, False, 0)
-                user_msg = f"[User: {username or 'TikTok'}] [New Liked TikTok Media]"
-                if media_type == "video":
-                    user_msg += f"\n[Video description: {description}]"
-                else:
-                    user_msg += f"\n[Image description: {description}]"
-
-                # Загружаем в историю
-                async with get_history_lock(key):
-                    if key not in histories:
-                        histories[key] = []
-                    history = histories[key]
-                    history.append({"role": "user", "content": user_msg})
-                    histories[key] = history
-                    touch_activity(key)
-                    state.save_history(key)
-
-                # Генерируем рецензию и отправляем в группу
-                logger.info(f"🧠 Генерация ответа DeepSeek для {video_id}...")
-                await generate_and_send_tiktok_review(bot, chat_id, message_id, key, history, message_thread_id)
-
-                # Удаляем обработанные файлы
-                try:
-                    for f in media_files:
-                        if os.path.exists(f):
-                            os.remove(f)
-                    if os.path.exists(json_file):
-                        os.remove(json_file)
-                    logger.info(f"🗑️ Запись очереди {video_id} обработана и очищена.")
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка очистки файлов очереди {video_id}: {e}")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка в цикле опроса очереди TikTok: {e}", exc_info=True)
-
-
 async def sync_stickers_on_start():
     """
     При старте синхронизирует стикеры в Qdrant (в потоке, чтобы не блокировать loop).
@@ -311,10 +194,9 @@ def main():
     logger.info("📝 Автосуммаризация активных чатов: каждый день в 5:00")
     logger.info("✅ [bright_green]Бот запущен![/]")
     
-    # Запускаем фоновые задачи суммаризации и опроса TikTok
+    # Запускаем фоновые задачи суммаризации и синхронизации стикеров
     loop = asyncio.get_event_loop()
     summarization_task = loop.create_task(periodic_summarization())
-    tiktok_queue_task = loop.create_task(poll_tiktok_queue(app.bot))
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
     
     try:
@@ -326,7 +208,6 @@ def main():
     finally:
         # Graceful shutdown
         summarization_task.cancel()
-        tiktok_queue_task.cancel()
         sticker_sync_task.cancel()
         # Финальный flush историй на диск (страховка поверх write-through)
         try:
