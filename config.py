@@ -97,6 +97,10 @@ MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
 # Макс. размер одного батча, отправляемого в Mem0 (символы). Держим под лимитом
 # входа embedding-модели (~2048 токенов): на этапе дедупа Mem0 эмбеддит весь кусок целиком.
 MEMORY_FLUSH_MAX_CHARS = config_yaml.get("memory_flush_max_chars", 2000)
+MEMORY_FLUSH_INTERVAL_SECONDS = config_yaml.get("memory_flush_interval_seconds", 300)
+MEMORY_QUERY_MIN_CHARS = config_yaml.get("memory_query_min_chars", 12)
+MEMORY_QUERY_RECENT_MESSAGES = config_yaml.get("memory_query_recent_messages", 3)
+MEMORY_MEDIA_MAX_CHARS = config_yaml.get("memory_media_max_chars", 600)
 
 # ========================================
 # 🗄️ QDRANT (общий для mem0 и стикеров)

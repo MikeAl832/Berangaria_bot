@@ -12,7 +12,8 @@ from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS, PRICE_PROMPT_CACHE_MISS,
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
-    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS, MAX_API_RETRIES,
+    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
+    MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
 )
 import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
@@ -266,6 +267,54 @@ def _extract_plain_text(content) -> str:
     return text.strip()
 
 
+_TRIVIAL_MEMORY_QUERIES = {
+    "(сообщение без текста)",
+    "сообщение без текста",
+    "без текста",
+    "ладно",
+    "ок",
+    "окей",
+    "пон",
+    "норм",
+    "да",
+    "нет",
+    "угу",
+    "ага",
+}
+
+
+def _is_meaningful_memory_query(text: str) -> bool:
+    """Отсекает короткие/служебные реплики, которые портят retrieval."""
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not normalized or normalized in _TRIVIAL_MEMORY_QUERIES:
+        return False
+
+    alnum_chars = sum(1 for ch in normalized if ch.isalnum())
+    return alnum_chars >= MEMORY_QUERY_MIN_CHARS
+
+
+def _build_memory_search_query(history: list, user_name: str) -> str:
+    """
+    Берёт последние содержательные user-сообщения вместо слепого поиска по
+    "Ладно" или "(сообщение без текста)".
+    """
+    candidates: list[str] = []
+    for entry in reversed(history or []):
+        if entry.get("role") != "user":
+            continue
+        plain = _extract_plain_text(entry.get("content", ""))
+        if not _is_meaningful_memory_query(plain):
+            continue
+        candidates.append(plain)
+        if len(candidates) >= MEMORY_QUERY_RECENT_MESSAGES:
+            break
+
+    if candidates:
+        return "\n".join(reversed(candidates))[:1000]
+
+    return user_name if _is_meaningful_memory_query(user_name) else ""
+
+
 def _format_memory_block(mem_results: dict) -> str:
     """
     Формирует компактный блок памяти с фильтрацией по релевантности.
@@ -341,6 +390,11 @@ async def _add_memory_chunks(key: str, lines: list) -> None:
             logger.error(f"⚠️ Ошибка сохранения памяти (scope={key}): {e}")
 
 
+def _track_memory_flush(task: asyncio.Task[None]) -> None:
+    state.memory_flush_tasks.add(task)
+    task.add_done_callback(state.memory_flush_tasks.discard)
+
+
 def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> None:
     """
     Кладёт реплику юзера в буфер памяти. При достижении лимита символов —
@@ -360,7 +414,33 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
         # Снимаем снимок и очищаем синхронно (без await) — без гонок в одном loop
         lines = list(buf)
         state.pending_memory[key] = []
-        asyncio.create_task(_add_memory_chunks(key, lines))
+        _track_memory_flush(asyncio.create_task(_add_memory_chunks(key, lines)))
+
+
+async def flush_pending_memory() -> int:
+    """Асинхронно сохраняет все накопленные короткие реплики в Mem0."""
+    if not memory:
+        return 0
+
+    snapshots: list[tuple[str, list[str]]] = []
+    for key in list(state.pending_memory.keys()):
+        lines = state.pending_memory.get(key) or []
+        if not lines:
+            continue
+        state.pending_memory[key] = []
+        snapshots.append((key, list(lines)))
+
+    for key, lines in snapshots:
+        await _add_memory_chunks(key, lines)
+
+    return sum(len(lines) for _, lines in snapshots)
+
+
+async def wait_for_memory_flush_tasks() -> None:
+    """Дожидается фоновых flush-задач, если они были запущены по лимиту батча."""
+    tasks = [task for task in state.memory_flush_tasks if not task.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def flush_pending_memory_blocking() -> None:
@@ -473,41 +553,41 @@ async def send_llm_request(
             if not re.match(r'^(private|group)_-?\d+$', key):
                 logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
             else:
-                # Ищем по чистому тексту пользователя
-                query = _extract_plain_text(history[-1].get('content', '')) if history else user_name
+                query = _build_memory_search_query(history, user_name)
                 if not query:
-                    query = user_name
-
-                if FULL_DEBUG_LOGS:
-                    logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
-
-                # Уменьшен таймаут до 15 секунд для быстрого ответа
-                mem_results = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        memory.search,
-                        query,
-                        filters={"user_id": key},
-                        limit=MEMORY_SEARCH_LIMIT
-                    ),
-                    timeout=15.0
-                )
-
-                results_count = len(mem_results.get('results', []))
-                mem_text = _format_memory_block(mem_results)
-                
-                if mem_text and payload_messages[-1]["role"] == "user":
-                    last_content = payload_messages[-1]["content"]
-                    payload_messages[-1] = {
-                        "role": "user",
-                        "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
-                    }
-                    facts_count = mem_text.count('\n') if mem_text else 0
-                    
-                    # Краткий лог для INFO, детальный для DEBUG
-                    logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
-                    
                     if FULL_DEBUG_LOGS:
-                        logger.debug(f"📝 Факты:\n{mem_text}")
+                        logger.debug(f"🔍 Mem0 поиск пропущен: нет содержательного query (scope={key})")
+                else:
+                    if FULL_DEBUG_LOGS:
+                        logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
+
+                    # Уменьшен таймаут до 15 секунд для быстрого ответа
+                    mem_results = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            memory.search,
+                            query,
+                            filters={"user_id": key},
+                            limit=MEMORY_SEARCH_LIMIT
+                        ),
+                        timeout=15.0
+                    )
+
+                    results_count = len(mem_results.get('results', []))
+                    mem_text = _format_memory_block(mem_results)
+
+                    if mem_text and payload_messages[-1]["role"] == "user":
+                        last_content = payload_messages[-1]["content"]
+                        payload_messages[-1] = {
+                            "role": "user",
+                            "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
+                        }
+                        facts_count = mem_text.count('\n') if mem_text else 0
+
+                        # Краткий лог для INFO, детальный для DEBUG
+                        logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
+
+                        if FULL_DEBUG_LOGS:
+                            logger.debug(f"📝 Факты:\n{mem_text}")
 
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ [yellow]Память: таймаут поиска (15s), продолжаем без неё[/] scope={key}")

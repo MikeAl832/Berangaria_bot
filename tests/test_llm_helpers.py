@@ -14,6 +14,8 @@ from llm_client import (
     _renumber_sids,
     _extract_plain_text,
     _format_memory_block,
+    _is_meaningful_memory_query,
+    _build_memory_search_query,
 )
 
 
@@ -141,6 +143,25 @@ def test_extract_plain_text_list_content():
 
 def test_extract_plain_text_non_str_returns_empty():
     assert _extract_plain_text(123) == ""
+
+
+def test_meaningful_memory_query_rejects_trivial_short_text():
+    assert not _is_meaningful_memory_query("Ладно")
+    assert not _is_meaningful_memory_query("(сообщение без текста)")
+
+
+def test_build_memory_search_query_uses_recent_meaningful_message():
+    hist = [
+        {"role": "user", "content": "[Message: обсуждали свежую систему памяти бота]"},
+        {"role": "assistant", "content": "ответ"},
+        {"role": "user", "content": "[Message: Ладно]"},
+    ]
+    assert _build_memory_search_query(hist, "Миша") == "обсуждали свежую систему памяти бота"
+
+
+def test_build_memory_search_query_returns_empty_for_trivial_history():
+    hist = [{"role": "user", "content": "[Message: пон]"}]
+    assert _build_memory_search_query(hist, "Миша") == ""
 
 
 # ---------- _format_memory_block ----------

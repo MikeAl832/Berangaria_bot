@@ -12,7 +12,7 @@ from config import (
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VIDEO_MAX_FILE_SIZE_BYTES,
     AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, RANDOM_REPLY_COOLDOWN,
-    MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID
+    MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID, MEMORY_MEDIA_MAX_CHARS
 )
 from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count, get_history_lock, _buffer_lock, touch_activity, save_history
 import state
@@ -46,6 +46,37 @@ def truncate_at_sentence(text: str, max_chars: int) -> str:
     
     # Последний фоллбэк: обрезаем жёстко
     return truncated + "..."
+
+
+def _build_memory_text(combined_text: str, media_items: list[tuple[str, str]]) -> str:
+    """
+    Собирает компактный текст для Mem0: пользовательский текст + короткая выжимка
+    медиа-описаний. Полные vision-описания остаются в истории/логах, а память
+    получает только ограниченный фрагмент.
+    """
+    parts: list[str] = []
+    if combined_text.strip():
+        parts.append(combined_text.strip())
+
+    remaining = MEMORY_MEDIA_MAX_CHARS
+    for kind, desc in media_items:
+        if remaining <= 0:
+            break
+        clean_desc = " ".join((desc or "").split())
+        if not clean_desc:
+            continue
+        label = "Видео" if kind == "video" else "Аудио" if kind == "audio" else "Изображение"
+        snippet_budget = remaining - len(label) - 2
+        if snippet_budget <= 0:
+            break
+        snippet = truncate_at_sentence(clean_desc, snippet_budget)
+        line = f"{label}: {snippet}"
+        if len(line) > remaining:
+            line = line[:max(0, remaining - 3)] + "..."
+        parts.append(line)
+        remaining -= len(line) + 1
+
+    return "\n".join(parts).strip()
 
 
 # ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
@@ -289,9 +320,9 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         touch_activity(key)  # Обновляем время активности
         state.save_history(key)  # Персистим историю на диск
 
-    # Копим слова юзера для долговременной памяти (медиа-описания не сохраняем).
+    # Копим слова юзера и компактные медиа-факты для долговременной памяти.
     # Делаем это для ВСЕХ сообщений, даже если бот не отвечает — память про всю беседу.
-    record_user_memory(key, combined_text, user_name, is_group)
+    record_user_memory(key, _build_memory_text(combined_text, media_items), user_name, is_group)
 
     if not (mentioned or random_reply):
         return

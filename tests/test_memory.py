@@ -1,4 +1,5 @@
 from llm_client import _chunk_lines_by_chars
+from handlers import _build_memory_text
 
 
 def test_chunks_respect_budget():
@@ -25,3 +26,17 @@ def test_all_lines_preserved():
     chunks = _chunk_lines_by_chars(lines, 20)
     flat = [l for c in chunks for l in c]
     assert flat == lines  # ничего не потеряли и не переставили
+
+
+def test_memory_text_includes_bounded_media_description():
+    text = _build_memory_text("", [("image", "очень важное описание " * 100)])
+
+    assert text.startswith("Изображение:")
+    assert len(text) <= 600
+
+
+def test_memory_text_keeps_user_text_with_media():
+    text = _build_memory_text("смотри", [("video", "кот прыгает по столу")])
+
+    assert "смотри" in text
+    assert "Видео:" in text

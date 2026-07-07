@@ -28,7 +28,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, MessageRea
 
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL
+    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
+    MEMORY_FLUSH_INTERVAL_SECONDS,
 )
 import state
 from handlers import (
@@ -144,6 +145,26 @@ async def sync_stickers_on_start():
         logger.error(f"🎨 [red]Синк/миграция стикеров при старте не удались:[/] {e}", exc_info=True)
 
 
+async def periodic_memory_flush():
+    """Периодически сохраняет короткие накопленные реплики в Mem0."""
+    if MEMORY_FLUSH_INTERVAL_SECONDS <= 0:
+        logger.info("🧠 [dim]Периодический flush памяти выключен[/]")
+        return
+
+    from llm_client import flush_pending_memory
+
+    while True:
+        await asyncio.sleep(MEMORY_FLUSH_INTERVAL_SECONDS)
+        try:
+            flushed = await flush_pending_memory()
+            if flushed:
+                logger.info(f"🧠 [green]Периодический flush памяти:[/] {flushed} реплик")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"❌ [red]Ошибка периодического flush памяти:[/] {e}", exc_info=True)
+
+
 def main():
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
@@ -205,17 +226,25 @@ def main():
     loop = asyncio.get_event_loop()
     summarization_task = loop.create_task(periodic_summarization())
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
+    memory_flush_task = loop.create_task(periodic_memory_flush())
     
     try:
         # allowed_updates=ALL_TYPES — иначе Telegram НЕ присылает message_reaction.
         # Лишние типы без хендлеров просто игнорируются.
-        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES, close_loop=False)
     except KeyboardInterrupt:
         logger.info("🛑 [yellow]Получен сигнал остановки...[/]")
     finally:
         # Graceful shutdown
-        summarization_task.cancel()
-        sticker_sync_task.cancel()
+        background_tasks = [summarization_task, sticker_sync_task, memory_flush_task]
+        for task in background_tasks:
+            task.cancel()
+        try:
+            if not loop.is_closed():
+                loop.run_until_complete(asyncio.gather(*background_tasks, return_exceptions=True))
+        except RuntimeError as e:
+            logger.debug(f"Не удалось дождаться фоновых задач при остановке: {e}")
+
         # Финальный flush историй на диск (страховка поверх write-through)
         try:
             for k in list(state.histories.keys()):
@@ -225,9 +254,18 @@ def main():
             logger.error(f"❌ Ошибка финального сохранения историй: {e}")
         # Флаш остатков буфера долговременной памяти
         try:
-            from llm_client import flush_pending_memory_blocking
-            flush_pending_memory_blocking()
-            logger.info("🧠 [green]Остатки памяти сохранены[/]")
+            from llm_client import (
+                flush_pending_memory,
+                flush_pending_memory_blocking,
+                wait_for_memory_flush_tasks,
+            )
+            if not loop.is_closed():
+                loop.run_until_complete(wait_for_memory_flush_tasks())
+                flushed = loop.run_until_complete(flush_pending_memory())
+                logger.info(f"🧠 [green]Остатки памяти сохранены[/] ({flushed} реплик)")
+            else:
+                flush_pending_memory_blocking()
+                logger.info("🧠 [green]Остатки памяти сохранены[/]")
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")

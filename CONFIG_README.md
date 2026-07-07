@@ -71,6 +71,11 @@ embedding_dims: 768
 memory_search_limit: 10
 memory_min_score: 0.2
 memory_max_chars: 1200
+memory_flush_max_chars: 2000
+memory_flush_interval_seconds: 300
+memory_query_min_chars: 12
+memory_query_recent_messages: 3
+memory_media_max_chars: 600
 ```
 
 **Parameters:**
@@ -79,6 +84,11 @@ memory_max_chars: 1200
 - `memory_search_limit`: Number of facts retrieved per query
 - `memory_min_score`: Relevance threshold (0.0-1.0)
 - `memory_max_chars`: Maximum total length of memory context
+- `memory_flush_max_chars`: Maximum pending text batch sent to Mem0
+- `memory_flush_interval_seconds`: Periodic flush interval for short pending messages
+- `memory_query_min_chars`: Minimum meaningful query length before memory search runs
+- `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
+- `memory_media_max_chars`: Maximum compact media-description fragment sent to memory
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)
@@ -297,11 +307,12 @@ Use `/summarize` command to compress chat history immediately.
 **Symptoms:** Bot doesn't remember previous conversations
 
 **Solutions:**
-1. Enable debug mode and check memory saves
-2. Lower `memory_min_score` to 0.1
-3. Increase `memory_search_limit` to 15-20
-4. Try removing custom_instructions
+1. Enable `full_debug_logs` and check memory saves/retrieval
+2. Verify periodic flush logs (`Периодический flush памяти`)
+3. Lower `memory_min_score` to 0.1 if relevant facts are filtered out
+4. Increase `memory_search_limit` to 15-20 only if context budget allows it
 5. Verify Qdrant has data: check qdrant_storage/ directory size
+6. Ensure `fastembed` is installed so Qdrant BM25 keyword search is enabled
 
 ## Migration Guide
 
