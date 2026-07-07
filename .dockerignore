@@ -1,7 +1,20 @@
 .git
+.github
 .venv
 venv
 ENV
 .env
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime data is mounted by docker-compose and must not be copied into images.
+bot_data/
+qdrant_storage/
+*.db
+*.sqlite
+*.sqlite3
+
+tests/
