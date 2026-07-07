@@ -6,7 +6,7 @@ import logging
 import httpx
 
 from config import (
-    GEMINI_MODEL, GEMINI_API_KEY, DEBUG,
+    GEMINI_MODEL, GEMINI_API_KEY, FULL_DEBUG_LOGS,
     GEMINI_UPLOAD_MAX_WAIT_SEC, GEMINI_UPLOAD_BACKOFF_INITIAL, GEMINI_UPLOAD_BACKOFF_MAX
 )
 
@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 def _log_description(prefix: str, description: str, meta: str = "") -> None:
     """
     Logs vision model results.
-    DEBUG=True  → full description text.
-    DEBUG=False → metadata only (model, tokens, length).
+    FULL_DEBUG_LOGS=True  → full description text.
+    FULL_DEBUG_LOGS=False → metadata only (model, tokens, length).
     """
     head = f"{prefix} {meta}".rstrip()
     # Обрезаем длинные описания для INFO режима (80 символов), в DEBUG будет полное
     short_desc = description[:80] + "..." if len(description) > 80 else description
     logger.info(f"{head} | {len(description)} chars | {short_desc}")
     
-    if DEBUG:
+    if FULL_DEBUG_LOGS:
         logger.debug(f"Полное описание:\n{description}")
 
 

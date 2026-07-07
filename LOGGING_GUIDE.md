@@ -127,6 +127,19 @@ verbose: true
 ./logs.sh errors   # последние WARNING/ERROR/CRITICAL
 ```
 
+`full_debug_logs: true` включает подробные записи с промптами, ответами модели,
+фактами памяти и vision-описаниями для файла и Dozzle. Это не включает DEBUG в
+Docker-консоли; за консоль отвечает отдельный `debug: true`.
+
+Браузерный self-hosted viewer:
+
+```text
+https://logs.titlo10.fun -> Nginx Basic Auth -> 127.0.0.1:9999 -> Dozzle
+```
+
+Контейнер `log-tail` читает `bot_data/bot.log` и отдает его в Dozzle через stdout.
+Подробности: `LOG_VIEWER.md`.
+
 ---
 
 ## 🎨 Цветовое кодирование

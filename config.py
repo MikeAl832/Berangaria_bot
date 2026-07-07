@@ -26,6 +26,22 @@ def _int_setting(env_name: str, yaml_key: str, default: int) -> int:
     return _as_int(os.environ.get(env_name, config_yaml.get(yaml_key, default)), default)
 
 
+def _as_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _bool_setting(env_name: str, yaml_key: str, default: bool) -> bool:
+    return _as_bool(os.environ.get(env_name, config_yaml.get(yaml_key, default)), default)
+
+
 def _str_setting(env_name: str, yaml_key: str, default: str) -> str:
     value = os.environ.get(env_name, config_yaml.get(yaml_key, default))
     if isinstance(value, str) and value:
@@ -112,8 +128,9 @@ SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
 MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
-DEBUG = config_yaml.get("debug", False)
-VERBOSE = config_yaml.get("verbose", False)  # Суперподробные логи (включает DEBUG)
+DEBUG = _bool_setting("BOT_DEBUG", "debug", False)
+VERBOSE = _bool_setting("BOT_VERBOSE", "verbose", False)  # Суперподробные логи (включает DEBUG)
+FULL_DEBUG_LOGS = DEBUG or _bool_setting("BOT_FULL_DEBUG_LOGS", "full_debug_logs", False)
 LOG_FILE = _str_setting("BOT_LOG_FILE", "log_file", "bot.log")
 LOG_MAX_BYTES = _int_setting("BOT_LOG_MAX_BYTES", "log_max_bytes", 10 * 1024 * 1024)
 LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)

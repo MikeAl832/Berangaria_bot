@@ -147,6 +147,7 @@ Vision prompts redesigned for conversational output instead of structured report
 ## Logs
 
 Docker writes full DEBUG logs to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. The file rotates at 10 MB and keeps 5 backups by default.
+The production compose stack also runs Dozzle on `127.0.0.1:9999`; host Nginx exposes it at `logs.titlo10.fun` with Basic Auth.
 
 ```bash
 ./logs.sh          # live Docker logs for the bot
@@ -154,6 +155,8 @@ Docker writes full DEBUG logs to `/data/bot.log`, mounted on the host as `./bot_
 ./logs.sh tail     # follow bot_data/bot.log
 ./logs.sh errors   # recent warnings/errors from bot_data/bot.log
 ```
+
+See [LOG_VIEWER.md](LOG_VIEWER.md) for the self-hosted browser log viewer setup.
 
 ## Configuration
 
@@ -178,6 +181,7 @@ Berangaria_bot/
 ├── tools.py             # Tool definitions
 ├── config.py            # Configuration loader
 ├── config.yaml          # Main configuration
+├── LOG_VIEWER.md        # Self-hosted Dozzle/Nginx log viewer setup
 ├── logs.sh              # Log viewer helper
 ├── .env                 # Secrets (not committed)
 ├── docker-compose.yml   # Qdrant container

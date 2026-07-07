@@ -7,6 +7,7 @@
 ```yaml
 # 🚀 Продакшн (чистая консоль)
 debug: false
+full_debug_logs: true
 verbose: false
 ```
 
@@ -48,6 +49,8 @@ verbose: true
 **ВСЕГДА содержит полный DEBUG**, независимо от режима консоли!
 
 В Docker пишется в `/data/bot.log`, на хосте это `./bot_data/bot.log`.
+`full_debug_logs: true` включает генерацию подробных записей с промптами,
+ответами модели, памятью и vision-описаниями для файла/Dozzle без DEBUG-консоли.
 Быстрый просмотр:
 
 ```bash
@@ -55,6 +58,8 @@ verbose: true
 ./logs.sh tail
 ./logs.sh errors
 ```
+
+Браузерный просмотр на сервере: `https://logs.titlo10.fun` (Dozzle через Nginx Basic Auth).
 
 ---
 

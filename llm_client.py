@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, DEBUG, PRICE_PROMPT_CACHE_MISS,
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS, PRICE_PROMPT_CACHE_MISS,
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS, MAX_API_RETRIES,
 )
@@ -439,7 +439,7 @@ async def summarize_history(history: list) -> list:
             summary = re.sub(r'<think>.*?</think>', '', summary, flags=re.DOTALL).strip()
             logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
             
-            if DEBUG:
+            if FULL_DEBUG_LOGS:
                 logger.debug(f"Содержание:\n{summary}")
             
             return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
@@ -478,7 +478,7 @@ async def send_llm_request(
                 if not query:
                     query = user_name
 
-                if DEBUG:
+                if FULL_DEBUG_LOGS:
                     logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
 
                 # Уменьшен таймаут до 15 секунд для быстрого ответа
@@ -506,7 +506,7 @@ async def send_llm_request(
                     # Краткий лог для INFO, детальный для DEBUG
                     logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
                     
-                    if DEBUG:
+                    if FULL_DEBUG_LOGS:
                         logger.debug(f"📝 Факты:\n{mem_text}")
 
         except asyncio.TimeoutError:
@@ -610,7 +610,7 @@ async def send_llm_request(
             save_history(key)
 
     async with httpx.AsyncClient(timeout=600.0) as client:
-        if DEBUG:
+        if FULL_DEBUG_LOGS:
             # В DEBUG режиме показываем полную структуру с содержимым
             logger.debug("[cyan]" + "=" * 80 + "[/]")
             logger.debug("[bright_green]📤 ЗАПРОС К МОДЕЛИ:[/]")
@@ -747,7 +747,7 @@ async def send_llm_request(
                 reply = message.get('content', '')
                 
                 # В DEBUG показываем полный ответ модели
-                if DEBUG:
+                if FULL_DEBUG_LOGS:
                     logger.debug("[blue]" + "=" * 80 + "[/]")
                     logger.debug("[bright_green]📥 ОТВЕТ ОТ МОДЕЛИ:[/]")
                     logger.debug("[blue]" + "=" * 80 + "[/]")

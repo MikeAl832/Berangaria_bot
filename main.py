@@ -12,7 +12,7 @@ except ImportError:
 warnings.filterwarnings("ignore", message="Local file sizes do not match the metadata")
 
 from log_setup import setup_logging
-from config import DEBUG, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES, VERBOSE
+from config import DEBUG, FULL_DEBUG_LOGS, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES, VERBOSE
 
 setup_logging(
     level=logging.INFO,
@@ -194,6 +194,7 @@ def main():
     logger.info(f"📝 Максимальный контекст: [yellow]{MAX_CONTEXT_TOKENS}[/] токенов")
     logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
     logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")
+    logger.info(f"🧾 Full debug logs: [yellow]{FULL_DEBUG_LOGS}[/]")
     if VISION_MODE:
         logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")

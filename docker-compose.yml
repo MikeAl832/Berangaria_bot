@@ -1,6 +1,8 @@
 services:
   qdrant:
     image: qdrant/qdrant
+    labels:
+      - dev.berangaria.logs=visible
     ports:
       - "127.0.0.1:6333:6333"
     volumes:
@@ -9,14 +11,54 @@ services:
 
   bot:
     build: .
+    labels:
+      - dev.berangaria.logs=visible
     env_file: .env
     environment:
       - BOT_DB_PATH=/data/bot_state.db
       - BOT_LOG_FILE=/data/bot.log
       - BOT_LOG_MAX_BYTES=10485760
       - BOT_LOG_BACKUP_COUNT=5
+      - BOT_FULL_DEBUG_LOGS=true
     depends_on:
       - qdrant
     volumes:
       - ./bot_data:/data
+    restart: always
+
+  log-tail:
+    image: alpine:3.20
+    labels:
+      - dev.berangaria.logs=visible
+    command:
+      - sh
+      - -c
+      - |
+        while [ ! -f /logs/bot.log ]; do
+          echo "waiting for /logs/bot.log..."
+          sleep 1
+        done
+        exec tail -n 300 -F /logs/bot.log
+    depends_on:
+      - bot
+    volumes:
+      - ./bot_data:/logs:ro
+    network_mode: none
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    restart: always
+
+  dozzle:
+    image: amir20/dozzle:latest
+    environment:
+      - DOZZLE_FILTER=label=dev.berangaria.logs=visible
+    ports:
+      - "127.0.0.1:9999:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - log-tail
     restart: always
