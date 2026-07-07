@@ -21,7 +21,9 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
 - **Configurable random replies** in groups with cooldown
+- **Persistent runtime settings**: `/random` changes are saved in SQLite and survive restarts
 - **Token usage tracking** and cost estimation with cache hit rates
+- **Persistent rotated logs** in Docker (`bot_data/bot.log`) with helper commands
 - **Media description caching** to avoid re-processing repeated content
 - **Emoji-free text responses** with strict filtering (reactions via function only)
 
@@ -142,6 +144,17 @@ Vision prompts redesigned for conversational output instead of structured report
 
 \* When `admin_mode: true` in config
 
+## Logs
+
+Docker writes full DEBUG logs to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. The file rotates at 10 MB and keeps 5 backups by default.
+
+```bash
+./logs.sh          # live Docker logs for the bot
+./logs.sh file     # last lines from bot_data/bot.log
+./logs.sh tail     # follow bot_data/bot.log
+./logs.sh errors   # recent warnings/errors from bot_data/bot.log
+```
+
 ## Configuration
 
 See [CONFIG_README.md](CONFIG_README.md) for complete configuration reference including:
@@ -165,6 +178,7 @@ Berangaria_bot/
 ├── tools.py             # Tool definitions
 ├── config.py            # Configuration loader
 ├── config.yaml          # Main configuration
+├── logs.sh              # Log viewer helper
 ├── .env                 # Secrets (not committed)
 ├── docker-compose.yml   # Qdrant container
 └── requirements.txt     # Python dependencies
@@ -232,6 +246,7 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **Random replies too frequent/rare**:
 - Adjust with `/random <0-100>` command
+- `/random` changes are saved in `bot_data/bot_state.db` and survive container restarts
 - Check cooldown settings in config.yaml
 - Verify `random_reply_chance` and `random_reply_cooldown`
 
@@ -288,4 +303,3 @@ GPL-3.0
 ## Author
 
 MikeAl832
-

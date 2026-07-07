@@ -116,6 +116,17 @@ verbose: true
 
 **Формат:** Чистый текст без ANSI цветов и тегов `[color]...[/]`
 
+В Docker файл пишется в `/data/bot.log`, который смонтирован на хост как
+`./bot_data/bot.log`. По умолчанию включена ротация: 10 МБ на файл и 5
+архивов. Быстрые команды:
+
+```bash
+./logs.sh          # live Docker logs
+./logs.sh file     # последние строки persistent-файла
+./logs.sh tail     # follow persistent-файла
+./logs.sh errors   # последние WARNING/ERROR/CRITICAL
+```
+
 ---
 
 ## 🎨 Цветовое кодирование

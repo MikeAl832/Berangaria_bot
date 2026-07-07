@@ -12,16 +12,23 @@ except ImportError:
 warnings.filterwarnings("ignore", message="Local file sizes do not match the metadata")
 
 from log_setup import setup_logging
-from config import DEBUG, VERBOSE
+from config import DEBUG, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES, VERBOSE
 
-setup_logging(level=logging.INFO, log_file='bot.log', debug=DEBUG, verbose=VERBOSE)
+setup_logging(
+    level=logging.INFO,
+    log_file=LOG_FILE,
+    debug=DEBUG,
+    verbose=VERBOSE,
+    max_bytes=LOG_MAX_BYTES,
+    backup_count=LOG_BACKUP_COUNT,
+)
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters
 
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, DEBUG, SUMMARY_INTERVAL
+    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL
 )
 import state
 from handlers import (
@@ -140,12 +147,11 @@ async def sync_stickers_on_start():
 def main():
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
-    # Инициализируем изменяемый шанс из config
-    state.random_reply_chance = RANDOM_REPLY_CHANCE
-
-    # Инициализируем БД и подгружаем сохранённые истории диалогов
+    # Инициализируем БД, runtime-настройки и сохранённые истории диалогов
     state.init_db()
+    runtime_settings = state.load_runtime_settings(default_random_reply_chance=RANDOM_REPLY_CHANCE)
     loaded_chats = state.load_all_histories()
+    logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")
     logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()

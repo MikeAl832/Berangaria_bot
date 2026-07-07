@@ -97,17 +97,23 @@ random_reply_cooldown: 10
 admin_mode: false
 debug: true
 verbose: false
+log_file: bot.log
+log_max_bytes: 10485760
+log_backup_count: 5
 ```
 
 **Parameters:**
 - `bot_names`: Names that trigger bot responses in groups
-- `random_reply_chance`: Probability (0-100) of spontaneous group replies
+- `random_reply_chance`: Default probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts.
 - `summary_interval`: Messages preserved after summarization
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins
 - `debug`: Enable detailed logging
 - `verbose`: Super-detailed logs (HTTP, TLS, H2 - includes debug)
+- `log_file`: Local log file path. Docker overrides this to `/data/bot.log` (`./bot_data/bot.log` on the host).
+- `log_max_bytes`: One log file size before rotation. Set `0` to disable rotation.
+- `log_backup_count`: Number of rotated log files to keep.
 
 ### Access Control
 

@@ -47,6 +47,15 @@ verbose: true
 
 **ВСЕГДА содержит полный DEBUG**, независимо от режима консоли!
 
+В Docker пишется в `/data/bot.log`, на хосте это `./bot_data/bot.log`.
+Быстрый просмотр:
+
+```bash
+./logs.sh file
+./logs.sh tail
+./logs.sh errors
+```
+
 ---
 
 ## 🎨 Цвета в консоли

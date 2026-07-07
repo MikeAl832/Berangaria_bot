@@ -1,3 +1,5 @@
+import pytest
+
 import state
 
 
@@ -69,3 +71,37 @@ def test_history_delete(monkeypatch, tmp_path):
     state.delete_history("group_1")
     state.histories.clear()
     assert state.load_all_histories() == 0
+
+
+def test_runtime_settings_use_config_default_when_empty(monkeypatch, tmp_path):
+    db_file = tmp_path / "test.db"
+    monkeypatch.setattr(state, "DB_PATH", str(db_file))
+    monkeypatch.setattr(state, "random_reply_chance", 10)
+
+    state.init_db()
+    settings = state.load_runtime_settings(default_random_reply_chance=17)
+
+    assert settings.random_reply_chance == 17
+    assert state.random_reply_chance == 17
+
+
+def test_random_reply_chance_persists_between_restarts(monkeypatch, tmp_path):
+    db_file = tmp_path / "test.db"
+    monkeypatch.setattr(state, "DB_PATH", str(db_file))
+    monkeypatch.setattr(state, "random_reply_chance", 10)
+
+    state.init_db()
+    assert state.set_random_reply_chance(42) == 42
+
+    # Эмулируем рестарт: in-memory значение потеряно, БД осталась.
+    state.random_reply_chance = 10
+    settings = state.load_runtime_settings(default_random_reply_chance=10)
+
+    assert settings.random_reply_chance == 42
+    assert state.random_reply_chance == 42
+
+
+@pytest.mark.parametrize("value", [-1, 101, True, "10"])
+def test_random_reply_chance_validation_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        state.validate_random_reply_chance(value)

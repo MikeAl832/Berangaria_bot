@@ -5,7 +5,32 @@ from dotenv import load_dotenv
 load_dotenv()
 
 with open("config.yaml", "r", encoding="utf-8") as f:
-    config_yaml = yaml.safe_load(f)
+    loaded_yaml = yaml.safe_load(f) or {}
+
+if not isinstance(loaded_yaml, dict):
+    raise ValueError("config.yaml должен содержать YAML mapping/object")
+
+config_yaml: dict[str, object] = loaded_yaml
+
+
+def _as_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_setting(env_name: str, yaml_key: str, default: int) -> int:
+    return _as_int(os.environ.get(env_name, config_yaml.get(yaml_key, default)), default)
+
+
+def _str_setting(env_name: str, yaml_key: str, default: str) -> str:
+    value = os.environ.get(env_name, config_yaml.get(yaml_key, default))
+    if isinstance(value, str) and value:
+        return value
+    return default
 
 # ========================================
 # 🔑 API КЛЮЧИ
@@ -89,6 +114,9 @@ RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 DEBUG = config_yaml.get("debug", False)
 VERBOSE = config_yaml.get("verbose", False)  # Суперподробные логи (включает DEBUG)
+LOG_FILE = _str_setting("BOT_LOG_FILE", "log_file", "bot.log")
+LOG_MAX_BYTES = _int_setting("BOT_LOG_MAX_BYTES", "log_max_bytes", 10 * 1024 * 1024)
+LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)
 
 # ========================================
 # 📊 ТЕХНИЧЕСКИЕ КОНСТАНТЫ

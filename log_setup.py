@@ -1,5 +1,7 @@
 import logging
 import re
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from colorama import Fore, Style, init as colorama_init
 
 colorama_init(autoreset=False)
@@ -73,14 +75,16 @@ class PlainFormatter(logging.Formatter):
     """Форматтер для файла: убирает теги [color]...[/], оставляя чистый текст."""
 
     def format(self, record):
-        original = record.msg
+        original_msg = record.msg
+        original_args = record.args
         try:
             # Подменяем сообщение на версию без цветовых тегов
             record.msg = _strip_color_tags(record.getMessage())
             record.args = None  # getMessage уже подставил аргументы
             return super().format(record)
         finally:
-            record.msg = original
+            record.msg = original_msg
+            record.args = original_args
 
 
 def _strip_color_tags(text: str) -> str:
@@ -88,7 +92,20 @@ def _strip_color_tags(text: str) -> str:
     return _COLOR_PATTERN.sub(lambda m: m.group(2), text)
 
 
-def setup_logging(level=logging.INFO, log_file="bot.log", debug=False, verbose=False):
+def _ensure_log_parent(log_file: str) -> None:
+    parent = Path(log_file).expanduser().parent
+    if parent != Path("."):
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def setup_logging(
+    level: int = logging.INFO,
+    log_file: str = "bot.log",
+    debug: bool = False,
+    verbose: bool = False,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
     """
     Настраивает цветной вывод в консоль и чистый (без тегов) вывод в файл.
     
@@ -130,7 +147,16 @@ def setup_logging(level=logging.INFO, log_file="bot.log", debug=False, verbose=F
     # ========================================
     # ФАЙЛ — ВСЕГДА DEBUG для полного аудита
     # ========================================
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    _ensure_log_parent(log_file)
+    if max_bytes > 0:
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=max(0, backup_count),
+            encoding="utf-8",
+        )
+    else:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(
         PlainFormatter("%(asctime)s [%(levelname)s] %(message)s", datefmt=datefmt)
     )

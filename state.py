@@ -6,18 +6,35 @@ import sqlite3
 import logging
 import os
 from collections import OrderedDict
-from typing import Dict, Any, List
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, Sequence, TypeAlias
 
 logger = logging.getLogger(__name__)
 
+HistoryEntry: TypeAlias = Dict[str, Any]
+HistoryList: TypeAlias = List[HistoryEntry]
+
 # История сообщений по ключу (private_X или group_Y)
-histories: Dict[str, List[Dict[str, Any]]] = {}
+histories: Dict[str, HistoryList] = {}
 
 # Тайм-ауты для рандомных ответов
 random_reply_cooldown: Dict[int, float] = {}
 
+DEFAULT_RANDOM_REPLY_CHANCE = 10
+
+
+class RuntimeSettingKey(str, Enum):
+    RANDOM_REPLY_CHANCE = "random_reply_chance"
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    random_reply_chance: int
+
+
 # Изменяемый шанс случайного ответа (для команды /random)
-random_reply_chance: int = 10  # default, загружается из config при старте
+random_reply_chance: int = DEFAULT_RANDOM_REPLY_CHANCE  # загружается из config/БД при старте
 
 # Последнее известное количество токенов для чата (из API)
 chat_tokens: Dict[str, int] = {}
@@ -106,13 +123,18 @@ def cleanup_old_chats(max_age_hours: int = 72) -> int:
 
 
 # ========================================
-# 💾 ПЕРСИСТЕНТНОСТЬ ИСТОРИИ (SQLite)
+# 💾 ПЕРСИСТЕНТНОСТЬ (SQLite)
 # ========================================
-# Хранит историю диалогов на диске, чтобы рестарт/деплой не стирал контекст.
+# Хранит историю диалогов и runtime-настройки на диске, чтобы рестарт/деплой
+# не стирал контекст и изменения команд управления.
 DB_PATH = os.environ.get("BOT_DB_PATH", "bot_state.db")
 
 
-def _db_execute(query: str, params: tuple = (), fetch: bool = False):
+def _db_execute(
+    query: str,
+    params: Sequence[Any] = (),
+    fetch: bool = False,
+) -> List[tuple[Any, ...]] | None:
     """Выполняет запрос с гарантированным закрытием соединения. Возвращает строки при fetch=True."""
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -125,14 +147,91 @@ def _db_execute(query: str, params: tuple = (), fetch: bool = False):
 
 
 def init_db() -> None:
-    """Создаёт таблицу истории, если её ещё нет."""
+    """Создаёт таблицы истории и runtime-настроек, если их ещё нет."""
     try:
         _db_execute(
             "CREATE TABLE IF NOT EXISTS histories ("
             "key TEXT PRIMARY KEY, data TEXT NOT NULL)"
         )
+        _db_execute(
+            "CREATE TABLE IF NOT EXISTS runtime_settings ("
+            "key TEXT PRIMARY KEY, "
+            "value TEXT NOT NULL, "
+            "updated_at REAL NOT NULL)"
+        )
     except Exception as e:
         logger.error(f"❌ Не удалось инициализировать БД {DB_PATH}: {e}")
+
+
+def validate_random_reply_chance(value: Any) -> int:
+    """Возвращает валидный шанс случайного ответа или бросает ValueError."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("random_reply_chance должен быть целым числом")
+    if not 0 <= value <= 100:
+        raise ValueError("random_reply_chance должен быть от 0 до 100")
+    return value
+
+
+def _load_runtime_setting(key: RuntimeSettingKey) -> Any | None:
+    rows = _db_execute(
+        "SELECT value FROM runtime_settings WHERE key=?",
+        (key.value,),
+        fetch=True,
+    )
+    if not rows:
+        return None
+    return json.loads(rows[0][0])
+
+
+def _save_runtime_setting(key: RuntimeSettingKey, value: Any) -> None:
+    data = json.dumps(value, ensure_ascii=False)
+    _db_execute(
+        "INSERT INTO runtime_settings(key, value, updated_at) VALUES(?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key.value, data, time.time()),
+    )
+
+
+def load_runtime_settings(default_random_reply_chance: int) -> RuntimeSettings:
+    """
+    Загружает изменяемые настройки из БД.
+
+    Если настройка ещё не сохранялась, берётся значение из config.yaml.
+    """
+    global random_reply_chance
+
+    try:
+        default_chance = validate_random_reply_chance(default_random_reply_chance)
+    except ValueError as e:
+        logger.warning(
+            f"⚠️ Некорректный random_reply_chance в config.yaml: {e}; "
+            f"использую {DEFAULT_RANDOM_REPLY_CHANCE}%"
+        )
+        default_chance = DEFAULT_RANDOM_REPLY_CHANCE
+
+    chance = default_chance
+    try:
+        stored = _load_runtime_setting(RuntimeSettingKey.RANDOM_REPLY_CHANCE)
+        if stored is not None:
+            chance = validate_random_reply_chance(stored)
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Не удалось загрузить сохранённый шанс случайного ответа: {e}; "
+            "использую config.yaml"
+        )
+
+    random_reply_chance = chance
+    return RuntimeSettings(random_reply_chance=chance)
+
+
+def set_random_reply_chance(value: int) -> int:
+    """Валидирует, применяет и сохраняет шанс случайного ответа."""
+    global random_reply_chance
+
+    chance = validate_random_reply_chance(value)
+    _save_runtime_setting(RuntimeSettingKey.RANDOM_REPLY_CHANCE, chance)
+    random_reply_chance = chance
+    return chance
 
 
 def load_all_histories() -> int:

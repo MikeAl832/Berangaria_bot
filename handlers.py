@@ -134,8 +134,8 @@ async def random_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Шанс должен быть от 0 до 100!")
             return
 
-        state.random_reply_chance = new_chance
-        await update.message.reply_text(f"✅ Шанс изменён на {state.random_reply_chance}%")
+        saved_chance = state.set_random_reply_chance(new_chance)
+        await update.message.reply_text(f"✅ Шанс изменён на {saved_chance}%")
 
     except ValueError:
         await update.message.reply_text("Укажите число от 0 до 100")
