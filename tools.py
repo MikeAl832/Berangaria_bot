@@ -58,6 +58,8 @@ TOOLS = [
                 "trolling 🤡, approval 🔥. PREFER reaction-only (no text) for simple acknowledgment. "
                 "Add text only if you have something specific to say. "
                 "By default it reacts to the latest message; pass the [#N] handle as 'id' to react to a specific earlier one. "
+                "Do NOT react again to a message you already reacted to (history notes look like "
+                "'Ты поставила реакцию 🤡 на [#N] …') — pick another [#N], write text, send a sticker, or stay silent. "
                 "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
             ),
             "parameters": {
@@ -112,8 +114,8 @@ TOOLS = [
                 "Search your sticker collection by vibe. Returns a NUMBERED list of matching stickers "
                 "with descriptions and tags — it does NOT send anything. Use it when you feel like reacting "
                 "with a sticker: browse the options, then send the one that best fits via send_sticker(id). "
-                "You CAN call find_stickers several times with different wording to compare options before "
-                "choosing — just like refining a web search. If none fit, don't send at all. Don't overuse stickers."
+                "You may refine the search up to 3 times per turn with different wording; after that pick "
+                "from already found numbers or answer without a sticker. If none fit, don't send. Don't overuse stickers."
             ),
             "parameters": {
                 "type": "object",
@@ -141,7 +143,7 @@ TOOLS = [
             "description": (
                 "Send ONE specific sticker to the chat, chosen from the latest find_stickers results by its number. "
                 "Call this only AFTER find_stickers, passing the id of the option you liked best. "
-                "You may add short text in your reply too, or send only the sticker. "
+                "After a successful send the turn ends — the sticker IS the full reply (no extra text round). "
                 "NEVER describe a sticker in text ('*кидает стикер*') — send it."
             ),
             "parameters": {

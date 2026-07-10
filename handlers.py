@@ -1,6 +1,5 @@
 import logging
 import asyncio
-from datetime import datetime
 from functools import wraps
 from telegram import Update, ReactionTypeEmoji
 from telegram.ext import ContextTypes
@@ -20,7 +19,8 @@ from llm_client import summarize_history, send_llm_request, record_user_memory
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
-    download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration
+    download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
+    now_local, is_low_signal_user_text, strip_tiktok_urls,
 )
 
 logger = logging.getLogger(__name__)
@@ -322,9 +322,19 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
 
     # Копим слова юзера и компактные медиа-факты для долговременной памяти.
     # Делаем это для ВСЕХ сообщений, даже если бот не отвечает — память про всю беседу.
+    # (URL-only / односложные отсекаются внутри record_user_memory.)
     record_user_memory(key, _build_memory_text(combined_text, media_items), user_name, is_group)
 
     if not (mentioned or random_reply):
+        return
+
+    # Ambient на «ок»/голых ссылках без медиа — пустая трата токенов.
+    # Прямое обращение (@Бер / reply) всегда обрабатываем.
+    if random_reply and not mentioned and not media_items and is_low_signal_user_text(combined_text):
+        logger.info(
+            f"🤫 [dim]Ambient пропущен (low-signal):[/] "
+            f"{(combined_text or '')[:60]!r} (ключ={key})"
+        )
         return
 
     # «печатает…» показываем только при прямом обращении: ambient-пинг может закончиться
@@ -371,7 +381,8 @@ def _extract_reply_context(message) -> tuple[str | None, str | None]:
         return None, None
     
     reply_to_name = message.reply_to_message.from_user.first_name
-    reply_to_text = (message.reply_to_message.text or "сообщение без текста")[:80]
+    raw_reply = message.reply_to_message.text or message.reply_to_message.caption or "сообщение без текста"
+    reply_to_text = (strip_tiktok_urls(raw_reply) or "сообщение без текста")[:80]
     return reply_to_name, reply_to_text
 
 
@@ -395,8 +406,13 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
+    # TikTok-ссылки модели не отдаём: только вырезаем, ничего не подставляем.
+    text = strip_tiktok_urls(text or "")
+    if not text and not media_description:
+        return
+
     # Формируем метаданные сообщения
-    now = datetime.now()
+    now = now_local()
     timestamp = f"{now.hour:02d}:{now.minute:02d}"
     reply_to_name, reply_to_text = _extract_reply_context(update.message)
     forward_info = _extract_forward_info(update.message)
@@ -487,7 +503,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     chat_id = edited.chat.id
     user_id = edited.from_user.id
-    new_text = edited.text or edited.caption or ""
+    new_text = strip_tiktok_urls(edited.text or edited.caption or "")
     buffer_key = f"{chat_id}_{user_id}"
 
     async with _buffer_lock:
@@ -548,7 +564,7 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"📢 [magenta]Событие группы[/] [[blue]{msg.chat.title or chat_id}[/]] {user_name}: {event_text}")
 
-    now = datetime.now()
+    now = now_local()
     timestamp = f"{now.hour:02d}:{now.minute:02d}"
 
     parts = [f"[User: {user_name}] [Time: {timestamp}] [Event: {event_text}]"]

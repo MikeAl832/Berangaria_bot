@@ -14,7 +14,7 @@ import json
 import asyncio
 import logging
 
-from config import STICKER_ENABLED
+from config import STICKER_ENABLED, STICKER_FIND_MAX_PER_TURN
 from tools import web_search, read_url, ALLOWED_REACTIONS
 from sticker_store import search_stickers
 
@@ -36,6 +36,7 @@ class ToolTurn:
         self.stickers_made = []      # [{"desc", "emotion"}] — стикеры этого хода
         self.sticker_candidates = {}  # {номер: {"file_id", "desc", "emotion"}} — из find_stickers
         self.sticker_seq = 0          # сквозная нумерация кандидатов (не сбрасывается между поисками хода)
+        self.find_stickers_calls = 0  # сколько раз find_stickers вызвали в этом ходе
         self.pending_reply = None     # (target_mid, text, sid) если модель выбрала reply_to_message
 
 
@@ -118,17 +119,45 @@ async def handle_find_stickers(turn, payload_messages, update, tool_call, args):
         tool_result = "Стикеры отключены."
     elif not fquery:
         tool_result = "Пустой запрос. Опиши, какой стикер ищешь."
+    elif turn.find_stickers_calls >= STICKER_FIND_MAX_PER_TURN:
+        logger.info(
+            f"🎨 [dim]find_stickers лимит {STICKER_FIND_MAX_PER_TURN}/ход — отказ[/] "
+            f"('{fquery[:60]}')"
+        )
+        if turn.sticker_candidates:
+            tool_result = (
+                f"Лимит поиска стикеров в этом ходе ({STICKER_FIND_MAX_PER_TURN}). "
+                f"Выбери из уже найденных номеров {min(turn.sticker_candidates)}–"
+                f"{max(turn.sticker_candidates)} через send_sticker(id) "
+                f"или ответь без стикера."
+            )
+        else:
+            tool_result = (
+                f"Лимит поиска стикеров в этом ходе ({STICKER_FIND_MAX_PER_TURN}). "
+                f"Ответь без стикера."
+            )
     else:
+        turn.find_stickers_calls += 1
         try:
             await update.message.chat.send_action(action="choose_sticker")
         except Exception:
             pass
         # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток.
         cands = await asyncio.to_thread(search_stickers, fquery, fcount)
+        remaining = STICKER_FIND_MAX_PER_TURN - turn.find_stickers_calls
         if not cands:
             logger.info(f"🎨 [dim]find_stickers '{fquery}' — ничего выше порога[/]")
-            tool_result = ("Под этот запрос ничего не нашлось. "
-                           "Попробуй другой запрос или ответь без стикера.")
+            if remaining > 0:
+                tool_result = (
+                    "Под этот запрос ничего не нашлось. "
+                    f"Можешь переформулировать ещё (осталось поисков: {remaining}) "
+                    "или ответь без стикера."
+                )
+            else:
+                tool_result = (
+                    "Под этот запрос ничего не нашлось. "
+                    "Лимит поиска исчерпан — ответь без стикера."
+                )
         else:
             lines = []
             for c in cands:
@@ -147,10 +176,18 @@ async def handle_find_stickers(turn, payload_messages, update, tool_call, args):
                 if kws:
                     line += f" | теги: {kws}"
                 lines.append(line)
-            logger.info(f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт.")
+            logger.info(
+                f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт. "
+                f"({turn.find_stickers_calls}/{STICKER_FIND_MAX_PER_TURN})"
+            )
+            refine_hint = (
+                f" можно уточнить поиск ещё {remaining} раз(а);"
+                if remaining > 0
+                else " больше искать нельзя — бери из списка или без стикера;"
+            )
             tool_result = (
                 "Нашла стикеры (выбери подходящий ПО ОПИСАНИЮ и вызови send_sticker "
-                "с его номером; если ни один не в тему — не отправляй, можешь поискать иначе):\n"
+                f"с его номером;{refine_hint} если ни один не в тему — не отправляй):\n"
                 + "\n".join(lines)
             )
 
@@ -194,10 +231,10 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
                 turn.stickers_made.append({"desc": chosen.get("desc"),
                                            "emotion": chosen.get("emotion")})
                 logger.info(f"🎨 [magenta]Стикер отправлен[/] «{(chosen.get('desc') or '')[:40]}»")
-                tool_result = ("Стикер отправлен. Обычно он говорит сам за себя — "
-                               "оставь ответ ПУСТЫМ, если нет чёткой мысли добавить словами "
-                               "(стикер-только — нормальный и сильный ход). Текст пиши, "
-                               "только если реально есть что сказать.")
+                # tool_result всё равно пишем (на случай, если ход не терминальный
+                # из‑за ошибки порядка), но send_llm_request после sticker_sent
+                # завершает ход без нового round-trip к API.
+                tool_result = "Стикер отправлен. Ход завершён — дополнительный текст не нужен."
             except Exception as e:
                 logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
                 tool_result = "Стикер отправить не удалось. Ответь текстом."
@@ -207,6 +244,45 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
         "tool_call_id": tool_call['id'],
         "content": tool_result
     })
+
+
+def _sid_for_mid(sid_to_mid: dict, mid) -> int | None:
+    """Актуальный [#sid] по telegram mid (sid_to_mid = {sid: mid})."""
+    if mid is None:
+        return None
+    for sid, m in (sid_to_mid or {}).items():
+        if m == mid:
+            return sid
+    return None
+
+
+def _find_existing_bot_reaction(history, turn, react_mid):
+    """Эмодзи, которое бот уже ставил на это telegram-сообщение, или None."""
+    if react_mid is None:
+        return None
+    for r in turn.reactions_made or []:
+        if r.get("on_mid") == react_mid:
+            return r.get("emoji") or "?"
+    for m in history or []:
+        if m.get("role") != "assistant":
+            continue
+        for r in m.get("reactions") or []:
+            if r.get("on_mid") == react_mid:
+                return r.get("emoji") or "?"
+    return None
+
+
+def _quote_for_mid(history, react_mid, current_mid) -> str | None:
+    """Короткая цитата user-сообщения (для подсказки модели)."""
+    if react_mid is None:
+        return None
+    for _m in history or []:
+        if _m.get("role") == "user" and _m.get("mid") == react_mid:
+            _t = (_m.get("content") or "").strip()
+            if not _t:
+                return None
+            return (_t[:40] + "…") if len(_t) > 40 else _t
+    return None
 
 
 async def handle_react(turn, payload_messages, update, context, tool_call, args, sid_to_mid, history):
@@ -221,32 +297,60 @@ async def handle_react(turn, payload_messages, update, context, tool_call, args,
     react_mid = sid_to_mid.get(react_sid) if react_sid is not None else None
     if react_mid is None:
         react_mid = update.message.message_id
+        # Если id не передали / протух — это реакция на текущее; подтянем его sid.
+        if react_sid is None:
+            react_sid = _sid_for_mid(sid_to_mid, react_mid)
+
     if emoji not in ALLOWED_REACTIONS:
         tool_result = f"Эмодзи '{emoji}' не разрешён Telegram. Ответь текстом или выбери из списка."
     else:
-        try:
-            await context.bot.set_message_reaction(
-                chat_id=update.effective_chat.id,
-                message_id=react_mid,
-                reaction=emoji
+        already = _find_existing_bot_reaction(history, turn, react_mid)
+        if already:
+            # Не зовём Telegram повторно — модель часто «забывает» прошлую реакцию.
+            sid_hint = f" [#{react_sid}]" if react_sid is not None else ""
+            logger.info(
+                f"😀 [dim]Реакция уже была[/] {already} на mid={react_mid}"
+                f"{sid_hint}; повтор {emoji} отклонён"
             )
+            tool_result = (
+                f"Ты УЖЕ поставила реакцию {already} на это сообщение"
+                f"{sid_hint}. Повторно ставить нельзя (даже другим эмодзи). "
+                f"Сделай что-то другое: ответь текстом, поставь реакцию на "
+                f"ДРУГОЕ сообщение (другой [#N]), отправь стикер — или промолчи, "
+                f"если добавить нечего."
+            )
+            # Уже реагировали раньше — ход «с реакцией» валиден (можно без текста).
             turn.reacted = True
-            # Привязку храним как короткую цитату, БЕЗ числового [#N]:
-            # хэндлы перенумеровываются → старый номер протух бы и провоцировал
-            # галлюцинации. Цитата самодостаточна и не теряет смысл со временем.
-            on_quote = None
-            if react_mid != update.message.message_id:
-                for _m in history:
-                    if _m.get("role") == "user" and _m.get("mid") == react_mid:
-                        _t = (_m.get("content") or "").strip()
-                        on_quote = (_t[:40] + "…") if len(_t) > 40 else _t
-                        break
-            turn.reactions_made.append({"emoji": emoji, "on": on_quote})
-            logger.info(f"😀 [magenta]Реакция:[/] {emoji} → [#{react_sid if react_sid is not None else 'текущее'}]")
-            tool_result = f"Реакция {emoji} поставлена. Если добавить нечего — можешь обойтись без текста."
-        except Exception as e:
-            logger.warning(f"⚠️ [yellow]Не удалось поставить реакцию {emoji}:[/] {e}")
-            tool_result = "Не удалось поставить реакцию, ответь текстом."
+        else:
+            try:
+                await context.bot.set_message_reaction(
+                    chat_id=update.effective_chat.id,
+                    message_id=react_mid,
+                    reaction=emoji
+                )
+                turn.reacted = True
+                # Стабильный якорь — telegram mid (не меняется). [#sid] при рендере
+                # резолвим из живой истории, чтобы после renumber не врать модели.
+                on_quote = _quote_for_mid(history, react_mid, update.message.message_id)
+                turn.reactions_made.append({
+                    "emoji": emoji,
+                    "on_mid": react_mid,
+                    "on_sid": react_sid,  # снимок на момент хода (для логов/старых записей)
+                    "on": on_quote,
+                })
+                logger.info(
+                    f"😀 [magenta]Реакция:[/] {emoji} → "
+                    f"[#{react_sid if react_sid is not None else 'текущее'}] (mid={react_mid})"
+                )
+                tool_result = (
+                    f"Реакция {emoji} поставлена"
+                    f"{f' на [#{react_sid}]' if react_sid is not None else ''}. "
+                    f"Повторно на это же сообщение не ставь. "
+                    f"Если добавить нечего — можешь обойтись без текста."
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [yellow]Не удалось поставить реакцию {emoji}:[/] {e}")
+                tool_result = "Не удалось поставить реакцию, ответь текстом."
 
     payload_messages.append({
         "role": "tool",

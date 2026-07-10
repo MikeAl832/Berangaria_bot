@@ -103,6 +103,23 @@ def test_render_assistant_reaction_becomes_system_note():
     assert "🔥" in out[0]["content"]
 
 
+def test_render_reaction_resolves_live_sid_from_mid():
+    hist = [
+        {"role": "user", "content": "[Message: шутка]", "sid": 3, "mid": 99},
+        {
+            "role": "assistant",
+            "content": "",
+            "reactions": [{"emoji": "🤡", "on_mid": 99, "on_sid": 139, "on": "шутка"}],
+        },
+    ]
+    out = _render_history_for_api(hist)
+    sys_notes = [m for m in out if m["role"] == "system"]
+    assert sys_notes
+    # sid в истории уже 3 (после renumber), не протухший 139
+    assert "🤡 на [#3]" in sys_notes[0]["content"]
+    assert "шутка" in sys_notes[0]["content"]
+
+
 def test_render_user_without_sid_unchanged():
     hist = [{"role": "user", "content": "hi"}]
     assert _render_history_for_api(hist) == [{"role": "user", "content": "hi"}]
@@ -148,6 +165,7 @@ def test_extract_plain_text_non_str_returns_empty():
 def test_meaningful_memory_query_rejects_trivial_short_text():
     assert not _is_meaningful_memory_query("Ладно")
     assert not _is_meaningful_memory_query("(сообщение без текста)")
+    assert not _is_meaningful_memory_query("https://vt.tiktok.com/ZSCKeAjpT/")
 
 
 def test_build_memory_search_query_uses_recent_meaningful_message():

@@ -122,6 +122,9 @@ STICKER_AUTO_SYNC = config_yaml.get("sticker_auto_sync", True)
 STICKER_SYNC_FILE = config_yaml.get("sticker_sync_file", "stickers_clean.jsonl")
 STICKER_SYNC_MAX_PER_START = config_yaml.get("sticker_sync_max_per_start", 0)
 STICKER_INDEX_VERSION = config_yaml.get("sticker_index_version", 1)
+# Сколько раз за один ход можно вызывать find_stickers (дальше — отказ, бери из уже найденных)
+STICKER_FIND_MAX_PER_TURN = _as_int(config_yaml.get("sticker_find_max_per_turn", 3), 3)
+STICKER_FIND_MAX_PER_TURN = max(1, min(STICKER_FIND_MAX_PER_TURN, 10))
 
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА
@@ -132,6 +135,28 @@ SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
 MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
+
+# Часовой пояс бота (метки [Time:], CURRENT TIME, автосуммаризация)
+from zoneinfo import ZoneInfo
+
+_tz_name = config_yaml.get("timezone", "Europe/Moscow")
+if not isinstance(_tz_name, str) or not _tz_name.strip():
+    _tz_name = "Europe/Moscow"
+TIMEZONE_NAME = _tz_name.strip()
+try:
+    BOT_TZ = ZoneInfo(TIMEZONE_NAME)
+except Exception as e:
+    raise ValueError(f"Некорректный timezone в config.yaml: {TIMEZONE_NAME!r} ({e})") from e
+
+# Часы локального времени, когда гонять автосуммаризацию (напр. [5, 14] = 05:00 и 14:00 МСК)
+_raw_summary_hours = config_yaml.get("summary_hours", [5, 14])
+if isinstance(_raw_summary_hours, (int, float)):
+    _raw_summary_hours = [int(_raw_summary_hours)]
+if not isinstance(_raw_summary_hours, (list, tuple)) or not _raw_summary_hours:
+    _raw_summary_hours = [5, 14]
+SUMMARY_HOURS: list[int] = sorted({
+    h for h in (_as_int(x, -1) for x in _raw_summary_hours) if 0 <= h <= 23
+}) or [5, 14]
 DEBUG = _bool_setting("BOT_DEBUG", "debug", False)
 VERBOSE = _bool_setting("BOT_VERBOSE", "verbose", False)  # Суперподробные логи (включает DEBUG)
 FULL_DEBUG_LOGS = DEBUG or _bool_setting("BOT_FULL_DEBUG_LOGS", "full_debug_logs", False)
@@ -320,9 +345,8 @@ SYSTEM_PROMPT = ("""
     - Call reply_to_message(id, text) ONLY when you deliberately want to answer an EARLIER or different message than the latest one — pass the [#N] number as id. Otherwise just write text.
     5. Stickers (find_stickers → send_sticker):
     - When a sticker fits the vibe (react with emotion, land a joke, troll, agree, show shock/laughter/boredom), FIRST call find_stickers(query) with a vivid Russian description of the mood you want (e.g. "недоумение, кто-то сморозил глупость", "ржу в голос", "одобряю, огонь"). It returns a numbered list of candidates with descriptions — nothing is sent yet.
-    - Read the descriptions and tags, pick the one that TRULY fits, then call send_sticker(id) with its number. You may call find_stickers more than once with different wording to explore angles and compare before committing — same as refining a web_search. If none fit, don't send anything. Better no sticker than a wrong one.
-    - STRONGLY PREFER sending JUST the sticker with NO text — exactly like a reaction-only reply. A well-chosen sticker alone is usually the funniest, most natural move; piling words on top weakens it. After send_sticker, leaving your text EMPTY is the default and a strong, deliberate move — do it freely.
-    - Add text alongside the sticker ONLY when you genuinely have something specific to say (a real joke, an answer, a jab). "Sticker + short filler text" is worse than the sticker alone.
+    - Read the descriptions and tags, pick the one that TRULY fits, then call send_sticker(id) with its number. You may refine the search up to 3 times total in one turn (different wording) — after that pick from what you already have or answer without a sticker. If none fit, don't send anything. Better no sticker than a wrong one.
+    - After a successful send_sticker the turn ENDS — do not plan extra text; the sticker is the full reply. STRONGLY PREFER sticker-only (no text), exactly like a reaction-only reply.
     - Don't overuse stickers overall — like reactions, one on every message is annoying. NEVER describe a sticker in text ("*кидает стикер*") — send it.
 
     === GROUP CHAT: STRUCTURE AND BEHAVIOR ===

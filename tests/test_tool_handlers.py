@@ -102,7 +102,8 @@ def test_handle_react_valid_emoji_sets_state_and_calls_api():
     upd, ctx, payload = FakeUpdate(mid=1), FakeContext(), []
     asyncio.run(handle_react(turn, payload, upd, ctx, TC, {"emoji": "🔥"}, {}, []))
     assert turn.reacted is True
-    assert turn.reactions_made == [{"emoji": "🔥", "on": None}]
+    assert turn.reactions_made[0]["emoji"] == "🔥"
+    assert turn.reactions_made[0]["on_mid"] == 1
     assert ctx.bot.reactions == [(555, 1, "🔥")]
     assert payload[-1]["role"] == "tool"
     assert "поставлена" in payload[-1]["content"]
@@ -123,6 +124,23 @@ def test_handle_react_strips_fe0f_variation_selector():
     # ❤️ с FE0F должен пройти как каноничный ❤
     asyncio.run(handle_react(turn, payload, upd, ctx, TC, {"emoji": "❤️"}, {}, []))
     assert ctx.bot.reactions == [(555, 1, "❤")]
+
+
+def test_handle_react_rejects_duplicate_on_same_mid():
+    turn = ToolTurn()
+    hist = [{
+        "role": "assistant",
+        "content": "",
+        "reactions": [{"emoji": "🤡", "on_mid": 99, "on_sid": 139, "on": "шутка"}],
+    }]
+    upd, ctx, payload = FakeUpdate(mid=1), FakeContext(), []
+    asyncio.run(handle_react(
+        turn, payload, upd, ctx, TC, {"emoji": "🔥", "id": 139}, {139: 99}, hist
+    ))
+    assert ctx.bot.reactions == []  # Telegram не трогали
+    assert "УЖЕ" in payload[-1]["content"]
+    assert "🤡" in payload[-1]["content"]
+    assert turn.reacted is True  # прошлый факт — молчать текстом можно
 
 
 # ---------- handle_find_stickers ----------
@@ -159,6 +177,29 @@ def test_handle_find_stickers_disabled(monkeypatch):
     payload = []
     asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "ржу"}))
     assert payload[-1]["content"] == "Стикеры отключены."
+
+
+def test_handle_find_stickers_respects_per_turn_limit(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "STICKER_FIND_MAX_PER_TURN", 3)
+    calls = {"n": 0}
+
+    def fake_search(q, c=6):
+        calls["n"] += 1
+        return [{"file_id": f"f{calls['n']}", "description": q, "emotion": "x", "keywords": []}]
+
+    monkeypatch.setattr(tool_handlers, "search_stickers", fake_search)
+    turn = ToolTurn()
+    payload = []
+    for i in range(3):
+        asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": f"q{i}"}))
+    assert calls["n"] == 3
+    assert turn.find_stickers_calls == 3
+    # 4-й вызов — отказ без реального поиска
+    asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "ещё"}))
+    assert calls["n"] == 3
+    assert "Лимит поиска" in payload[-1]["content"]
+    assert turn.find_stickers_calls == 3
 
 
 # ---------- handle_send_sticker ----------

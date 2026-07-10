@@ -102,6 +102,8 @@ memory_media_max_chars: 600
 bot_names: ["Бер", "Ber"]
 random_reply_chance: 10
 summary_interval: 10
+timezone: "Europe/Moscow"
+summary_hours: [5, 14]
 message_debounce_seconds: 4.0
 random_reply_cooldown: 10
 admin_mode: false
@@ -117,6 +119,8 @@ log_backup_count: 5
 - `bot_names`: Names that trigger bot responses in groups
 - `random_reply_chance`: Default probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts.
 - `summary_interval`: Messages preserved after summarization
+- `timezone`: Bot timezone for `[Time:]` tags, CURRENT TIME in the system prompt, and scheduled summarization (default `Europe/Moscow`)
+- `summary_hours`: Local hours when automatic history compression runs (default `[5, 14]` → 05:00 and 14:00)
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins

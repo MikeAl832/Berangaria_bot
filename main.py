@@ -29,7 +29,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, MessageRea
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
-    MEMORY_FLUSH_INTERVAL_SECONDS,
+    MEMORY_FLUSH_INTERVAL_SECONDS, SUMMARY_HOURS, TIMEZONE_NAME,
 )
 import state
 from handlers import (
@@ -37,6 +37,7 @@ from handlers import (
     handle_message, handle_media, handle_video, handle_sticker, handle_voice,
     handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
 )
+from utils import now_local, next_summary_run
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -44,45 +45,45 @@ logger = logging.getLogger(__name__)
 
 
 async def periodic_summarization():
-    """Суммаризирует активные чаты раз в сутки в 5:00."""
-    from datetime import datetime, timedelta
+    """Суммаризирует активные чаты в заданные часы (по умолчанию 05:00 и 14:00 МСК)."""
     from llm_client import summarize_history
-    
+
     while True:
-        # Вычисляем время до следующего запуска в 5:00
-        now = datetime.now()
-        target = now.replace(hour=5, minute=0, second=0, microsecond=0)
-        
-        # Если сейчас уже после 5:00, берём следующие сутки
-        if now >= target:
-            target += timedelta(days=1)
-        
-        wait_seconds = (target - now).total_seconds()
-        logger.info(f"⏰ [cyan]Следующая суммаризация в {target.strftime('%H:%M %d.%m.%Y')}[/] (через {wait_seconds/3600:.1f}ч)")
-        
-        await asyncio.sleep(wait_seconds)
-        
+        now = now_local()
+        target = next_summary_run(now)
+        wait_seconds = max(1.0, (target - now).total_seconds())
+        hours_label = ", ".join(f"{h:02d}:00" for h in SUMMARY_HOURS)
+        logger.info(
+            f"⏰ [cyan]Следующая суммаризация в {target.strftime('%H:%M %d.%m.%Y')} "
+            f"({TIMEZONE_NAME})[/] (через {wait_seconds/3600:.1f}ч; слоты: {hours_label})"
+        )
+
+        try:
+            await asyncio.sleep(wait_seconds)
+        except asyncio.CancelledError:
+            raise
+
         try:
             summarized_count = 0
             total_chats = len(state.histories)
-            
+
             logger.info(f"📝 [yellow]Запуск суммаризации для {total_chats} активных чатов...[/]")
-            
+
             for key in list(state.histories.keys()):
                 async with state.get_history_lock(key):
                     history = state.histories.get(key, [])
-                    
+
                     # Суммаризируем только если история достаточно длинная
                     if len(history) >= SUMMARY_INTERVAL:
                         old_len = len(history)
                         new_history = await summarize_history(history)
-                        
+
                         if new_history is not history and len(new_history) < old_len:
                             state.histories[key] = new_history
                             state.save_history(key)
                             summarized_count += 1
                             logger.info(f"  ✅ {key}: {old_len} → {len(new_history)} сообщений")
-            
+
             if summarized_count > 0:
                 logger.info(f"📝 [green]Суммаризировано {summarized_count} из {total_chats} чатов[/]")
             else:
@@ -93,6 +94,8 @@ async def periodic_summarization():
             if removed > 0:
                 logger.info(f"🧹 [green]Очищено {removed} неактивных чатов[/]")
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}", exc_info=True)
 
@@ -219,7 +222,9 @@ def main():
     if VISION_MODE:
         logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
-    logger.info("📝 Автосуммаризация активных чатов: каждый день в 5:00")
+    hours_label = ", ".join(f"{h:02d}:00" for h in SUMMARY_HOURS)
+    logger.info(f"🕒 Часовой пояс: [yellow]{TIMEZONE_NAME}[/]")
+    logger.info(f"📝 Автосуммаризация: [yellow]{hours_label}[/] ({TIMEZONE_NAME})")
     logger.info("✅ [bright_green]Бот запущен![/]")
     
     # Запускаем фоновые задачи суммаризации и синхронизации стикеров

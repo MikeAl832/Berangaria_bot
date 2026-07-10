@@ -5,14 +5,104 @@ import base64
 import os
 import tempfile
 import logging
+from datetime import datetime
 from typing import Tuple, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
-from config import BOT_NAMES, RANDOM_REPLY_COOLDOWN
+from config import BOT_NAMES, RANDOM_REPLY_COOLDOWN, BOT_TZ, SUMMARY_HOURS
 from state import random_reply_cooldown
 import state
 
 logger = logging.getLogger(__name__)
+
+# URL в тексте (для отсечения «голых» ссылок из ambient/Mem0)
+_URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+
+# TikTok: модели не отдаём — только вырезаем, без плейсхолдеров
+_TIKTOK_URL_RE = re.compile(
+    r"(?i)(?:https?://)?(?:(?:www|vm|vt)\.)?tiktok\.com/[^\s<>\]\)\"']+"
+)
+
+
+def strip_tiktok_urls(text: str | None) -> str:
+    """Удаляет TikTok-ссылки из текста. Ничего вместо них не подставляет."""
+    if not text:
+        return ""
+    cleaned = _TIKTOK_URL_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+# Односложные реплики, на которых нет смысла тратить ambient-LLM / Mem0 search
+_TRIVIAL_USER_TEXTS = {
+    "",
+    "(сообщение без текста)",
+    "сообщение без текста",
+    "без текста",
+    "ладно",
+    "ок",
+    "окей",
+    "пон",
+    "норм",
+    "да",
+    "нет",
+    "угу",
+    "ага",
+    "лол",
+    "кек",
+    "+",
+    "-",
+    "жми",
+    "ждём",
+    "ждем",
+}
+
+
+def now_local() -> datetime:
+    """Текущее время в часовом поясе бота (по умолчанию Europe/Moscow)."""
+    return datetime.now(BOT_TZ)
+
+
+def next_summary_run(now: datetime | None = None) -> datetime:
+    """Ближайший запуск автосуммаризации по SUMMARY_HOURS в timezone бота."""
+    from datetime import timedelta
+
+    now = now or now_local()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=BOT_TZ)
+    candidates = []
+    for hour in SUMMARY_HOURS:
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        candidates.append(target)
+    return min(candidates)
+
+
+def is_url_only_text(text: str | None) -> bool:
+    """True, если текст — только URL(ы) без осмысленных слов."""
+    if not text or not str(text).strip():
+        return False
+    remainder = _URL_RE.sub(" ", text)
+    remainder = re.sub(r"\s+", " ", remainder).strip()
+    # остались только пунктуация/мусор — считаем URL-only
+    alnum = sum(1 for ch in remainder if ch.isalnum())
+    return alnum < 3
+
+
+def is_low_signal_user_text(text: str | None, *, min_alnum: int = 12) -> bool:
+    """
+    Пустые/односложные/URL-only реплики: не гоняем ambient LLM и не ищем в Mem0.
+    История при этом может писаться — контекст чата сохраняется.
+    """
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if normalized in _TRIVIAL_USER_TEXTS:
+        return True
+    if is_url_only_text(text):
+        return True
+    alnum_chars = sum(1 for ch in normalized if ch.isalnum())
+    return alnum_chars < min_alnum
+
 
 def get_bot_real_name(context: ContextTypes.DEFAULT_TYPE) -> str:
     """Возвращает имя бота из Telegram."""

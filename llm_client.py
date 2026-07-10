@@ -4,7 +4,6 @@ import random
 import logging
 import asyncio
 import httpx
-from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -20,6 +19,7 @@ from state import histories, chat_tokens, api_call_count, get_history_lock, touc
 from memory_store import memory
 from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
+from utils import now_local, is_low_signal_user_text, is_url_only_text, strip_tiktok_urls
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +106,8 @@ _MONTHS = ["January", "February", "March", "April", "May", "June",
 
 
 def _current_time_str() -> str:
-    """Формирует строку с текущей датой и временем суток для системного промпта."""
-    now = datetime.now()
+    """Формирует строку с текущей датой и временем суток для системного промпта (МСК)."""
+    now = now_local()
     time_str = f"Today is {_DAYS[now.weekday()]}, {now.day} {_MONTHS[now.month-1]} {now.year} year. "
 
     if 5 <= now.hour < 12:
@@ -132,6 +132,43 @@ def _build_system_prompt() -> str:
     return system_prompt
 
 
+def _build_sid_map(history: list) -> dict:
+    """Карта {sid -> telegram message_id} по текущей истории (для reply/react по [#N])."""
+    return {
+        m["sid"]: m.get("mid")
+        for m in history
+        if m.get("role") == "user" and m.get("sid") is not None
+    }
+
+
+def _build_mid_to_sid(history: list) -> dict:
+    """Обратная карта telegram mid → актуальный [#sid] (sid после renumber всегда свежий)."""
+    out = {}
+    for m in history or []:
+        if m.get("role") == "user" and m.get("mid") is not None and m.get("sid") is not None:
+            out[m["mid"]] = m["sid"]
+    return out
+
+
+def _format_reaction_note_part(r: dict, mid_to_sid: dict) -> str:
+    """
+    Текст одной своей реакции для system-ноты.
+    [#N] резолвим по on_mid из живой истории — после суммаризации/renumber
+    номер всегда актуальный; если сообщения уже нет — только цитата.
+    """
+    emoji = r.get("emoji") or ""
+    on = (r.get("on") or "").strip()
+    mid = r.get("on_mid")
+    sid = mid_to_sid.get(mid) if mid is not None else None
+    if sid is not None:
+        if on:
+            return f"{emoji} на [#{sid}] «{on}»"
+        return f"{emoji} на [#{sid}]"
+    if on:
+        return f"{emoji} на «{on}»"
+    return emoji
+
+
 def _render_history_for_api(history: list) -> list:
     """
     Готовит копию истории для отправки в API.
@@ -140,10 +177,13 @@ def _render_history_for_api(history: list) -> list:
     Сам тег [#N] нигде не хранится — он живёт только в этой эфемерной копии,
     поэтому история, память и суммаризация остаются чистыми, а префикс стабилен (cache hit).
     """
+    mid_to_sid = _build_mid_to_sid(history)
     out = []
     for m in history:
         role = m.get("role")
         content = m.get("content", "")
+        if isinstance(content, str) and content:
+            content = strip_tiktok_urls(content)
         sid = m.get("sid")
         if sid is not None and role == "user":
             content = f"[#{sid}] {content}"
@@ -160,10 +200,7 @@ def _render_history_for_api(history: list) -> list:
                 out.append({"role": "assistant", "content": content})
             notes = []
             if reactions:
-                parts = []
-                for r in reactions:
-                    on = (r.get("on") or "").strip()
-                    parts.append(f"{r.get('emoji', '')} на «{on}»" if on else r.get("emoji", ""))
+                parts = [_format_reaction_note_part(r, mid_to_sid) for r in reactions]
                 notes.append("Ты поставила реакцию " + ", ".join(parts) + ".")
             if stickers:
                 parts = []
@@ -187,15 +224,6 @@ def _render_history_for_api(history: list) -> list:
         else:
             out.append({"role": role, "content": content})
     return out
-
-
-def _build_sid_map(history: list) -> dict:
-    """Карта {sid -> telegram message_id} по текущей истории (для reply/react по [#N])."""
-    return {
-        m["sid"]: m.get("mid")
-        for m in history
-        if m.get("role") == "user" and m.get("sid") is not None
-    }
 
 
 def _renumber_sids(entries: list) -> None:
@@ -255,7 +283,7 @@ def _extract_plain_text(content) -> str:
     # Ищем [Message: ...] — самый частый случай
     msg_match = re.search(r'\[Message:\s*(.*?)\]', content, flags=re.DOTALL)
     if msg_match:
-        return msg_match.group(1).strip()
+        return strip_tiktok_urls(msg_match.group(1).strip())
 
     # Если нет Message, убираем служебные блоки
     text = re.sub(
@@ -264,33 +292,12 @@ def _extract_plain_text(content) -> str:
         content
     )
 
-    return text.strip()
-
-
-_TRIVIAL_MEMORY_QUERIES = {
-    "(сообщение без текста)",
-    "сообщение без текста",
-    "без текста",
-    "ладно",
-    "ок",
-    "окей",
-    "пон",
-    "норм",
-    "да",
-    "нет",
-    "угу",
-    "ага",
-}
+    return strip_tiktok_urls(text.strip())
 
 
 def _is_meaningful_memory_query(text: str) -> bool:
-    """Отсекает короткие/служебные реплики, которые портят retrieval."""
-    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
-    if not normalized or normalized in _TRIVIAL_MEMORY_QUERIES:
-        return False
-
-    alnum_chars = sum(1 for ch in normalized if ch.isalnum())
-    return alnum_chars >= MEMORY_QUERY_MIN_CHARS
+    """Отсекает короткие/служебные/URL-only реплики, которые портят retrieval."""
+    return not is_low_signal_user_text(text, min_alnum=MEMORY_QUERY_MIN_CHARS)
 
 
 def _build_memory_search_query(history: list, user_name: str) -> str:
@@ -402,8 +409,12 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
     """
     if not memory:
         return
-    text = (text or "").strip()
+    text = strip_tiktok_urls((text or "").strip())
     if not text:
+        return
+    # Голые ссылки / «ок» в Mem0 не кладём — только шум для extraction
+    if is_url_only_text(text) or is_low_signal_user_text(text, min_alnum=MEMORY_QUERY_MIN_CHARS):
+        # медиа-батчи вида "Изображение: …" уже длинные и осмысленные — проходят
         return
 
     line = f"{user_name}: {text}" if is_group else text
@@ -474,9 +485,9 @@ async def summarize_history(history: list) -> list:
     # Берём только содержательные реплики. Реакция-без-текста (content="") сюда не идёт:
     # её эмодзи живут в поле reactions, которое в резюме не нужно — старые реакции забываются.
     text_to_summarize = "\n".join([
-        f"{m['role']}: {m['content']}"
+        f"{m['role']}: {strip_tiktok_urls(m['content'])}"
         for m in to_summarize
-        if isinstance(m.get('content'), str) and m.get('content').strip()
+        if isinstance(m.get('content'), str) and strip_tiktok_urls(m.get('content', '')).strip()
     ])
     
     summary_payload = {
@@ -820,6 +831,18 @@ async def send_llm_request(
                                     await turn.status_message.delete()
                                 except Exception:
                                     pass
+                        return
+
+                    # Стикер уже в чате — это полный ответ, лишний round-trip к API не нужен.
+                    if turn.sticker_sent:
+                        api_call_count[key] = api_call_count.get(key, 0) + 1
+                        await _save_assistant("")
+                        logger.info("🎨 [dim]Ход завершён стикером (без доп. текста)[/]")
+                        if turn.status_message:
+                            try:
+                                await turn.status_message.delete()
+                            except Exception:
+                                pass
                         return
 
                     continue
