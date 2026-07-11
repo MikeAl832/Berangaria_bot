@@ -205,7 +205,7 @@ def escape_user_text(text: str) -> str:
         # Заменяем [Тег: значение] на (Тег: значение)
         text = re.sub(
             rf'\[{re.escape(tag)}:\s*(.*?)\]',
-            rf'(\1)',
+            r'(\1)',
             text,
             flags=re.DOTALL | re.IGNORECASE
         )

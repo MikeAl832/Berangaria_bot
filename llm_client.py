@@ -1,8 +1,7 @@
 import re
-import json
-import random
 import logging
 import asyncio
+import copy
 import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -13,10 +12,11 @@ from config import (
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
+    MAX_TOOL_ROUNDS,
 )
 import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
-from memory_store import memory
+import memory_store
 from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
 from utils import now_local, is_low_signal_user_text, is_url_only_text, strip_tiktok_urls
@@ -381,20 +381,46 @@ def _chunk_lines_by_chars(lines: list, max_chars: int) -> list:
 
 async def _add_memory_chunks(key: str, lines: list) -> None:
     """Отправляет накопленные реплики в Mem0 батчами под лимит эмбеддера."""
-    if not memory or not lines:
+    if not lines:
+        return
+    if not memory_store.memory:
+        pending = state.pending_memory.setdefault(key, [])
+        pending[0:0] = lines
         return
     for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
         text = "\n".join(chunk)
-        try:
-            result = await asyncio.to_thread(
-                memory.add,
-                [{"role": "user", "content": text}],
-                user_id=key,
+        saved = False
+        for attempt in range(3):
+            try:
+                result = await asyncio.to_thread(
+                    memory_store.memory.add,
+                    [{"role": "user", "content": text}],
+                    user_id=key,
+                )
+                added = len(result.get('results', [])) if isinstance(result, dict) else 0
+                logger.info(
+                    f"✅ Память: батч {len(text)} симв. → "
+                    f"[bright_green]{added}[/] фактов (scope={key})"
+                )
+                saved = True
+                break
+            except Exception as exc:
+                logger.warning(
+                    f"⚠️ Ошибка сохранения памяти (scope={key}, "
+                    f"попытка {attempt + 1}/3): {exc}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+
+        if not saved:
+            # Не теряем батч: ставим перед более свежими репликами и повторим его
+            # при следующем периодическом flush или graceful shutdown.
+            pending = state.pending_memory.setdefault(key, [])
+            pending[0:0] = chunk
+            logger.error(
+                f"🧠 Батч памяти возвращён в очередь после исчерпания retry "
+                f"(scope={key}, строк={len(chunk)})"
             )
-            added = len(result.get('results', [])) if isinstance(result, dict) else 0
-            logger.info(f"✅ Память: батч {len(text)} симв. → [bright_green]{added}[/] фактов (scope={key})")
-        except Exception as e:
-            logger.error(f"⚠️ Ошибка сохранения памяти (scope={key}): {e}")
 
 
 def _track_memory_flush(task: asyncio.Task[None]) -> None:
@@ -407,8 +433,6 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
     Кладёт реплику юзера в буфер памяти. При достижении лимита символов —
     запускает фоновый флаш батчем. Вызывается из обработчика сообщений.
     """
-    if not memory:
-        return
     text = strip_tiktok_urls((text or "").strip())
     if not text:
         return
@@ -421,7 +445,7 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
     buf = state.pending_memory.setdefault(key, [])
     buf.append(line)
 
-    if sum(len(l) for l in buf) >= MEMORY_FLUSH_MAX_CHARS:
+    if memory_store.memory and sum(len(item) for item in buf) >= MEMORY_FLUSH_MAX_CHARS:
         # Снимаем снимок и очищаем синхронно (без await) — без гонок в одном loop
         lines = list(buf)
         state.pending_memory[key] = []
@@ -430,7 +454,7 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
 
 async def flush_pending_memory() -> int:
     """Асинхронно сохраняет все накопленные короткие реплики в Mem0."""
-    if not memory:
+    if not memory_store.memory:
         return 0
 
     snapshots: list[tuple[str, list[str]]] = []
@@ -456,7 +480,7 @@ async def wait_for_memory_flush_tasks() -> None:
 
 def flush_pending_memory_blocking() -> None:
     """Синхронно сохраняет остатки буфера при остановке бота (loop уже не крутится)."""
-    if not memory:
+    if not memory_store.memory:
         return
     for key in list(state.pending_memory.keys()):
         lines = state.pending_memory.get(key) or []
@@ -465,14 +489,16 @@ def flush_pending_memory_blocking() -> None:
         state.pending_memory[key] = []
         for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
             try:
-                memory.add([{"role": "user", "content": "\n".join(chunk)}], user_id=key)
+                memory_store.memory.add([{"role": "user", "content": "\n".join(chunk)}], user_id=key)
             except Exception as e:
                 logger.error(f"⚠️ Ошибка финального сохранения памяти '{key}': {e}")
 
 
 async def summarize_history(history: list) -> list:
     to_summarize = history[:-SUMMARY_INTERVAL]
-    keep_recent = history[-SUMMARY_INTERVAL:]
+    # SID и служебные поля меняем только в независимой копии. При ошибке API
+    # исходная история должна остаться побитово неизменной.
+    keep_recent = copy.deepcopy(history[-SUMMARY_INTERVAL:])
 
     if not to_summarize:
         return history
@@ -548,8 +574,8 @@ async def send_llm_request(
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
     if chat_tokens.get(key, 0) > context_threshold:
         logger.info(f"📝 [yellow]Автосуммаризация[/] для key={key}")
+        history = await summarize_history(history)
         async with get_history_lock(key):
-            history = await summarize_history(history)
             histories[key] = history
             save_history(key)
 
@@ -558,7 +584,7 @@ async def send_llm_request(
     payload_messages = [{"role": "system", "content": system_prompt}] + _render_history_for_api(history)
     sid_to_mid = _build_sid_map(history)
 
-    if memory:
+    if memory_store.memory:
         try:
             # Валидация ключа для безопасности
             if not re.match(r'^(private|group)_-?\d+$', key):
@@ -575,7 +601,7 @@ async def send_llm_request(
                     # Уменьшен таймаут до 15 секунд для быстрого ответа
                     mem_results = await asyncio.wait_for(
                         asyncio.to_thread(
-                            memory.search,
+                            memory_store.memory.search,
                             query,
                             filters={"user_id": key},
                             limit=MEMORY_SEARCH_LIMIT
@@ -726,7 +752,9 @@ async def send_llm_request(
 
         forced_answer_nudge = False  # один раз подтолкнём ответить, если промолчала при прямом обращении
 
-        for attempt in range(MAX_API_RETRIES):
+        api_failures = 0
+        tool_rounds = 0
+        while True:
             gen_params = dict(GENERATION_PARAMS)
             if used_tool:
                 # Факты после поиска/чтения ссылки — холоднее, меньше выдумок
@@ -749,22 +777,38 @@ async def send_llm_request(
                 response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
 
                 if response.status_code == 400:
-                    histories[key] = []
+                    async with get_history_lock(key):
+                        histories[key] = []
+                        save_history(key)
                     logger.error(f"[red]400:[/] {response.text}")
                     await update.message.reply_text("⚠️ История сброшена. Напишите ещё раз.")
                     return
 
                 # Обработка rate limiting
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
-                    logger.warning(f"⚠️ [yellow]Rate limit (429), ждём {retry_after}s перед retry {attempt+1}/{MAX_API_RETRIES}[/]")
+                    api_failures += 1
+                    if api_failures >= MAX_API_RETRIES:
+                        await update.message.reply_text("❌ API временно перегружен. Попробуйте позже.")
+                        return
+                    try:
+                        retry_after = min(
+                            60.0,
+                            max(1.0, float(response.headers.get("Retry-After", 5))),
+                        )
+                    except (TypeError, ValueError):
+                        retry_after = 5.0
+                    logger.warning(
+                        f"⚠️ [yellow]Rate limit (429), ждём {retry_after:g}s перед retry "
+                        f"{api_failures}/{MAX_API_RETRIES}[/]"
+                    )
                     await asyncio.sleep(retry_after)
                     continue
 
                 if response.status_code != 200:
                     logger.error(f"❌ [red]API error {response.status_code}:[/] {response.text[:200]}")
-                    if attempt < MAX_API_RETRIES - 1:
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    api_failures += 1
+                    if api_failures < MAX_API_RETRIES:
+                        await asyncio.sleep(2 ** (api_failures - 1))
                         continue
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
                     return
@@ -797,14 +841,35 @@ async def send_llm_request(
                     logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
                 
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
+                    tool_rounds += 1
+                    if tool_rounds > MAX_TOOL_ROUNDS:
+                        logger.error(f"❌ Превышен лимит tool-call раундов ({MAX_TOOL_ROUNDS})")
+                        if turn.status_message:
+                            try:
+                                await turn.status_message.delete()
+                            except Exception:
+                                pass
+                        await update.message.reply_text(
+                            "❌ Не удалось завершить обработку инструментов. Попробуйте переформулировать запрос."
+                        )
+                        return
                     payload_messages.append(message)
                     used_tool = True  # дальше отвечаем на холодной температуре
                     turn.pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
 
                     for tool_call in message['tool_calls']:
-                        await dispatch_tool_call(
-                            turn, payload_messages, update, context, tool_call, sid_to_mid, history
-                        )
+                        try:
+                            await dispatch_tool_call(
+                                turn, payload_messages, update, context,
+                                tool_call, sid_to_mid, history,
+                            )
+                        except Exception as exc:
+                            logger.error(f"❌ Ошибка инструмента: {exc}", exc_info=True)
+                            payload_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id", ""),
+                                "content": f"Инструмент завершился ошибкой: {exc}",
+                            })
 
                     # reply_to_message терминальный и приоритетный: если модель его вызвала,
                     # отправляем выбранный ответ и завершаем — без ещё одного витка к API
@@ -814,9 +879,15 @@ async def send_llm_request(
                         reply_text = _clean_reply(reply_text)
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
-                            saved = await _save_assistant(reply_text)
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
-                            sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
+                            try:
+                                sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
+                            except Exception as exc:
+                                logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                                if turn.reactions_made or turn.stickers_made:
+                                    await _save_assistant("")
+                                return
+                            saved = await _save_assistant(reply_text)
                             await _remember_bot_mid(saved, sent_mid)
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
@@ -864,7 +935,7 @@ async def send_llm_request(
                     
                     logger.debug(f"Finish reason: [{finish_color}]{finish_reason}[/]")
                     logger.debug(f"Content length: [dim]{len(reply)} символов[/]")
-                    logger.debug(f"[green]Content:[/]")
+                    logger.debug("[green]Content:[/]")
                     logger.debug(f"[bright_green]{reply}[/]")
                     logger.debug("[blue]" + "=" * 80 + "[/]")
                 
@@ -913,8 +984,6 @@ async def send_llm_request(
                     logger.warning(f"⚠️ [yellow]Ответ обрезан по лимиту токенов[/] (ключ={key})")
                     reply += "\n\n_(ответ обрезан)_"
 
-                saved = await _save_assistant(reply)  # пишет ход + прикрепляет реакции этого хода
-
                 # Сохранение в долговременную память происходит не здесь, а батчами:
                 # реплики юзеров копятся в state.pending_memory (см. record_user_memory)
                 # и флашатся по достижении лимита символов (memory v2).
@@ -923,22 +992,38 @@ async def send_llm_request(
                 # адресное обращение → реплай на триггер (как раньше);
                 # ambient (случайный пинг) → обычное сообщение без reply.
                 target_mid = update.message.message_id if mentioned else None
-                sent_mid = await _deliver(reply, target_mid, turn.status_message)
+                try:
+                    sent_mid = await _deliver(reply, target_mid, turn.status_message)
+                except Exception as exc:
+                    logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                    if turn.reactions_made or turn.stickers_made:
+                        await _save_assistant("")
+                    return
+                saved = await _save_assistant(reply)
                 await _remember_bot_mid(saved, sent_mid)
                 return
 
             except httpx.ConnectError:
                 logger.error("❌ [bright_red]API недоступен![/]")
+                api_failures += 1
+                if api_failures < MAX_API_RETRIES:
+                    await asyncio.sleep(2 ** (api_failures - 1))
+                    continue
                 await update.message.reply_text("❌ API недоступен!")
                 return
             except httpx.TimeoutException:
                 logger.error("❌ [bright_red]Таймаут запроса к API[/]")
+                api_failures += 1
+                if api_failures < MAX_API_RETRIES:
+                    await asyncio.sleep(2 ** (api_failures - 1))
+                    continue
                 await update.message.reply_text("❌ Таймаут.")
                 return
             except Exception as e:
                 logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}", exc_info=True)
-                if attempt < MAX_API_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)
+                api_failures += 1
+                if api_failures < MAX_API_RETRIES:
+                    await asyncio.sleep(2 ** (api_failures - 1))
                     continue
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return

@@ -10,10 +10,12 @@ from config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VIDEO_MAX_FILE_SIZE_BYTES,
-    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, RANDOM_REPLY_COOLDOWN,
-    MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID, MEMORY_MEDIA_MAX_CHARS
+    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID, MEMORY_MEDIA_MAX_CHARS
 )
-from state import histories, get_history_key, message_buffer, chat_tokens, api_call_count, get_history_lock, _buffer_lock, touch_activity, save_history
+from state import (
+    histories, get_history_key, message_buffer, chat_tokens, api_call_count,
+    get_history_lock, get_turn_lock, _buffer_lock, touch_activity, save_history,
+)
 import state
 from llm_client import summarize_history, send_llm_request, record_user_memory
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
@@ -181,9 +183,14 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.effective_chat.type in ['group', 'supergroup']
     key = get_history_key(chat_id, not is_group, user_id)
 
-    if key in histories:
-        del histories[key]
-        state.delete_history(key)  # Чистим и в БД
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            existed = key in histories
+            histories.pop(key, None)
+            state.delete_history(key)  # Чистим и в БД
+            state.pending_memory.pop(key, None)
+
+    if existed:
         await update.message.reply_text("🧹 История очищена!")
     else:
         await update.message.reply_text("История и так пуста!")
@@ -220,35 +227,39 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.effective_chat.type in ['group', 'supergroup']
     key = get_history_key(chat_id, not is_group, user_id)
 
-    if key not in histories or len(histories[key]) < SUMMARY_INTERVAL:
-        await update.message.reply_text("📝 История слишком короткая для суммаризации (нужно минимум 10 сообщений).")
-        return
-
-    history = histories[key]
-    old_len = len(history)
-    
-    status_msg = await update.message.reply_text("📝 Создаю краткое содержание диалога...")
-    
-    try:
-        new_history = await summarize_history(history)
-        
-        if new_history is history:
-            await status_msg.edit_text("❌ Не удалось создать резюме.")
+    async with get_turn_lock(key):
+        history = histories.get(key)
+        if not history or len(history) < SUMMARY_INTERVAL:
+            await update.message.reply_text(
+                f"📝 История слишком короткая для суммаризации "
+                f"(нужно минимум {SUMMARY_INTERVAL} сообщений)."
+            )
             return
-        
-        histories[key] = new_history
-        state.save_history(key)
-        new_len = len(new_history)
 
-        await status_msg.edit_text(
-            f"✅ Диалог сжат: {old_len} → {new_len} сообщений.\n"
-            f"Суть разговора сохранена, последние реплики остались нетронутыми."
-        )
-        logger.info(f"📝 Ручная суммаризация: [green]{old_len} → {new_len}[/] сообщений для {key}")
-        
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Ошибка при суммаризации: {e}")
-        logger.error(f"❌ [red]Ошибка ручной суммаризации:[/] {e}")
+        old_len = len(history)
+        status_msg = await update.message.reply_text("📝 Создаю краткое содержание диалога...")
+
+        try:
+            new_history = await summarize_history(history)
+
+            if new_history is history:
+                await status_msg.edit_text("❌ Не удалось создать резюме.")
+                return
+
+            async with get_history_lock(key):
+                histories[key] = new_history
+                state.save_history(key)
+            new_len = len(new_history)
+
+            await status_msg.edit_text(
+                f"✅ Диалог сжат: {old_len} → {new_len} сообщений.\n"
+                "Суть разговора сохранена, последние реплики остались нетронутыми."
+            )
+            logger.info(f"📝 Ручная суммаризация: [green]{old_len} → {new_len}[/] сообщений для {key}")
+
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка при суммаризации: {e}")
+            logger.error(f"❌ [red]Ошибка ручной суммаризации:[/] {e}")
 
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
@@ -306,42 +317,40 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
 
     message_content = " ".join(message_parts)
 
-    async with get_history_lock(key):
-        if key not in histories:
-            histories[key] = []
+    # Полный ход сериализуется по ключу истории. В группе разные пользователи имеют
+    # разные debounce-буферы, но общую историю, поэтому одной history-lock недостаточно:
+    # без turn-lock ответы могли завершаться и записываться не в порядке сообщений.
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            if key not in histories:
+                histories[key] = []
 
-        history = histories[key]
-        # Стабильный уникальный номер сообщения для reply по [#N] (не меняется до суммаризации/clear)
-        # и telegram message_id последнего сообщения буфера — на него ляжет реплай.
-        next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
-        last_mid = messages[-1].get("message_id")
-        history.append({"role": "user", "content": message_content, "sid": next_sid, "mid": last_mid})
-        histories[key] = history
-        touch_activity(key)  # Обновляем время активности
-        state.save_history(key)  # Персистим историю на диск
+            history = histories[key]
+            # Стабильный уникальный номер сообщения для reply по [#N].
+            next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
+            last_mid = messages[-1].get("message_id")
+            history.append({"role": "user", "content": message_content, "sid": next_sid, "mid": last_mid})
+            histories[key] = history
+            touch_activity(key)
+            state.save_history(key)
 
-    # Копим слова юзера и компактные медиа-факты для долговременной памяти.
-    # Делаем это для ВСЕХ сообщений, даже если бот не отвечает — память про всю беседу.
-    # (URL-only / односложные отсекаются внутри record_user_memory.)
-    record_user_memory(key, _build_memory_text(combined_text, media_items), user_name, is_group)
+        # Копим слова юзера и компактные медиа-факты для долговременной памяти.
+        record_user_memory(key, _build_memory_text(combined_text, media_items), user_name, is_group)
 
-    if not (mentioned or random_reply):
-        return
+        if not (mentioned or random_reply):
+            return
 
-    # Ambient на «ок»/голых ссылках без медиа — пустая трата токенов.
-    # Прямое обращение (@Бер / reply) всегда обрабатываем.
-    if random_reply and not mentioned and not media_items and is_low_signal_user_text(combined_text):
-        logger.info(
-            f"🤫 [dim]Ambient пропущен (low-signal):[/] "
-            f"{(combined_text or '')[:60]!r} (ключ={key})"
-        )
-        return
+        # Ambient на «ок»/голых ссылках без медиа — пустая трата токенов.
+        if random_reply and not mentioned and not media_items and is_low_signal_user_text(combined_text):
+            logger.info(
+                f"🤫 [dim]Ambient пропущен (low-signal):[/] "
+                f"{(combined_text or '')[:60]!r} (ключ={key})"
+            )
+            return
 
-    # «печатает…» показываем только при прямом обращении: ambient-пинг может закончиться
-    # молчанием, и призрачный индикатор «Ber печатает» без сообщения выглядел бы как баг.
-    if mentioned:
-        await update.message.chat.send_action(action="typing")
-    await send_llm_request(update, context, key, history, user_name, user_id, mentioned)
+        if mentioned:
+            await update.message.chat.send_action(action="typing")
+        await send_llm_request(update, context, key, history, user_name, user_id, mentioned)
 
 
 def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> bool:
@@ -574,19 +583,20 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key = get_history_key(chat_id, False)
 
-    async with get_history_lock(key):
-        if key not in histories:
-            histories[key] = []
-        history = histories[key]
-        next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
-        history.append({"role": "user", "content": content, "sid": next_sid, "mid": msg.message_id})
-        histories[key] = history
-        touch_activity(key)
-        state.save_history(key)
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            if key not in histories:
+                histories[key] = []
+            history = histories[key]
+            next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
+            history.append({"role": "user", "content": content, "sid": next_sid, "mid": msg.message_id})
+            histories[key] = history
+            touch_activity(key)
+            state.save_history(key)
 
-    await msg.chat.send_action(action="typing")
-    # mentioned=True — событие заметное, реагируем всегда; reply ляжет на служебное сообщение
-    await send_llm_request(update, context, key, history, user_name, user_id, True)
+        await msg.chat.send_action(action="typing")
+        # mentioned=True — событие заметное, реагируем всегда; reply ляжет на служебное сообщение
+        await send_llm_request(update, context, key, history, user_name, user_id, True)
 
 
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -620,28 +630,31 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         return  # изменились только кастом/платные реакции — нам нечего записывать
 
     name = mr.user.first_name
-    async with get_history_lock(key):
-        # Привязываемся к сообщению бота по mid. Не нашли (реакция на чужое сообщение
-        # или на наше, отправленное до фичи / ушедшее в резюме) — тихо выходим.
-        target = next(
-            (m for m in history
-             if m.get("role") == "assistant" and m.get("mid") == mr.message_id),
-            None,
-        )
-        if target is None:
-            return
-        inc = target.setdefault("incoming_reactions", [])
-        for e in added:
-            inc.append({"from": name, "emoji": e})
-        for e in removed:
-            for i, rec in enumerate(inc):
-                if rec.get("from") == name and rec.get("emoji") == e:
-                    inc.pop(i)
-                    break
-        if not inc:
-            target.pop("incoming_reactions", None)
-        histories[key] = history
-        save_history(key)
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            # История могла быть очищена, пока реакция ждала turn-lock.
+            history = histories.get(key)
+            if not history:
+                return
+            target = next(
+                (m for m in history
+                 if m.get("role") == "assistant" and m.get("mid") == mr.message_id),
+                None,
+            )
+            if target is None:
+                return
+            inc = target.setdefault("incoming_reactions", [])
+            for e in added:
+                inc.append({"from": name, "emoji": e})
+            for e in removed:
+                for i, rec in enumerate(inc):
+                    if rec.get("from") == name and rec.get("emoji") == e:
+                        inc.pop(i)
+                        break
+            if not inc:
+                target.pop("incoming_reactions", None)
+            histories[key] = history
+            save_history(key)
 
     if added:
         logger.info(f"💟 [magenta]Реакция на сообщение бота:[/] {' '.join(added)} от {name}")
@@ -654,6 +667,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if update.effective_user.id == context.bot.id:
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    is_group = update.effective_chat.type in ['group', 'supergroup']
+    if not _check_access_permissions(chat_id, user_id, is_group):
+        if not is_group:
+            await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
     caption = update.message.caption or ""
@@ -669,7 +690,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         cached = state.get_cached_media_description(photo.file_unique_id)
         if cached is not None:
-            logger.info(f"♻️ [dim]Фото уже разобрано ранее, берём из кэша[/]")
+            logger.info("♻️ [dim]Фото уже разобрано ранее, берём из кэша[/]")
             image_description = cached
         else:
             image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
@@ -735,7 +756,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем кэш (повторное видео/гифку не качаем и не разбираем заново)
     cached = state.get_cached_media_description(video_obj.file_unique_id)
     if cached is not None:
-        logger.info(f"♻️ [dim]Видео уже разобрано ранее, берём из кэша[/]")
+        logger.info("♻️ [dim]Видео уже разобрано ранее, берём из кэша[/]")
         await queue_message(update, context, text=caption,
                             media_description=cached, media_kind="video")
         return
@@ -787,6 +808,14 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == context.bot.id:
         return
 
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    is_group = update.effective_chat.type in ['group', 'supergroup']
+    if not _check_access_permissions(chat_id, user_id, is_group):
+        if not is_group:
+            await update.message.reply_text("Не разговариваю с незнакомцами.")
+        return
+
     sticker = update.message.sticker
     if sticker is None:
         return
@@ -808,7 +837,7 @@ async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем кэш (повторный стикер не разбираем заново)
     cached = state.get_cached_media_description(sticker.file_unique_id)
     if cached is not None:
-        logger.info(f"♻️ [dim]Стикер уже разобран ранее, берём из кэша[/]")
+        logger.info("♻️ [dim]Стикер уже разобран ранее, берём из кэша[/]")
         await queue_message(update, context, text="",
                             media_description=cached, media_kind="image")
         return

@@ -42,29 +42,29 @@ class ToolTurn:
 
 async def handle_web_search(turn, payload_messages, update, tool_call, args):
     await update.message.chat.send_action(action="typing")
-    status_text = f"🔍 Выполняю поиск: *{args['query']}*..."
+    query = str(args.get("query") or "").strip()
+    status_text = f"🔍 Выполняю поиск: {query[:200]}..."
 
     if turn.status_message is None:
-        turn.status_message = await update.message.reply_text(
-            status_text,
-            parse_mode="Markdown"
-        )
+        turn.status_message = await update.message.reply_text(status_text)
     else:
         try:
-            await turn.status_message.edit_text(
-                status_text,
-                parse_mode="Markdown"
-            )
+            await turn.status_message.edit_text(status_text)
         except Exception as e:
             logger.warning(f"⚠️ [yellow]Не удалось отредактировать статусное сообщение:[/] {e}")
 
-    logger.info(f"🔍 [blue]Поиск:[/] {args['query']}")
+    logger.info(f"🔍 [blue]Поиск:[/] {query}")
 
-    search_result = web_search(
-        query=args['query'],
-        max_results=args.get('max_results', 5),
+    try:
+        max_results = max(1, min(int(args.get('max_results', 5)), 8))
+    except (TypeError, ValueError):
+        max_results = 5
+    search_result = await asyncio.to_thread(
+        web_search,
+        query=query,
+        max_results=max_results,
         timelimit=args.get('timelimit', None),
-        region=args.get('region', 'ru-ru')
+        region=args.get('region', 'ru-ru'),
     )
 
     if turn.status_message:
@@ -98,7 +98,7 @@ async def handle_read_url(turn, payload_messages, update, tool_call, args):
             pass
 
     logger.info(f"🔗 [blue]Чтение ссылки:[/] {url}")
-    page_text = read_url(url)
+    page_text = await asyncio.to_thread(read_url, url)
     logger.debug(f"📄 Страница: {repr(page_text[:200])}")
 
     payload_messages.append({
@@ -383,7 +383,17 @@ async def dispatch_tool_call(turn, payload_messages, update, context, tool_call,
     Полностью повторяет прежнюю if/elif-цепочку из send_llm_request.
     """
     func_name = tool_call['function']['name']
-    args = json.loads(tool_call['function']['arguments'])
+    try:
+        args = json.loads(tool_call['function'].get('arguments') or "{}")
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be a JSON object")
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.get('id', ''),
+            "content": f"Некорректные аргументы инструмента: {exc}",
+        })
+        return
 
     if func_name == 'web_search':
         await handle_web_search(turn, payload_messages, update, tool_call, args)

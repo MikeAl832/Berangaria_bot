@@ -136,13 +136,17 @@ log_backup_count: 5
 ```yaml
 allowed_users: [1217938322, 1809564460]
 allowed_groups: [-1002263830880]
+admin_alert_chat_id: 1217938322
 ```
 
 **Parameters:**
 - `allowed_users`: Telegram user IDs with bot access
 - `allowed_groups`: Telegram group IDs where bot operates
+- `admin_alert_chat_id`: One Telegram chat ID for throttled critical-error alerts, or `null` to disable alerts. This value is a scalar, not a list.
 
 Get IDs by sending `/start` to the bot with debug mode enabled.
+
+Access is checked before photos, stickers, videos, or audio are downloaded or sent to Gemini, so denied users cannot consume external API quota.
 
 ### Cost Tracking
 

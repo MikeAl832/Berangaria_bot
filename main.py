@@ -2,6 +2,9 @@ import logging
 import warnings
 import asyncio
 
+# Логирование намеренно настраивается до импорта модулей, создающих клиентов.
+# ruff: noqa: E402
+
 try:
     from telegram.warnings import PTBDeprecationWarning
     warnings.filterwarnings("ignore", category=PTBDeprecationWarning)
@@ -32,6 +35,7 @@ from config import (
     MEMORY_FLUSH_INTERVAL_SECONDS, SUMMARY_HOURS, TIMEZONE_NAME,
 )
 import state
+import memory_store
 from handlers import (
     start, clear, stats, random_chance, summarize_command,
     handle_message, handle_media, handle_video, handle_sticker, handle_voice,
@@ -70,7 +74,7 @@ async def periodic_summarization():
             logger.info(f"📝 [yellow]Запуск суммаризации для {total_chats} активных чатов...[/]")
 
             for key in list(state.histories.keys()):
-                async with state.get_history_lock(key):
+                async with state.get_turn_lock(key):
                     history = state.histories.get(key, [])
 
                     # Суммаризируем только если история достаточно длинная
@@ -79,15 +83,16 @@ async def periodic_summarization():
                         new_history = await summarize_history(history)
 
                         if new_history is not history and len(new_history) < old_len:
-                            state.histories[key] = new_history
-                            state.save_history(key)
+                            async with state.get_history_lock(key):
+                                state.histories[key] = new_history
+                                state.save_history(key)
                             summarized_count += 1
                             logger.info(f"  ✅ {key}: {old_len} → {len(new_history)} сообщений")
 
             if summarized_count > 0:
                 logger.info(f"📝 [green]Суммаризировано {summarized_count} из {total_chats} чатов[/]")
             else:
-                logger.info(f"📝 [dim]Нет чатов для суммаризации[/]")
+                logger.info("📝 [dim]Нет чатов для суммаризации[/]")
 
             # Чистим данные чатов, неактивных больше 72 часов (предотвращает рост словарей в памяти)
             removed = state.cleanup_old_chats(max_age_hours=72)
@@ -159,6 +164,14 @@ async def periodic_memory_flush():
     while True:
         await asyncio.sleep(MEMORY_FLUSH_INTERVAL_SECONDS)
         try:
+            if memory_store.memory is None:
+                await asyncio.to_thread(
+                    memory_store.initialize_memory,
+                    attempts=3,
+                    delay_seconds=2.0,
+                )
+            if memory_store.memory is None:
+                continue
             flushed = await flush_pending_memory()
             if flushed:
                 logger.info(f"🧠 [green]Периодический flush памяти:[/] {flushed} реплик")
@@ -173,6 +186,9 @@ def main():
 
     # Инициализируем БД, runtime-настройки и сохранённые истории диалогов
     state.init_db()
+    # Compose запускает контейнеры по порядку, но Qdrant может ещё не принимать
+    # соединения. Повторяем инициализацию, не оставляя память выключенной навсегда.
+    memory_store.initialize_memory(attempts=10, delay_seconds=2.0)
     runtime_settings = state.load_runtime_settings(default_random_reply_chance=RANDOM_REPLY_CHANCE)
     loaded_chats = state.load_all_histories()
     logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")

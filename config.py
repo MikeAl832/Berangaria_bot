@@ -1,5 +1,6 @@
 ﻿import os
 import yaml
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -137,8 +138,6 @@ RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 
 # Часовой пояс бота (метки [Time:], CURRENT TIME, автосуммаризация)
-from zoneinfo import ZoneInfo
-
 _tz_name = config_yaml.get("timezone", "Europe/Moscow")
 if not isinstance(_tz_name, str) or not _tz_name.strip():
     _tz_name = "Europe/Moscow"
@@ -168,6 +167,7 @@ LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)
 # 📊 ТЕХНИЧЕСКИЕ КОНСТАНТЫ
 # ========================================
 MAX_API_RETRIES = 5  # Максимальное количество попыток обращения к API
+MAX_TOOL_ROUNDS = 8  # Отдельный предел последовательных LLM tool-call раундов
 MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементов в одном сообщении для экономии токенов
 
 # ========================================
@@ -177,7 +177,16 @@ ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
 
 # Чат для алертов о критических ошибках (null = выключено)
-ADMIN_ALERT_CHAT_ID = config_yaml.get("admin_alert_chat_id", None)
+_admin_alert_chat_id = config_yaml.get("admin_alert_chat_id", None)
+if _admin_alert_chat_id is None:
+    ADMIN_ALERT_CHAT_ID = None
+elif isinstance(_admin_alert_chat_id, bool):
+    raise ValueError("admin_alert_chat_id должен быть Telegram chat id или null")
+else:
+    try:
+        ADMIN_ALERT_CHAT_ID = int(_admin_alert_chat_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("admin_alert_chat_id должен быть одним Telegram chat id или null") from exc
 
 # ========================================
 # 💰 ЦЕНЫ DeepSeek (за 1M токенов)
