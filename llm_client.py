@@ -12,13 +12,15 @@ from config import (
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
-    MAX_TOOL_ROUNDS,
+    MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
+    STREAM_PREVIEW_MIN_CHARS,
 )
 import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
 import memory_store
 from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
+from streaming import TelegramStreamPreview, stream_chat_completion
 from utils import now_local, is_low_signal_user_text, is_url_only_text, strip_tiktok_urls
 
 logger = logging.getLogger(__name__)
@@ -636,6 +638,41 @@ async def send_llm_request(
     turn = ToolTurn()
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
 
+    async def _request_completion(client, payload, headers):
+        if not STREAMING_ENABLED:
+            return await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
+
+        preview = TelegramStreamPreview(
+            update,
+            context,
+            mentioned=mentioned,
+            status_message=turn.status_message,
+            interval_seconds=STREAM_UPDATE_INTERVAL_SECONDS,
+            min_chars=STREAM_PREVIEW_MIN_CHARS,
+        )
+        try:
+            return await stream_chat_completion(
+                client,
+                DEEPSEEK_API_URL,
+                payload=payload,
+                headers=headers,
+                on_content=preview.publish,
+            )
+        finally:
+            # Если preview создал групповое сообщение, tool handlers и финальная
+            # доставка должны переиспользовать именно его.
+            turn.status_message = preview.status_message
+
+    async def _delete_turn_status():
+        if turn.status_message is None:
+            return
+        try:
+            await turn.status_message.delete()
+        except Exception:
+            pass
+        finally:
+            turn.status_message = None
+
     async def _deliver(text: str, target_mid, status_msg):
         """
         Отправляет text в чат.
@@ -774,9 +811,10 @@ async def send_llm_request(
                     "Content-Type": "application/json"
                 }
                 
-                response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
+                response = await _request_completion(client, payload, headers)
 
                 if response.status_code == 400:
+                    await _delete_turn_status()
                     async with get_history_lock(key):
                         histories[key] = []
                         save_history(key)
@@ -788,6 +826,7 @@ async def send_llm_request(
                 if response.status_code == 429:
                     api_failures += 1
                     if api_failures >= MAX_API_RETRIES:
+                        await _delete_turn_status()
                         await update.message.reply_text("❌ API временно перегружен. Попробуйте позже.")
                         return
                     try:
@@ -810,6 +849,7 @@ async def send_llm_request(
                     if api_failures < MAX_API_RETRIES:
                         await asyncio.sleep(2 ** (api_failures - 1))
                         continue
+                    await _delete_turn_status()
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
                     return
 
@@ -1009,6 +1049,7 @@ async def send_llm_request(
                 if api_failures < MAX_API_RETRIES:
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
+                await _delete_turn_status()
                 await update.message.reply_text("❌ API недоступен!")
                 return
             except httpx.TimeoutException:
@@ -1017,6 +1058,7 @@ async def send_llm_request(
                 if api_failures < MAX_API_RETRIES:
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
+                await _delete_turn_status()
                 await update.message.reply_text("❌ Таймаут.")
                 return
             except Exception as e:
@@ -1025,5 +1067,6 @@ async def send_llm_request(
                 if api_failures < MAX_API_RETRIES:
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
+                await _delete_turn_status()
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return

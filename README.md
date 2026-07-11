@@ -20,6 +20,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Telegram reactions** via function calling for natural emoji responses
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
+- **Streaming replies** with native Telegram drafts in private chats and throttled previews in groups
 - **Configurable random replies** in groups with cooldown
 - **Persistent runtime settings**: `/random` changes are saved in SQLite and survive restarts
 - **Token usage tracking** and cost estimation with cache hit rates
@@ -131,6 +132,7 @@ Vision prompts redesigned for conversational output instead of structured report
 - **Smart media handling**: descriptions truncated at sentence boundaries (max 800 chars/item)
 - **Random reply system**: system-level instructions for natural spontaneous responses
 - **Time-aware context**: 3+ hour gaps treated as new conversations
+- **Streaming delivery**: DeepSeek SSE content is previewed while generated; reasoning and tool arguments remain private, and only the final answer is persisted
 
 ## Commands
 

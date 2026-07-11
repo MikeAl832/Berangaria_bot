@@ -107,6 +107,9 @@ summary_hours: [5, 14]
 message_debounce_seconds: 4.0
 random_reply_cooldown: 10
 admin_mode: false
+streaming_enabled: true
+stream_update_interval_seconds: 0.8
+stream_preview_min_chars: 12
 debug: true
 full_debug_logs: true
 verbose: false
@@ -124,6 +127,9 @@ log_backup_count: 5
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins
+- `streaming_enabled`: Enable DeepSeek SSE and Telegram partial-answer previews
+- `stream_update_interval_seconds`: Minimum delay between Telegram preview updates; clamped to 0.25-5 seconds
+- `stream_preview_min_chars`: Minimum buffered answer length before the first preview update
 - `debug`: Enable detailed logging
 - `full_debug_logs`: Write detailed prompts, model replies, memory facts, and vision descriptions to DEBUG logs without enabling DEBUG output in Docker console.
 - `verbose`: Super-detailed logs (HTTP, TLS, H2 - includes debug)

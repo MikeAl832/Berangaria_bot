@@ -33,6 +33,7 @@ from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
     MEMORY_FLUSH_INTERVAL_SECONDS, SUMMARY_HOURS, TIMEZONE_NAME,
+    STREAMING_ENABLED,
 )
 import state
 import memory_store
@@ -235,6 +236,7 @@ def main():
     logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
     logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")
     logger.info(f"🧾 Full debug logs: [yellow]{FULL_DEBUG_LOGS}[/]")
+    logger.info(f"🌊 Потоковые ответы: [yellow]{STREAMING_ENABLED}[/]")
     if VISION_MODE:
         logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
     logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
