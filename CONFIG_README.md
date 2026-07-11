@@ -16,7 +16,16 @@ Environment variables for sensitive data:
 TELEGRAM_BOT_TOKEN=<token>
 API_KEY=<deepseek_key>
 GEMINI_API_KEY=<gemini_key>
+# Optional local Telegram Bot API server:
+TELEGRAM_BOT_API_BASE_URL=http://127.0.0.1:8081
+TELEGRAM_BOT_API_LOCAL_MODE=true
+BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
 ```
+
+When local mode is enabled, `TELEGRAM_BOT_API_BASE_FILE_URL` defaults to
+`<TELEGRAM_BOT_API_BASE_URL>/file`. The bot container must be able to read the
+same absolute file paths returned by the API server; the provided Compose file
+mounts `/var/lib/telegram-bot-api` read-only and uses host networking.
 
 ### config.py
 

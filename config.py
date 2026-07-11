@@ -66,6 +66,15 @@ def _str_setting(env_name: str, yaml_key: str, default: str) -> str:
 # 🔑 API КЛЮЧИ
 # ========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_BOT_API_BASE_URL = os.environ.get("TELEGRAM_BOT_API_BASE_URL", "").rstrip("/")
+TELEGRAM_BOT_API_BASE_FILE_URL = os.environ.get(
+    "TELEGRAM_BOT_API_BASE_FILE_URL",
+    f"{TELEGRAM_BOT_API_BASE_URL}/file" if TELEGRAM_BOT_API_BASE_URL else "",
+).rstrip("/")
+TELEGRAM_BOT_API_LOCAL_MODE = _as_bool(
+    os.environ.get("TELEGRAM_BOT_API_LOCAL_MODE"),
+    bool(TELEGRAM_BOT_API_BASE_URL),
+)
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
@@ -102,9 +111,13 @@ VISION_MODE = config_yaml.get("vision_mode", False)
 GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-3.1-flash-lite")
 VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 300)
 AUDIO_MAX_DURATION_SEC = config_yaml.get("audio_max_duration_sec", 300)
-# Облачный Telegram Bot API отдаёт боту файлы только до 20 МБ через getFile.
-# Видео крупнее физически не скачать без локального Bot API server — отсекаем заранее.
-VIDEO_MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
+# Облачный Telegram Bot API отдаёт через getFile только до 20 МБ. В local mode
+# сервер снимает этот предел; оставляем настраиваемый предохранитель для диска/RAM.
+_video_file_limit_default = 2 * 1024 * 1024 * 1024 if TELEGRAM_BOT_API_LOCAL_MODE else 20 * 1024 * 1024
+VIDEO_MAX_FILE_SIZE_BYTES = max(
+    1,
+    _int_setting("BOT_VIDEO_MAX_FILE_SIZE_BYTES", "video_max_file_size_bytes", _video_file_limit_default),
+)
 GEMINI_UPLOAD_MAX_WAIT_SEC = config_yaml.get("gemini_upload_max_wait_sec", 180)
 GEMINI_UPLOAD_BACKOFF_INITIAL = config_yaml.get("gemini_upload_backoff_initial", 0.5)
 GEMINI_UPLOAD_BACKOFF_MAX = config_yaml.get("gemini_upload_backoff_max", 5.0)

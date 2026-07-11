@@ -64,6 +64,10 @@ API_KEY=your_deepseek_api_key
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
+The production Compose configuration uses the local Telegram Bot API server at
+`127.0.0.1:8081` in local mode and mounts its file directory read-only. This
+allows media larger than the cloud Bot API `getFile` limit to be processed.
+
 API keys:
 - Telegram: [@BotFather](https://t.me/botfather)
 - DeepSeek: [platform.deepseek.com](https://platform.deepseek.com)

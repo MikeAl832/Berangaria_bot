@@ -34,6 +34,8 @@ from config import (
     MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
     MEMORY_FLUSH_INTERVAL_SECONDS, SUMMARY_HOURS, TIMEZONE_NAME,
     STREAMING_ENABLED,
+    TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
+    TELEGRAM_BOT_API_LOCAL_MODE,
 )
 import state
 import memory_store
@@ -182,6 +184,16 @@ async def periodic_memory_flush():
             logger.error(f"❌ [red]Ошибка периодического flush памяти:[/] {e}", exc_info=True)
 
 
+def build_telegram_application() -> Application:
+    """Build the PTB application for either Telegram cloud or a local Bot API."""
+    builder = Application.builder().token(TELEGRAM_TOKEN)
+    if TELEGRAM_BOT_API_BASE_URL:
+        builder = builder.base_url(f"{TELEGRAM_BOT_API_BASE_URL}/bot")
+        builder = builder.base_file_url(f"{TELEGRAM_BOT_API_BASE_FILE_URL}/bot")
+        builder = builder.local_mode(TELEGRAM_BOT_API_LOCAL_MODE)
+    return builder.build()
+
+
 def main():
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
@@ -195,7 +207,13 @@ def main():
     logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")
     logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    if TELEGRAM_BOT_API_BASE_URL:
+        logger.info(
+            "📡 Telegram Bot API: локальный сервер %s (local_mode=%s)",
+            TELEGRAM_BOT_API_BASE_URL,
+            TELEGRAM_BOT_API_LOCAL_MODE,
+        )
+    app = build_telegram_application()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))

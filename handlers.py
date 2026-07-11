@@ -746,10 +746,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Telegram не отдаёт боту файлы тяжелее 20 МБ — отсекаем до скачивания
+    # Предохранитель размера: 20 МБ для cloud API, настраиваемый увеличенный
+    # предел для локального Bot API.
     if video_obj.file_size and video_obj.file_size > VIDEO_MAX_FILE_SIZE_BYTES:
         await update.message.reply_text(
-            f"Видео больше {VIDEO_MAX_FILE_SIZE_BYTES // (1024 * 1024)} МБ — Telegram не даёт мне такое скачать."
+            f"Видео больше настроенного лимита "
+            f"{VIDEO_MAX_FILE_SIZE_BYTES // (1024 * 1024)} МБ — не буду скачивать."
         )
         return
 
