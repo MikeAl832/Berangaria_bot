@@ -48,7 +48,6 @@ jobs:
           port: 22
           timeout: 60s
           command_timeout: 10m
-          script_stop: true
           
           script: |
             set -eu
