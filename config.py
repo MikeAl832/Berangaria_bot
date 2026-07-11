@@ -27,6 +27,19 @@ def _int_setting(env_name: str, yaml_key: str, default: int) -> int:
     return _as_int(os.environ.get(env_name, config_yaml.get(yaml_key, default)), default)
 
 
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_setting(env_name: str, yaml_key: str, default: float) -> float:
+    return _as_float(os.environ.get(env_name, config_yaml.get(yaml_key, default)), default)
+
+
 def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -72,6 +85,15 @@ MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
 # Пониженная температура для фактических ответов (после web_search/read_url) — меньше галлюцинаций
 FACTUAL_TEMPERATURE = config_yaml.get("factual_temperature", 0.3)
+STREAMING_ENABLED = _bool_setting("BOT_STREAMING_ENABLED", "streaming_enabled", True)
+STREAM_UPDATE_INTERVAL_SECONDS = max(
+    0.25,
+    min(_float_setting("BOT_STREAM_UPDATE_INTERVAL", "stream_update_interval_seconds", 0.8), 5.0),
+)
+STREAM_PREVIEW_MIN_CHARS = max(
+    1,
+    min(_int_setting("BOT_STREAM_PREVIEW_MIN_CHARS", "stream_preview_min_chars", 12), 200),
+)
 
 # ========================================
 # 👁️ VISION (Gemini)
