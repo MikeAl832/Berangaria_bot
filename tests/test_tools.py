@@ -36,6 +36,8 @@ def test_read_url_empty():
 class _FakeResponse:
     def __init__(self, url):
         self.requested_url = url
+        self.url = url
+        self.status_code = 200
         self.headers = {"content-type": "text/html"}
         self.text = "<html><head><title>T</title></head><body>Привет мир</body></html>"
 
@@ -63,6 +65,9 @@ class _FakeClient:
 
 def test_read_url_prepends_https_scheme(monkeypatch):
     monkeypatch.setattr(tools.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(tools.socket, "getaddrinfo", lambda host, port, **kw: [
+        (tools.socket.AF_INET, tools.socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+    ])
     _FakeClient.captured.clear()
     result = tools.read_url("example.com")
     assert _FakeClient.captured["url"] == "https://example.com"
@@ -71,6 +76,43 @@ def test_read_url_prepends_https_scheme(monkeypatch):
 
 def test_read_url_keeps_existing_scheme(monkeypatch):
     monkeypatch.setattr(tools.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(tools.socket, "getaddrinfo", lambda host, port, **kw: [
+        (tools.socket.AF_INET, tools.socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+    ])
     _FakeClient.captured.clear()
     tools.read_url("http://example.com/page")
     assert _FakeClient.captured["url"] == "http://example.com/page"
+
+
+def test_read_url_rejects_private_address(monkeypatch):
+    monkeypatch.setattr(tools.httpx, "Client", _FakeClient)
+    _FakeClient.captured.clear()
+
+    result = tools.read_url("http://127.0.0.1:6333/collections")
+
+    assert "отклонён" in result.lower()
+    assert "локальным" in result.lower()
+    assert _FakeClient.captured == {}
+
+
+def test_read_url_revalidates_redirect_target(monkeypatch):
+    class RedirectClient(_FakeClient):
+        calls = []
+
+        def get(self, url):
+            self.calls.append(url)
+            response = _FakeResponse(url)
+            response.status_code = 302
+            response.headers = {"location": "http://127.0.0.1/private"}
+            return response
+
+    monkeypatch.setattr(tools.httpx, "Client", RedirectClient)
+    monkeypatch.setattr(tools.socket, "getaddrinfo", lambda host, port, **kw: [
+        (tools.socket.AF_INET, tools.socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
+    ])
+    RedirectClient.calls.clear()
+
+    result = tools.read_url("https://example.com/redirect")
+
+    assert "отклонён" in result.lower()
+    assert RedirectClient.calls == ["https://example.com/redirect"]

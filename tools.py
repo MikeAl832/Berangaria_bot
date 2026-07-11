@@ -1,4 +1,8 @@
 import time
+import ipaddress
+import socket
+from urllib.parse import urljoin, urlparse
+
 import httpx
 from ddgs import DDGS
 from bs4 import BeautifulSoup
@@ -219,6 +223,42 @@ def web_search(query: str, max_results: int = 5, timelimit: str = None, region: 
 
 
 READ_URL_MAX_CHARS = 4000  # сколько символов текста страницы отдавать модели
+MAX_URL_REDIRECTS = 5
+
+
+def _validate_public_url(url: str) -> None:
+    """Отклоняет URL, способные обратиться к локальной/внутренней сети."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Разрешены только HTTP и HTTPS URL.")
+    if not parsed.hostname:
+        raise ValueError("В URL отсутствует имя хоста.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL с логином или паролем не поддерживаются.")
+
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("Некорректный порт в URL.") from exc
+
+    try:
+        # IP-литерал проверяем напрямую: это заодно не даёт тестовым/системным
+        # DNS-резолверам подменить смысл 127.0.0.1 или ::1.
+        literal = ipaddress.ip_address(parsed.hostname.split("%", 1)[0])
+        addresses = {str(literal)}
+    except ValueError:
+        try:
+            addr_info = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("Не удалось определить адрес сайта.") from exc
+        addresses = {item[4][0].split("%", 1)[0] for item in addr_info}
+    if not addresses:
+        raise ValueError("Сайт не имеет доступных IP-адресов.")
+
+    for raw_ip in addresses:
+        ip = ipaddress.ip_address(raw_ip)
+        if not ip.is_global:
+            raise ValueError("Доступ к локальным и служебным сетевым адресам запрещён.")
 
 def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
     """Скачивает страницу и возвращает её текст (заголовок + основной контент)."""
@@ -235,8 +275,22 @@ def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
         )
     }
     try:
-        with httpx.Client(timeout=15.0, follow_redirects=True, headers=headers) as client:
-            r = client.get(url)
+        with httpx.Client(timeout=15.0, follow_redirects=False, headers=headers) as client:
+            for _ in range(MAX_URL_REDIRECTS + 1):
+                _validate_public_url(url)
+                r = client.get(url)
+                status_code = getattr(r, "status_code", 200)
+                location = r.headers.get("location")
+                if status_code in {301, 302, 303, 307, 308} and location:
+                    url = urljoin(url, location)
+                    continue
+                break
+            else:
+                return f"Слишком много перенаправлений (>{MAX_URL_REDIRECTS})."
+
+            # Защита от клиента/прокси, который мог последовать редиректу сам.
+            final_url = str(getattr(r, "url", url))
+            _validate_public_url(final_url)
             r.raise_for_status()
 
             content_type = r.headers.get("content-type", "").lower()
@@ -264,6 +318,8 @@ def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
                 result += "…"
             return result
 
+    except ValueError as e:
+        return f"URL отклонён: {e}"
     except httpx.HTTPStatusError as e:
         return f"Страница недоступна (HTTP {e.response.status_code})."
     except Exception as e:

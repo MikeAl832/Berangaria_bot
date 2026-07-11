@@ -187,7 +187,7 @@ async def _gemini_upload_file(file_path: str, mime: str) -> str | None:
             r.raise_for_status()
             upload_url = r.headers.get("X-Goog-Upload-URL") or r.headers.get("x-goog-upload-url")
             if not upload_url:
-                logger.error(f"Gemini upload: нет upload URL в ответе")
+                logger.error("Gemini upload: нет upload URL в ответе")
                 return None
         except Exception as e:
             logger.error(f"Gemini upload start: {e}")

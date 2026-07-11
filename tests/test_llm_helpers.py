@@ -5,6 +5,11 @@
 чтобы последующий рефакторинг send_llm_request нельзя было провести
 с молчаливым изменением логики.
 """
+import asyncio
+import copy
+
+import llm_client
+
 from llm_client import (
     markdown_to_html,
     strip_markdown,
@@ -203,3 +208,30 @@ def test_format_memory_filters_below_min_score():
 def test_format_memory_formats_as_bullet():
     res = {"results": [{"memory": "факт", "score": 0.9}]}
     assert _format_memory_block(res) == "- факт"
+
+
+def test_failed_summary_does_not_mutate_live_history(monkeypatch):
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            raise RuntimeError("forced failure")
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", FailingClient)
+    history = [
+        {"role": "user", "content": f"[Message: m{i}]", "sid": i + 1, "mid": i + 10}
+        for i in range(12)
+    ]
+    before = copy.deepcopy(history)
+
+    result = asyncio.run(llm_client.summarize_history(history))
+
+    assert result is history
+    assert history == before

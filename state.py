@@ -81,6 +81,7 @@ last_activity: Dict[str, float] = {}
 
 # Блокировки для предотвращения race conditions
 _history_locks: Dict[str, asyncio.Lock] = {}
+_turn_locks: Dict[str, asyncio.Lock] = {}
 _buffer_lock: asyncio.Lock = asyncio.Lock()
 
 def get_history_key(chat_id: int, is_private: bool, user_id: int = None) -> str:
@@ -93,6 +94,13 @@ def get_history_lock(key: str) -> asyncio.Lock:
     if key not in _history_locks:
         _history_locks[key] = asyncio.Lock()
     return _history_locks[key]
+
+
+def get_turn_lock(key: str) -> asyncio.Lock:
+    """Сериализует полный ход одного чата: user -> LLM/tools -> assistant."""
+    if key not in _turn_locks:
+        _turn_locks[key] = asyncio.Lock()
+    return _turn_locks[key]
 
 def touch_activity(key: str):
     """Обновляет время последней активности для чата."""
@@ -108,7 +116,8 @@ def cleanup_old_chats(max_age_hours: int = 72) -> int:
     keys_to_remove = []
 
     for key, last_time in list(last_activity.items()):
-        if current_time - last_time > max_age_seconds:
+        turn_lock = _turn_locks.get(key)
+        if current_time - last_time > max_age_seconds and not (turn_lock and turn_lock.locked()):
             keys_to_remove.append(key)
 
     for key in keys_to_remove:
@@ -118,6 +127,7 @@ def cleanup_old_chats(max_age_hours: int = 72) -> int:
         last_activity.pop(key, None)
         pending_memory.pop(key, None)  # Очищаем буфер памяти
         _history_locks.pop(key, None)  # Очищаем блокировки
+        _turn_locks.pop(key, None)
         delete_history(key)            # Удаляем и из БД
 
     return len(keys_to_remove)

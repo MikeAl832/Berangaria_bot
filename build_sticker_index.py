@@ -83,7 +83,7 @@ def main():
     est_tokens = sum(len(sticker_text(r)) for r in new) // 4
     n_requests = (len(new) + args.batch_size - 1) // args.batch_size
     print(f"🔢 Оценка: ~{n_requests} HTTP-запросов (батч={args.batch_size}), ~{est_tokens} токенов")
-    print(f"   Лимиты Gemini: 100 RPM / 30k TPM / 1000 RPD")
+    print("   Лимиты Gemini: 100 RPM / 30k TPM / 1000 RPD")
     print(f"📝 Пример: {sticker_text(new[0])[:120]!r}")
 
     if args.dry_run:
