@@ -54,7 +54,7 @@ jobs:
             set -eu
 
             mkdir -p ~/.ssh
-            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
             
             mkdir -p ~/apps/Berangaria_bot
             cd ~/apps/Berangaria_bot
