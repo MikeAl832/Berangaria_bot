@@ -115,7 +115,7 @@ TOOLS = [
         "function": {
             "name": "find_stickers",
             "description": (
-                "Search your sticker collection by vibe. Returns a NUMBERED list of matching stickers "
+                "Search your sticker collection by vibe. You LOVE using stickers and should do it proactively when the vibe fits. Returns a NUMBERED list of matching stickers"
                 "with descriptions and tags — it does NOT send anything. Use it when you feel like reacting "
                 "with a sticker: browse the options, then send the one that best fits via send_sticker(id). "
                 "You may refine the search up to 3 times per turn with different wording; after that pick "
@@ -145,6 +145,7 @@ TOOLS = [
         "function": {
             "name": "send_sticker",
             "description": (
+                "Send the sticker that best matches the current emotion/vibe. Sticker-only replies are highly encouraged."
                 "Send ONE specific sticker to the chat, chosen from the latest find_stickers results by its number. "
                 "Call this only AFTER find_stickers, passing the id of the option you liked best. "
                 "After a successful send the turn ends — the sticker IS the full reply (no extra text round). "
