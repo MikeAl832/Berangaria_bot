@@ -7,8 +7,9 @@
 
 # Параметры генерации (можно добавить: top_k, min_p, presence_penalty, repetition_penalty, thinking)
 "generation_params":
-  "temperature": 0.9
-  "top_p": 0.95
+  "temperature": 0.8
+  "top_p": 0.91
+  "repetition_penalty": 1.08
 
 # Температура для фактических ответов после поиска/чтения ссылок (ниже = меньше галлюцинаций)
 "factual_temperature": 0.3
