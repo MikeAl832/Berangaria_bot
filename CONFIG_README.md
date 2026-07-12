@@ -75,6 +75,7 @@ video_max_duration_sec: 60
 ### Memory (Mem0 + Embeddings)
 
 ```yaml
+mem0_llm_model: "deepseek-v4-flash"
 embedding_model: "models/text-embedding-004"
 embedding_dims: 768
 memory_search_limit: 10
@@ -88,6 +89,7 @@ memory_media_max_chars: 600
 ```
 
 **Parameters:**
+- `mem0_llm_model`: DeepSeek model used by Mem0 for extracting and updating memories
 - `embedding_model`: Gemini embedding model (must include "models/" prefix)
 - `embedding_dims`: Vector dimensions (fixed at 768 for text-embedding-004)
 - `memory_search_limit`: Number of facts retrieved per query
@@ -413,7 +415,7 @@ MEM0_CONFIG = {
     "llm": {
         "provider": "deepseek",
         "config": {
-            "model": MODEL,
+            "model": MEM0_LLM_MODEL,
             "api_key": DEEPSEEK_API_KEY,
             "temperature": 0.1,
             "max_tokens": 2000,

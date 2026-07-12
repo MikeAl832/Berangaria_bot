@@ -125,6 +125,7 @@ GEMINI_UPLOAD_BACKOFF_MAX = config_yaml.get("gemini_upload_backoff_max", 5.0)
 # ========================================
 # 🧠 ПАМЯТЬ (Mem0 + Embeddings)
 # ========================================
+MEM0_LLM_MODEL = config_yaml.get("mem0_llm_model", "deepseek-v4-flash")
 EMBEDDING_MODEL = config_yaml.get("embedding_model", "gemini-embedding-2")
 EMBEDDING_DIMS = config_yaml.get("embedding_dims", 768)
 MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
@@ -266,7 +267,7 @@ MEM0_CONFIG = {
     "llm": {
         "provider": "deepseek",
         "config": {
-            "model": MODEL,
+            "model": MEM0_LLM_MODEL,
             "api_key": DEEPSEEK_API_KEY,
             "temperature": 0.3,
             "max_tokens": 2000,

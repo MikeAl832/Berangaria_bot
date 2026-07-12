@@ -81,6 +81,7 @@ Key settings:
 - `model`: DeepSeek model name
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
+- `mem0_llm_model`: DeepSeek model used by Mem0 for memory extraction
 - `memory_search_limit`: facts injected into context
 - `allowed_users` / `allowed_groups`: access control
 
