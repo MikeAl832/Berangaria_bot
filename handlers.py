@@ -18,11 +18,13 @@ from state import (
 )
 import state
 from llm_client import summarize_history, send_llm_request, record_user_memory
+from memory_pipeline import release_memory_sources
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
     download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
     now_local, is_low_signal_user_text, strip_tiktok_urls,
+    strip_tiktok_urls_preserving_whitespace,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,7 +65,7 @@ def _build_memory_text(
     del media_items
     if is_forwarded:
         return ""
-    return strip_tiktok_urls((combined_text or "").strip())
+    return strip_tiktok_urls_preserving_whitespace(combined_text)
 
 
 # ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
@@ -173,7 +175,6 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
             existed = key in histories
             histories.pop(key, None)
             state.delete_history(key)  # Чистим и в БД
-            state.pending_memory.pop(key, None)
 
     if existed:
         await update.message.reply_text("🧹 История очищена!")
@@ -398,7 +399,8 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     # TikTok-ссылки модели не отдаём: только вырезаем, ничего не подставляем.
-    text = strip_tiktok_urls(text or "")
+    original_text = text or ""
+    text = strip_tiktok_urls(original_text)
     if not text and not media_description:
         return
 
@@ -433,12 +435,13 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Ставим оригинальный текст в очередь до debounce: поздняя правка Telegram
     # не должна менять уже поставленный источник памяти.
     memory_text = _build_memory_text(
-        text,
+        original_text,
         [],
         is_forwarded=forward_info is not None,
     )
+    memory_source_id = None
     if memory_text:
-        record_user_memory(
+        memory_source_id = record_user_memory(
             key,
             memory_text,
             user_name,
@@ -446,7 +449,9 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             author_id=str(user_id),
             message_id=update.message.message_id,
             created_at=msg_data["created_at"],
+            ready=False,
         )
+    msg_data["memory_source_id"] = memory_source_id
 
     # Запускаем новый таймер
     async def wait_and_process():
@@ -454,10 +459,15 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await asyncio.sleep(MESSAGE_DEBOUNCE_SECONDS)
             data = message_buffer.get(buffer_key)
             if data:
-                await process_buffered_messages(
-                    buffer_key, update, context, key, is_group, user_id, user_name,
-                    data["mentioned"], data["random_reply"]
-                )
+                try:
+                    await process_buffered_messages(
+                        buffer_key, update, context, key, is_group, user_id, user_name,
+                        data["mentioned"], data["random_reply"]
+                    )
+                finally:
+                    release_memory_sources(
+                        [message.get("memory_source_id") for message in data["messages"]]
+                    )
         except asyncio.CancelledError:
             pass  # Таймер был отменен из-за нового сообщения
 

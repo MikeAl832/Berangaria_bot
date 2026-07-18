@@ -22,7 +22,7 @@ from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
 from streaming import TelegramStreamPreview, stream_chat_completion
 from utils import now_local, is_low_signal_user_text, strip_tiktok_urls
-from memory_pipeline import enqueue_memory_source, process_pending_memory
+from memory_pipeline import enqueue_memory_source
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +390,7 @@ def record_user_memory(
     author_id: str | None = None,
     message_id: int | None = None,
     created_at: float | None = None,
+    ready: bool = True,
 ) -> int | None:
     """Ставит одну текстовую реплику в строгую долговечную очередь."""
     del is_group  # scope уже содержит приватную/групповую область памяти.
@@ -403,23 +404,8 @@ def record_user_memory(
         message_id=message_id,
         text=text,
         created_at=created_at,
+        ready=ready,
     )
-
-
-async def flush_pending_memory() -> int:
-    """Обрабатывает одну фоновую порцию строгой очереди памяти."""
-    report = await process_pending_memory()
-    return report.approved
-
-
-async def wait_for_memory_flush_tasks() -> None:
-    """Совместимый no-op: очередь памяти теперь долговечна в SQLite."""
-    return None
-
-
-def flush_pending_memory_blocking() -> None:
-    """Не вызывает сеть синхронно: pending-очередь сохранена в SQLite."""
-    logger.info("Память: синхронный flush пропущен, очередь сохранена в SQLite")
 
 
 async def summarize_history(history: list) -> list:
@@ -515,7 +501,7 @@ async def send_llm_request(
     if memory_store.memory:
         try:
             # Валидация ключа для безопасности
-            if not re.match(r'^(private|group)_-?\d+$', key):
+            if not state.is_valid_memory_scope(key):
                 logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
             else:
                 query = _build_memory_search_query(history, user_name)

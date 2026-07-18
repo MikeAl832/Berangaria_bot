@@ -88,7 +88,6 @@ Key settings:
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
 - `memory_search_limit`: facts injected into context
-- `memory_mem0_min_chars`: minimum user-message length queued for verification
 - `allowed_users` / `allowed_groups`: access control
 
 ### 5. Run
@@ -107,7 +106,7 @@ Memory is partitioned by chat:
 - **Groups**: shared memory for entire chat (`group_<chat_id>`)
 - **Private**: per-user memory (`private_<user_id>`)
 
-Each original text message is queued durably in SQLite with its author, chat scope, Telegram message ID, timestamp, and source text. A later Telegram edit cannot replace that source. DeepSeek first extracts a candidate with an exact quote, then a separate verifier must approve it; malformed output, ambiguity, sensitive data, forwarded text, media-only context, or any service failure is fail-closed and never reaches Mem0. Failed sources retry in FIFO order up to `memory_max_attempts`. Mem0 receives only approved facts with `infer=False`, and later statements replace the same fact in place. Completed raw source text is erased; retrieval accepts only exact ID/text matches from the chat-scoped SQLite approval registry and the strict relevance threshold.
+Each original text message, including short ones, is queued durably in SQLite with its author, chat scope, Telegram message ID, timestamp, and source text. A later Telegram edit cannot replace that source. Verification starts after the buffered Telegram turn finishes, so it does not delay the reply. DeepSeek first extracts a candidate with an exact quote, then a separate verifier must approve it; malformed output, ambiguity, sensitive data, forwarded text, media-only context, or any service failure is fail-closed and never reaches Mem0. Failed sources retry in FIFO order up to `memory_max_attempts`. Mem0 receives only approved facts with `infer=False`, and later statements replace the same fact in place. Completed raw source text is erased; retrieval accepts only exact ID/text matches from the chat-scoped SQLite approval registry and the strict relevance threshold.
 
 ### Vision Processing
 

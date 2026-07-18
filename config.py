@@ -132,7 +132,6 @@ MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
 MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.5)
 MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
 MEMORY_FLUSH_INTERVAL_SECONDS = config_yaml.get("memory_flush_interval_seconds", 300)
-MEMORY_MEM0_MIN_CHARS = config_yaml.get("memory_mem0_min_chars", 18)
 MEMORY_QUERY_MIN_CHARS = config_yaml.get("memory_query_min_chars", 12)
 MEMORY_QUERY_RECENT_MESSAGES = config_yaml.get("memory_query_recent_messages", 3)
 MEMORY_QUEUE_BATCH_SIZE = max(

@@ -5,8 +5,9 @@ import json
 import sqlite3
 import logging
 import os
+import re
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Dict, List, Sequence, TypeAlias
 
@@ -22,6 +23,12 @@ histories: Dict[str, HistoryList] = {}
 random_reply_cooldown: Dict[int, float] = {}
 
 DEFAULT_RANDOM_REPLY_CHANCE = 10
+_MEMORY_SCOPE_RE = re.compile(r"^(?:private|group)_-?\d+$")
+
+
+def is_valid_memory_scope(scope: str) -> bool:
+    """Проверяет канонический ключ области долговременной памяти."""
+    return bool(_MEMORY_SCOPE_RE.fullmatch(scope or ""))
 
 
 class RuntimeSettingKey(str, Enum):
@@ -73,11 +80,6 @@ api_call_count: Dict[str, int] = {}
 # Буфер сообщений для склеивания (debounce)
 # Формат: { "chat_id_user_id": { "messages": [...], "task": asyncio.Task } }
 message_buffer: Dict[str, Dict[str, Any]] = {}
-
-# Буфер реплик юзеров, ожидающих сохранения в долговременную память (Mem0).
-# Накапливается до лимита по символам, затем флашится батчем. Формат: { key: ["Имя: текст", ...] }
-pending_memory: Dict[str, List[str]] = {}
-memory_flush_tasks: set[asyncio.Task[None]] = set()
 
 # Кэш описаний медиа: file_unique_id -> описание от vision-модели.
 # Позволяет не анализировать повторно одно и то же изображение/стикер заново.
@@ -153,7 +155,6 @@ def cleanup_old_chats(max_age_hours: int = 72) -> int:
         chat_tokens.pop(key, None)
         api_call_count.pop(key, None)
         last_activity.pop(key, None)
-        pending_memory.pop(key, None)  # Очищаем буфер памяти
         _history_locks.pop(key, None)  # Очищаем блокировки
         _turn_locks.pop(key, None)
         delete_history(key)            # Удаляем и из БД
@@ -243,7 +244,7 @@ def init_db() -> None:
         )
         _db_execute(
             "UPDATE memory_sources SET status='pending', updated_at=? "
-            "WHERE status='processing'",
+            "WHERE status IN ('processing', 'waiting')",
             (time.time(),),
         )
     except Exception as e:
@@ -258,8 +259,11 @@ def insert_memory_source(
     message_id: int,
     created_at: float,
     text: str,
+    status: str = "pending",
 ) -> int:
     """Долговечно ставит одно сообщение в очередь проверки памяти."""
+    if status not in {"pending", "waiting"}:
+        raise ValueError("некорректный статус нового источника памяти")
     now = time.time()
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -267,8 +271,8 @@ def insert_memory_source(
             "INSERT OR IGNORE INTO memory_sources "
             "(scope, author_id, author_name, message_id, created_at, text, "
             "status, attempts, queued_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
-            (scope, author_id, author_name, message_id, created_at, text, now, now),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            (scope, author_id, author_name, message_id, created_at, text, status, now, now),
         )
         if cur.rowcount == 0:
             row = conn.execute(
@@ -281,6 +285,24 @@ def insert_memory_source(
             return int(row[0])
         conn.commit()
         return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def release_memory_sources(source_ids: list[int]) -> int:
+    """Делает источники доступными worker после завершения Telegram-хода."""
+    ids = [int(source_id) for source_id in source_ids if source_id is not None]
+    if not ids:
+        return 0
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.executemany(
+            "UPDATE memory_sources SET status='pending', updated_at=? "
+            "WHERE id=? AND status='waiting'",
+            [(time.time(), source_id) for source_id in ids],
+        )
+        conn.commit()
+        return max(cur.rowcount, 0)
     finally:
         conn.close()
 
@@ -335,23 +357,14 @@ def claim_memory_sources(limit: int) -> list[MemorySourceRecord]:
                 (now, row[0]),
             )
         conn.commit()
-        claimed = []
-        for row in rows:
-            claimed.append(
-                MemorySourceRecord(
-                    id=int(row[0]),
-                    scope=str(row[1]),
-                    author_id=str(row[2]),
-                    author_name=str(row[3]),
-                    message_id=int(row[4]),
-                    created_at=float(row[5]),
-                    text=str(row[6]),
-                    status="processing",
-                    attempts=int(row[8]) + 1,
-                    last_error=row[9],
-                )
+        return [
+            replace(
+                _memory_source_from_row(row),
+                status="processing",
+                attempts=int(row[8]) + 1,
             )
-        return claimed
+            for row in rows
+        ]
     except Exception:
         conn.rollback()
         raise

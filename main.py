@@ -301,24 +301,18 @@ def main():
             logger.info("💾 [green]Истории сохранены в БД[/]")
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения историй: {e}")
-        # Флаш остатков буфера долговременной памяти
+        # Финальная попытка обработать durable-очередь долговременной памяти.
         try:
-            from llm_client import (
-                flush_pending_memory_blocking,
-                wait_for_memory_flush_tasks,
-            )
             from memory_pipeline import process_pending_memory, wait_for_memory_worker
             if not loop.is_closed():
                 loop.run_until_complete(wait_for_memory_worker())
-                loop.run_until_complete(wait_for_memory_flush_tasks())
                 report = loop.run_until_complete(process_pending_memory())
                 logger.info(
                     "🧠 [green]Остатки памяти обработаны[/] "
                     f"(источников={report.processed}, одобрено={report.approved})"
                 )
             else:
-                flush_pending_memory_blocking()
-                logger.info("🧠 [green]Остатки памяти сохранены[/]")
+                logger.info("🧠 [green]Очередь памяти сохранена в SQLite[/]")
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")

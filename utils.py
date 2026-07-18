@@ -33,6 +33,13 @@ def strip_tiktok_urls(text: str | None) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
+
+def strip_tiktok_urls_preserving_whitespace(text: str | None) -> str:
+    """Удаляет TikTok-ссылки, не реконструируя остальной доказательный текст."""
+    if not text:
+        return ""
+    return _TIKTOK_URL_RE.sub("", text).strip()
+
 # Односложные реплики, на которых нет смысла тратить ambient-LLM / Mem0 search
 _TRIVIAL_USER_TEXTS = {
     "",
