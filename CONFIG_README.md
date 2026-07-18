@@ -84,7 +84,7 @@ mem0_llm_model: "deepseek-v4-flash"
 embedding_model: "models/text-embedding-004"
 embedding_dims: 768
 memory_search_limit: 10
-memory_min_score: 0.5
+memory_min_score: 0.3
 memory_max_chars: 1200
 memory_flush_interval_seconds: 300
 memory_query_min_chars: 12
@@ -97,7 +97,7 @@ memory_queue_batch_size: 20
 - `embedding_model`: Gemini embedding model (must include "models/" prefix)
 - `embedding_dims`: Vector dimensions (fixed at 768 for text-embedding-004)
 - `memory_search_limit`: Number of facts retrieved per query
-- `memory_min_score`: Relevance threshold (0.0-1.0)
+- `memory_min_score`: Vector-score floor (0.0-1.0); SQLite approval and current-topic matching remain mandatory
 - `memory_max_chars`: Maximum total length of memory context
 - `memory_flush_interval_seconds`: Periodic retry interval for the durable SQLite queue
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
@@ -310,7 +310,7 @@ Use `/summarize` command to compress chat history immediately.
 1. Enable `full_debug_logs` and check memory saves/retrieval
 2. Check periodic queue reports for retries or dead-letter sources
 3. Confirm the fact passed extractor, verifier, and deterministic validation
-4. Keep `memory_min_score` at `0.5` unless a retrieval benchmark supports a change
+4. Keep `memory_min_score` at `0.3` unless an audited retrieval benchmark supports a change
 5. Increase `memory_search_limit` only if the context budget allows it
 6. Verify Qdrant has data: check qdrant_storage/ directory size
 7. Ensure `fastembed` is installed so Qdrant BM25 keyword search is enabled
@@ -363,7 +363,7 @@ Bot will rebuild memory from new conversations.
 
 ### Memory Quality
 
-- Keep `memory_min_score: 0.5` unless an audited retrieval benchmark justifies changing it
+- Keep `memory_min_score: 0.3` unless an audited retrieval benchmark justifies changing it
 - Enable debug mode to audit what's saved
 - Monitor pending/dead-letter queue counts and verifier rejection reasons
 - Keep media descriptions and raw conversation batches out of Mem0
