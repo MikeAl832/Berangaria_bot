@@ -166,6 +166,7 @@ async def _deepseek_json(*, system: str, user: str, max_tokens: int) -> dict:
         "max_tokens": max_tokens,
         "temperature": 0,
         "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
     }
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
