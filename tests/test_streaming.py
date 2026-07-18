@@ -205,7 +205,7 @@ def test_private_preview_uses_native_draft_and_minimum_length():
     }]
 
 
-def test_direct_group_preview_creates_then_edits_status_message():
+def test_direct_group_turn_waits_for_final_delivery():
     update, context = _Update("supergroup"), _Context()
     preview = TelegramStreamPreview(
         update, context, mentioned=True, interval_seconds=0, min_chars=1,
@@ -214,11 +214,8 @@ def test_direct_group_preview_creates_then_edits_status_message():
     asyncio.run(preview.publish("Первый кусок"))
     asyncio.run(preview.publish("Первый кусок ответа"))
 
-    assert len(update.message.replies) == 1
-    status = update.message.replies[0]
-    assert status.initial_text == "Первый кусок"
-    assert status.edits == ["Первый кусок ответа"]
-    assert preview.status_message is status
+    assert update.message.replies == []
+    assert preview.status_message is None
 
 
 def test_ambient_group_turn_does_not_create_preview_message():

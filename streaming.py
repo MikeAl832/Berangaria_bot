@@ -145,7 +145,7 @@ async def stream_chat_completion(
 
 
 class TelegramStreamPreview:
-    """Publish throttled partial text without persisting it in chat history."""
+    """Publish private-chat drafts without persisting them in chat history."""
 
     def __init__(
         self,
@@ -200,11 +200,11 @@ class TelegramStreamPreview:
                 if thread_id is not None:
                     kwargs["message_thread_id"] = thread_id
                 await self.context.bot.send_message_draft(**kwargs)
-            elif self.mentioned:
-                # Ambient group turns may end in silence, so only direct mentions get
-                # a persistent preview message that the final delivery will edit.
-                self.status_message = await self.update.message.reply_text(preview)
             else:
+                # A timed-out group send may still have reached Telegram without
+                # returning its message ID. It cannot then be edited or deleted and
+                # final delivery would leave a duplicate partial message. Groups wait
+                # for the single final response; private chats use native drafts.
                 return
         except Exception as exc:
             logger.warning("Telegram streaming preview отключён для текущего хода: %s", exc)
