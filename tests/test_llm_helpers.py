@@ -25,6 +25,7 @@ from llm_client import (
     _is_meaningful_memory_query,
     _build_memory_search_query,
     _build_memory_relevance_query,
+    _approved_memory_recall_results,
 )
 
 
@@ -269,6 +270,45 @@ def test_memory_results_include_only_registered_ids_from_same_scope(
     filtered = _filter_approved_memory_results(raw, "private_42")
 
     assert [item["id"] for item in filtered["results"]] == ["approved-private"]
+
+
+def test_general_recall_reads_only_approved_facts_from_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+    state.upsert_memory_fact(
+        scope="group_7",
+        subject_id="42",
+        fact_key="preferences.text_editor",
+        fact="Миша использует Helix",
+        source_id=1,
+        source_quote="использую Helix",
+        source_message_id=901,
+        source_created_at=1_725_000_000.0,
+        mem0_id="approved-group",
+    )
+    state.upsert_memory_fact(
+        scope="private_42",
+        subject_id="42",
+        fact_key="software.os",
+        fact="Миша использует Fedora",
+        source_id=2,
+        source_quote="использую Fedora",
+        source_message_id=902,
+        source_created_at=1_725_000_001.0,
+        mem0_id="approved-private",
+    )
+
+    results = _approved_memory_recall_results("group_7")
+
+    assert results == {
+        "results": [
+            {
+                "id": "approved-group",
+                "memory": "Миша использует Helix",
+                "score": 1.0,
+            }
+        ]
+    }
 
 
 def test_format_memory_formats_as_bullet():

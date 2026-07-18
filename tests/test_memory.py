@@ -12,6 +12,10 @@ def test_memory_prompt_does_not_treat_missing_context_as_missing_storage():
     assert "does NOT prove that long-term storage has no such record" in SYSTEM_PROMPT
 
 
+def test_memory_prompt_forbids_inferences_during_general_recall():
+    assert "A question about a place does not prove that the user lives there" in SYSTEM_PROMPT
+
+
 def test_memory_text_keeps_only_user_text_when_media_is_present():
     text = _build_memory_text(
         "Я использую Fedora",
