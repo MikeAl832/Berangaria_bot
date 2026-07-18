@@ -162,3 +162,51 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["role"] == "assistant"
     assert history[-1]["content"] == "потоковый ответ"
     assert history[-1]["mid"] == 99
+
+
+def test_group_streaming_does_not_leave_partial_message_after_ambiguous_timeout(
+    monkeypatch, tmp_path
+):
+    async def fake_stream(client, url, *, payload, headers, on_content):
+        await on_content("оборванный preview")
+        return StreamedCompletionResponse(
+            status_code=200,
+            data={
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "полный ответ"},
+                }],
+                "usage": {},
+            },
+        )
+
+    class AmbiguousTimeoutMessage(_Message):
+        async def reply_text(self, text, **kwargs):
+            self.replies.append(text)
+            raise TimeoutError("Telegram accepted the message but timed out")
+
+    response = _Response(500)
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
+    monkeypatch.setattr(llm_client, "stream_chat_completion", fake_stream)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", True)
+    monkeypatch.setattr(llm_client, "STREAM_UPDATE_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(llm_client, "STREAM_PREVIEW_MIN_CHARS", 1)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "group_-100"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+    bot = _SuccessfulBot()
+    update = _Update()
+    update.effective_chat.type = "supergroup"
+    update.message = AmbiguousTimeoutMessage()
+
+    asyncio.run(llm_client.send_llm_request(
+        update, _Context(bot), key, history, "Миша", 1, True,
+    ))
+
+    assert update.message.replies == []
+    assert [message["text"] for message in bot.messages] == ["полный ответ"]
+    assert history[-1]["content"] == "полный ответ"
