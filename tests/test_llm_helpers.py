@@ -20,6 +20,7 @@ from llm_client import (
     _renumber_sids,
     _extract_plain_text,
     _format_memory_block,
+    _count_memory_block_facts,
     _filter_approved_memory_results,
     _is_meaningful_memory_query,
     _build_memory_search_query,
@@ -84,6 +85,12 @@ def test_clean_reply_silence_word():
 
 def test_clean_reply_keeps_normal_text():
     assert _clean_reply("да, согласна") == "да, согласна"
+
+
+def test_clean_reply_strips_internal_reply_handles():
+    reply = "Из текущего чата, [#26] и [#27]. Ты написал про Helix."
+
+    assert _clean_reply(reply) == "Из текущего чата. Ты написал про Helix"
 
 
 # ---------- _render_history_for_api ----------
@@ -251,6 +258,10 @@ def test_memory_results_include_only_registered_ids_from_same_scope(
 def test_format_memory_formats_as_bullet():
     res = {"results": [{"memory": "факт", "score": 0.9}]}
     assert _format_memory_block(res) == "- факт"
+
+
+def test_count_memory_block_facts_counts_single_line():
+    assert _count_memory_block_facts("- Пользователь использует Helix") == 1
 
 
 def test_failed_summary_does_not_mutate_live_history(monkeypatch):

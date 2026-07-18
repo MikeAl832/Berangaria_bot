@@ -266,6 +266,13 @@ def _clean_reply(reply: str) -> str:
     reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
     reply = re.sub(r'<\|.*?\|>', '', reply).strip()
 
+    # [#N] — внутренние reply-хэндлы для инструментов. Модель иногда всё же
+    # цитирует их вопреки системному промпту, поэтому не выпускаем их в Telegram.
+    reply = re.sub(r'\[#\d+\](?:\s*(?:,|и|или)\s*\[#\d+\])*', '', reply)
+    reply = re.sub(r'\s+([,.;:!?])', r'\1', reply)
+    reply = re.sub(r'[,;:]+([.!?])', r'\1', reply)
+    reply = re.sub(r'[ \t]{2,}', ' ', reply)
+
     reply = reply.strip()
     if reply.endswith('.') and not reply.endswith('...'):
         reply = reply[:-1]
@@ -357,6 +364,11 @@ def _format_memory_block(mem_results: dict) -> str:
             break
 
     return "\n".join(lines)
+
+
+def _count_memory_block_facts(mem_text: str) -> int:
+    """Считает фактически отформатированные строки фактов для логов."""
+    return sum(1 for line in mem_text.splitlines() if line.startswith("- "))
 
 
 def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
@@ -509,7 +521,7 @@ async def send_llm_request(
                             "role": "user",
                             "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
                         }
-                        facts_count = mem_text.count('\n') if mem_text else 0
+                        facts_count = _count_memory_block_facts(mem_text)
 
                         # Краткий лог для INFO, детальный для DEBUG
                         logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
