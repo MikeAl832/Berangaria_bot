@@ -93,6 +93,12 @@ def test_clean_reply_strips_internal_reply_handles():
     assert _clean_reply(reply) == "Из текущего чата. Ты написал про Helix"
 
 
+def test_clean_reply_humanizes_internal_memory_tag():
+    reply = "Факта нет ни в [Context from memory], ни в сообщениях чата."
+
+    assert _clean_reply(reply) == "Факта нет ни в долгосрочной памяти, ни в сообщениях чата"
+
+
 # ---------- _render_history_for_api ----------
 
 def test_render_prepends_sid_to_user():
