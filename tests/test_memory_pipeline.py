@@ -209,6 +209,144 @@ def test_tiktok_source_is_preserved_but_not_sent_to_extractor_as_a_url(
     assert "tiktok.com" not in captured["text"]
 
 
+def test_extractor_requests_deepseek_json_output(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"candidates":[]}'},
+                    }
+                ]
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            captured.update(json)
+            return Response()
+
+    monkeypatch.setattr(memory_pipeline.httpx, "AsyncClient", Client)
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=915,
+        created_at=1_725_000_014.0,
+        text="Я постоянно использую Helix",
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+
+    assert asyncio.run(DeepSeekMemoryExtractor().extract(source)) == []
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_extractor_reports_truncated_deepseek_json(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"candidates":['},
+                    }
+                ]
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            return Response()
+
+    monkeypatch.setattr(memory_pipeline.httpx, "AsyncClient", Client)
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=915,
+        created_at=1_725_000_014.0,
+        text="Я постоянно использую Helix",
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+
+    with pytest.raises(MemoryTransientError, match="обрезал JSON"):
+        asyncio.run(DeepSeekMemoryExtractor().extract(source))
+
+
+def test_extractor_reports_empty_deepseek_json(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": ""}}
+                ]
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            return Response()
+
+    monkeypatch.setattr(memory_pipeline.httpx, "AsyncClient", Client)
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=915,
+        created_at=1_725_000_014.0,
+        text="Я постоянно использую Helix",
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+
+    with pytest.raises(MemoryTransientError, match="пустой JSON"):
+        asyncio.run(DeepSeekMemoryExtractor().extract(source))
+
+
 def test_approved_candidate_is_stored_with_provenance(monkeypatch, tmp_path):
     monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
     state.init_db()
