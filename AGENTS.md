@@ -10,7 +10,8 @@ Key modules:
 
 - `main.py`: application startup, handler registration, scheduled jobs, and graceful shutdown.
 - `handlers.py`: Telegram commands, message buffering, media handling, access control, and chat-event handling.
-- `llm_client.py`: history rendering, memory retrieval/flush, summarization, LLM retries, tool rounds, reply delivery, and persistence.
+- `llm_client.py`: history rendering, approved-memory retrieval, summarization, LLM retries, tool rounds, reply delivery, and persistence.
+- `memory_pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
 - `streaming.py`: DeepSeek SSE reconstruction and throttled Telegram draft/status previews.
 - `state.py`: shared in-memory state, per-chat locks, and SQLite persistence.
 - `tool_handlers.py` / `tools.py`: LLM tool dispatch, web search, URL reading, reactions, replies, and stickers.
@@ -65,7 +66,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 
 - SQLite writes are write-through for history changes. A reported reset or clear must be durable before confirming it to the user.
 - Use `memory_store.memory` dynamically; do not import the object by value. Startup retries initialization because Qdrant may not yet be ready in Docker.
-- Failed Mem0 batches must be retried and returned to `state.pending_memory`; never clear a batch permanently before successful storage.
+- A source may be completed only after every approved fact is confirmed by Mem0 and atomically written to the SQLite approval registry. Immediately compensate a partial Mem0 source-transaction; before any retried source can extract or store again, reconcile all Mem0 records tagged with that source ID against the authoritative SQLite registry. Technical failures return the source to the durable SQLite queue in FIFO order; after exactly five failed attempts, terminal sources are dead-lettered without approved or retrievable memory.
 - Do not commit `.env`, API keys, bot tokens, `bot_data/`, Qdrant storage, databases, logs, or generated virtual environments.
 
 ## Configuration and deployment
@@ -81,3 +82,17 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Add regression tests for bug fixes, especially races, failure ordering, security boundaries, and persistence behavior.
 - Prefer focused patches over broad rewrites of `handlers.py` or `llm_client.py` unless the behavior is protected by tests.
 - Update `README.md` or `CONFIG_README.md` when configuration, startup, commands, deployment, or externally visible behavior changes.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage role labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository with `CONTEXT.md` at the root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.

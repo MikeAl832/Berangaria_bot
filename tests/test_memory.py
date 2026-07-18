@@ -1,236 +1,160 @@
 import asyncio
-import logging
+from types import SimpleNamespace
 
-import llm_client
-import memory_store
-import state
-from llm_client import _add_memory_chunks, _chunk_lines_by_chars
+import handlers
 from handlers import _build_memory_text
+import pytest
+import state
 
 
-def test_chunks_respect_budget():
-    lines = [f"Аня: {'a' * 50}" for _ in range(10)]
-    chunks = _chunk_lines_by_chars(lines, 200)
-    for c in chunks:
-        # либо влезли в бюджет, либо это одиночная строка (не разбиваемая дальше)
-        assert sum(len(item) for item in c) <= 200 or len(c) == 1
-
-
-def test_oversized_single_line_is_split():
-    big = ["x" * 500]
-    chunks = _chunk_lines_by_chars(big, 200)
-    assert len(chunks) == 3
-    assert all(len(c[0]) <= 200 for c in chunks)
-
-
-def test_empty_input():
-    assert _chunk_lines_by_chars([], 200) == []
-
-
-def test_all_lines_preserved():
-    lines = [f"line{i}" for i in range(7)]
-    chunks = _chunk_lines_by_chars(lines, 20)
-    flat = [item for c in chunks for item in c]
-    assert flat == lines  # ничего не потеряли и не переставили
-
-
-def test_memory_text_includes_bounded_media_description():
-    text = _build_memory_text("", [("image", "очень важное описание " * 100)])
-
-    assert text.startswith("Изображение:")
-    assert len(text) <= 600
-
-
-def test_memory_text_keeps_user_text_with_media():
-    text = _build_memory_text("смотри", [("video", "кот прыгает по столу")])
-
-    assert "смотри" in text
-    assert "Видео:" in text
-
-
-def test_failed_memory_flush_requeues_batch(monkeypatch):
-    class FailingMemory:
-        def add(self, *args, **kwargs):
-            raise RuntimeError("temporary outage")
-
-    async def no_sleep(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(memory_store, "memory", FailingMemory())
-    monkeypatch.setattr(llm_client.asyncio, "sleep", no_sleep)
-    state.pending_memory.clear()
-
-    asyncio.run(_add_memory_chunks("private_42", ["важная реплика"]))
-
-    assert state.pending_memory["private_42"] == ["важная реплика"]
-
-
-def test_memory_is_buffered_while_mem0_is_unavailable(monkeypatch):
-    monkeypatch.setattr(memory_store, "memory", None)
-    state.pending_memory.clear()
-
-    llm_client.record_user_memory(
-        "private_42",
-        "сегодня купил новую видеокарту и хочу запомнить модель",
-        "Миша",
-        False,
+def test_memory_text_keeps_only_user_text_when_media_is_present():
+    text = _build_memory_text(
+        "Я использую Fedora",
+        [("video", "на видео виден компьютер с Ubuntu")],
     )
 
-    assert state.pending_memory["private_42"] == [
-        "сегодня купил новую видеокарту и хочу запомнить модель"
-    ]
+    assert text == "Я использую Fedora"
 
 
-def test_message_shorter_than_mem0_minimum_is_not_buffered(monkeypatch):
-    monkeypatch.setattr(memory_store, "memory", None)
-    state.pending_memory.clear()
-
-    llm_client.record_user_memory(
-        "private_42",
-        "x" * 17,
-        "Миша",
-        False,
+def test_media_only_message_has_no_long_term_memory_source():
+    text = _build_memory_text(
+        "",
+        [("image", "на изображении человек с видеокартой RTX 5090")],
     )
 
-    assert "private_42" not in state.pending_memory
+    assert text == ""
 
 
-def test_repeated_low_signal_fillers_are_not_buffered(monkeypatch):
-    monkeypatch.setattr(memory_store, "memory", None)
-    state.pending_memory.clear()
-
-    llm_client.record_user_memory(
-        "private_42",
-        "ну типа как бы ну типа",
-        "Миша",
-        False,
+def test_forwarded_text_has_no_long_term_memory_source():
+    text = _build_memory_text(
+        "Я живу в Москве",
+        [],
+        is_forwarded=True,
     )
 
-    assert "private_42" not in state.pending_memory
+    assert text == ""
 
 
-def test_discarded_mem0_fact_is_deleted_and_logged(monkeypatch, caplog):
-    class Memory:
-        def __init__(self):
-            self.deleted = []
+def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
+    events = []
+    state.message_buffer.clear()
+    monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(handlers, "is_bot_mentioned", lambda *args: (False, ""))
+    def enqueue(*args, **kwargs):
+        events.append("enqueue")
+        return 17
 
-        def add(self, *args, **kwargs):
-            return {
-                "results": [
-                    {
-                        "id": "fact-1",
-                        "memory": "Миша обычно отвечает: ну типа как бы",
-                        "event": "ADD",
-                    },
-                    {
-                        "id": "fact-2",
-                        "memory": "Миша написал общее подтверждение",
-                        "event": "ADD",
-                    },
-                ]
-            }
+    monkeypatch.setattr(handlers, "enqueue_memory_source", enqueue)
+    monkeypatch.setattr(
+        handlers,
+        "release_memory_sources",
+        lambda source_ids: events.append(("release", source_ids)),
+        raising=False,
+    )
 
-        def delete(self, memory_id):
-            self.deleted.append(memory_id)
+    async def finish_turn(*args, **kwargs):
+        events.append("turn-finished")
+        state.message_buffer["7_42"]["messages"].append(
+            {"memory_source_id": 18}
+        )
 
-    class Response:
-        def raise_for_status(self):
-            return None
+    monkeypatch.setattr(handlers, "process_buffered_messages", finish_turn)
+    message = SimpleNamespace(
+        message_id=901,
+        date=None,
+        forward_origin=None,
+        reply_to_message=None,
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=7, type="private"),
+        effective_user=SimpleNamespace(id=42, first_name="Миша"),
+        message=message,
+    )
+    context = SimpleNamespace()
 
-        def json(self):
-            return {
-                "choices": [{
-                    "message": {
-                        "content": "DISCARD: общая реакция, малоинформативно",
-                    }
-                }],
-                "usage": {
-                    "prompt_tokens": 87,
-                    "completion_tokens": 12,
-                    "total_tokens": 99,
-                },
-            }
+    async def run():
+        await handlers.queue_message(update, context, "Я постоянно использую Fedora")
+        task = state.message_buffer["7_42"]["task"]
+        await task
 
-    class Client:
-        def __init__(self, *args, **kwargs):
-            pass
+    asyncio.run(run())
+    state.message_buffer.clear()
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, *args, **kwargs):
-            return Response()
-
-    memory = Memory()
-    monkeypatch.setattr(memory_store, "memory", memory)
-    monkeypatch.setattr(llm_client.httpx, "AsyncClient", Client)
-    state.pending_memory.clear()
-    state.pending_memory["private_42"] = ["обсуждение достаточно длинное для Mem0"]
-    caplog.set_level(logging.INFO, logger="llm_client")
-
-    asyncio.run(llm_client.flush_pending_memory())
-
-    assert memory.deleted == ["fact-1", "fact-2"]
-    assert caplog.text.count("🧠 Mem0 модерация: запрос=87, ответ=12, всего=99") == 2
-    assert caplog.text.count("❌ Память: факт отклонён (общая реакция, малоинформативно)") == 2
+    assert events == ["enqueue", "turn-finished", ("release", [17])]
 
 
-def test_mem0_fact_is_kept_when_moderation_fails(monkeypatch, caplog):
-    class Memory:
-        def __init__(self):
-            self.deleted = []
+def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
+    events = []
+    state.message_buffer.clear()
+    monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(handlers, "is_bot_mentioned", lambda *args: (False, ""))
+    monkeypatch.setattr(handlers, "enqueue_memory_source", lambda **kwargs: 17)
+    monkeypatch.setattr(
+        handlers,
+        "release_memory_sources",
+        lambda source_ids: events.append(("release", source_ids)),
+    )
 
-        def add(self, *args, **kwargs):
-            return {
-                "results": [{
-                    "id": "fact-1",
-                    "memory": "Миша использует видеокарту RTX 5070 Ti",
-                    "event": "ADD",
-                }]
-            }
+    async def fail_turn(*args, **kwargs):
+        raise RuntimeError("reply delivery failed")
 
-        def delete(self, memory_id):
-            self.deleted.append(memory_id)
+    monkeypatch.setattr(handlers, "process_buffered_messages", fail_turn)
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=7, type="private"),
+        effective_user=SimpleNamespace(id=42, first_name="Миша"),
+        message=SimpleNamespace(
+            message_id=902,
+            date=None,
+            forward_origin=None,
+            reply_to_message=None,
+        ),
+    )
 
-    class FailingClient:
-        def __init__(self, *args, **kwargs):
-            pass
+    async def run():
+        await handlers.queue_message(
+            update, SimpleNamespace(), "Я постоянно использую Fedora"
+        )
+        task = state.message_buffer["7_42"]["task"]
+        with pytest.raises(RuntimeError, match="reply delivery failed"):
+            await task
 
-        async def __aenter__(self):
-            return self
+    asyncio.run(run())
+    state.message_buffer.clear()
 
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, *args, **kwargs):
-            raise RuntimeError("DeepSeek unavailable")
-
-    memory = Memory()
-    monkeypatch.setattr(memory_store, "memory", memory)
-    monkeypatch.setattr(llm_client.httpx, "AsyncClient", FailingClient)
-    state.pending_memory.clear()
-    state.pending_memory["private_42"] = ["Моя видеокарта — RTX 5070 Ti"]
-    caplog.set_level(logging.WARNING, logger="llm_client")
-
-    asyncio.run(llm_client.flush_pending_memory())
-
-    assert memory.deleted == []
-    assert "Mem0 модерация не сработала, факт сохранён" in caplog.text
+    assert events == []
 
 
-def test_final_memory_flush_requeues_failed_batch(monkeypatch):
-    class FailingMemory:
-        def add(self, *args, **kwargs):
-            raise RuntimeError("database unavailable")
+def test_tiktok_only_message_keeps_provenance_without_creating_llm_turn(monkeypatch):
+    events = []
+    state.message_buffer.clear()
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(handlers, "is_bot_mentioned", lambda *args: (False, ""))
 
-    monkeypatch.setattr(memory_store, "memory", FailingMemory())
-    monkeypatch.setattr(llm_client.time, "sleep", lambda seconds: None)
-    state.pending_memory.clear()
-    state.pending_memory["private_42"] = ["важная реплика для повторной попытки"]
+    def enqueue(**kwargs):
+        events.append(("enqueue", kwargs["text"]))
+        return 17
 
-    llm_client.flush_pending_memory_blocking()
+    monkeypatch.setattr(handlers, "enqueue_memory_source", enqueue)
+    monkeypatch.setattr(
+        handlers,
+        "release_memory_sources",
+        lambda source_ids: events.append(("release", source_ids)),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=7, type="private"),
+        effective_user=SimpleNamespace(id=42, first_name="Миша"),
+        message=SimpleNamespace(
+            message_id=903,
+            date=None,
+            forward_origin=None,
+            reply_to_message=None,
+        ),
+    )
+    original = "https://www.tiktok.com/@x/video/1"
 
-    assert state.pending_memory["private_42"] == ["важная реплика для повторной попытки"]
+    asyncio.run(handlers.queue_message(update, SimpleNamespace(), original))
+
+    assert events == [("enqueue", original), ("release", [17])]
+    assert state.message_buffer == {}

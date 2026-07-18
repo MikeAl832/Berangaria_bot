@@ -8,6 +8,7 @@ from utils import (
     is_url_only_text,
     is_low_signal_user_text,
     strip_tiktok_urls,
+    strip_tiktok_urls_preserving_whitespace,
 )
 from config import SUMMARY_HOURS, BOT_TZ
 
@@ -65,6 +66,13 @@ def test_strip_tiktok_urls():
     assert strip_tiktok_urls("смотри https://www.tiktok.com/@x/video/1 смешно") == "смотри смешно"
     assert strip_tiktok_urls("vm.tiktok.com/abc") == ""
     assert strip_tiktok_urls("https://example.com/x") == "https://example.com/x"
+
+
+def test_strip_tiktok_urls_can_preserve_evidence_whitespace():
+    assert (
+        strip_tiktok_urls_preserving_whitespace("Я использую  Fedora")
+        == "Я использую  Fedora"
+    )
 
 
 def test_is_low_signal_user_text():

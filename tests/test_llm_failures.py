@@ -2,6 +2,7 @@ import asyncio
 
 import llm_client
 import memory_store
+import pytest
 import state
 from streaming import StreamedCompletionResponse
 
@@ -92,9 +93,10 @@ def test_failed_delivery_does_not_create_ghost_assistant(monkeypatch):
     state.histories[key] = history
     state.chat_tokens.pop(key, None)
 
-    asyncio.run(llm_client.send_llm_request(
-        _Update(), _Context(_FailingBot()), key, history, "Миша", 1, True,
-    ))
+    with pytest.raises(llm_client.ReplyDeliveryError):
+        asyncio.run(llm_client.send_llm_request(
+            _Update(), _Context(_FailingBot()), key, history, "Миша", 1, True,
+        ))
 
     assert [entry["role"] for entry in history] == ["user"]
 

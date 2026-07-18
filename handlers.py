@@ -10,14 +10,15 @@ from config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VIDEO_MAX_FILE_SIZE_BYTES,
-    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID, MEMORY_MEDIA_MAX_CHARS
+    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID
 )
 from state import (
     histories, get_history_key, message_buffer, chat_tokens, api_call_count,
     get_history_lock, get_turn_lock, _buffer_lock, touch_activity, save_history,
 )
 import state
-from llm_client import summarize_history, send_llm_request, record_user_memory
+from llm_client import summarize_history, send_llm_request
+from memory_pipeline import enqueue_memory_source, release_memory_sources
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
@@ -50,35 +51,20 @@ def truncate_at_sentence(text: str, max_chars: int) -> str:
     return truncated + "..."
 
 
-def _build_memory_text(combined_text: str, media_items: list[tuple[str, str]]) -> str:
+def _build_memory_text(
+    combined_text: str,
+    media_items: list[tuple[str, str]],
+    *,
+    is_forwarded: bool = False,
+) -> str:
     """
-    Собирает компактный текст для Mem0: пользовательский текст + короткая выжимка
-    медиа-описаний. Полные vision-описания остаются в истории/логах, а память
-    получает только ограниченный фрагмент.
+    Возвращает только пользовательский текст для долговременной памяти.
+    Описания vision-модели намеренно не являются источниками фактов.
     """
-    parts: list[str] = []
-    if combined_text.strip():
-        parts.append(combined_text.strip())
-
-    remaining = MEMORY_MEDIA_MAX_CHARS
-    for kind, desc in media_items:
-        if remaining <= 0:
-            break
-        clean_desc = " ".join((desc or "").split())
-        if not clean_desc:
-            continue
-        label = "Видео" if kind == "video" else "Аудио" if kind == "audio" else "Изображение"
-        snippet_budget = remaining - len(label) - 2
-        if snippet_budget <= 0:
-            break
-        snippet = truncate_at_sentence(clean_desc, snippet_budget)
-        line = f"{label}: {snippet}"
-        if len(line) > remaining:
-            line = line[:max(0, remaining - 3)] + "..."
-        parts.append(line)
-        remaining -= len(line) + 1
-
-    return "\n".join(parts).strip()
+    del media_items
+    if is_forwarded:
+        return ""
+    return (combined_text or "").strip()
 
 
 # ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
@@ -188,7 +174,6 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
             existed = key in histories
             histories.pop(key, None)
             state.delete_history(key)  # Чистим и в БД
-            state.pending_memory.pop(key, None)
 
     if existed:
         await update.message.reply_text("🧹 История очищена!")
@@ -334,9 +319,6 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
             touch_activity(key)
             state.save_history(key)
 
-        # Копим слова юзера и компактные медиа-факты для долговременной памяти.
-        record_user_memory(key, _build_memory_text(combined_text, media_items), user_name, is_group)
-
         if not (mentioned or random_reply):
             return
 
@@ -416,9 +398,8 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     # TikTok-ссылки модели не отдаём: только вырезаем, ничего не подставляем.
-    text = strip_tiktok_urls(text or "")
-    if not text and not media_description:
-        return
+    original_text = text or ""
+    text = strip_tiktok_urls(original_text)
 
     # Формируем метаданные сообщения
     now = now_local()
@@ -440,8 +421,39 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text,
         "forward_info": forward_info,
-        "message_id": update.message.message_id
+        "message_id": update.message.message_id,
+        "created_at": (
+            update.message.date.timestamp()
+            if getattr(update.message, "date", None) is not None
+            else time.time()
+        ),
     }
+
+    # Ставим оригинальный текст в очередь до debounce: поздняя правка Telegram
+    # не должна менять уже поставленный источник памяти.
+    memory_text = _build_memory_text(
+        original_text,
+        [],
+        is_forwarded=forward_info is not None,
+    )
+    memory_source_id = None
+    if memory_text:
+        memory_source_id = enqueue_memory_source(
+            scope=key,
+            text=memory_text,
+            author_name=user_name,
+            author_id=str(user_id),
+            message_id=update.message.message_id,
+            created_at=msg_data["created_at"],
+            ready=False,
+        )
+    msg_data["memory_source_id"] = memory_source_id
+
+    # TikTok-only сообщение по-прежнему не создаёт LLM-ход, но его исходник
+    # получает фоновое окончательное решение и provenance не теряется.
+    if not text and not media_description:
+        release_memory_sources([memory_source_id])
+        return
 
     # Запускаем новый таймер
     async def wait_and_process():
@@ -449,10 +461,15 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await asyncio.sleep(MESSAGE_DEBOUNCE_SECONDS)
             data = message_buffer.get(buffer_key)
             if data:
+                source_ids = [
+                    message.get("memory_source_id")
+                    for message in list(data["messages"])
+                ]
                 await process_buffered_messages(
                     buffer_key, update, context, key, is_group, user_id, user_name,
                     data["mentioned"], data["random_reply"]
                 )
+                release_memory_sources(source_ids)
         except asyncio.CancelledError:
             pass  # Таймер был отменен из-за нового сообщения
 

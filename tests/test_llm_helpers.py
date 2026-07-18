@@ -9,6 +9,7 @@ import asyncio
 import copy
 
 import llm_client
+import state
 
 from llm_client import (
     markdown_to_html,
@@ -19,6 +20,7 @@ from llm_client import (
     _renumber_sids,
     _extract_plain_text,
     _format_memory_block,
+    _filter_approved_memory_results,
     _is_meaningful_memory_query,
     _build_memory_search_query,
 )
@@ -196,12 +198,54 @@ def test_format_memory_empty():
 
 def test_format_memory_filters_below_min_score():
     res = {"results": [
-        {"memory": "пороговый факт", "score": 0.27},
-        {"memory": "слабый факт", "score": 0.26},
+        {"memory": "пороговый факт", "score": 0.5},
+        {"memory": "слабый факт", "score": 0.49},
     ]}
     out = _format_memory_block(res)
     assert "пороговый факт" in out
     assert "слабый факт" not in out
+
+
+def test_memory_results_include_only_registered_ids_from_same_scope(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+    state.upsert_memory_fact(
+        scope="private_42",
+        subject_id="42",
+        fact_key="software.os",
+        fact="Миша использует Fedora",
+        source_id=1,
+        source_quote="использую Fedora",
+        source_message_id=901,
+        source_created_at=1_725_000_000.0,
+        mem0_id="approved-private",
+    )
+    state.upsert_memory_fact(
+        scope="group_7",
+        subject_id="42",
+        fact_key="software.os",
+        fact="Миша использует Arch",
+        source_id=2,
+        source_quote="использую Arch",
+        source_message_id=902,
+        source_created_at=1_725_000_001.0,
+        mem0_id="approved-group",
+    )
+    raw = {
+        "results": [
+            {"id": "approved-private", "memory": "Миша использует Fedora", "score": 0.9},
+            {"id": "approved-private", "memory": "Миша  использует Fedora", "score": 0.95},
+            {"id": "approved-private", "memory": "подменённый факт", "score": 0.99},
+            {"id": "approved-group", "memory": "Миша использует Arch", "score": 0.9},
+            {"id": "legacy-unapproved", "memory": "непроверенный факт", "score": 0.99},
+        ]
+    }
+
+    filtered = _filter_approved_memory_results(raw, "private_42")
+
+    assert [item["id"] for item in filtered["results"]] == ["approved-private"]
 
 
 def test_format_memory_formats_as_bullet():

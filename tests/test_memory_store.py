@@ -1,5 +1,5 @@
 import memory_store
-from config import MEM0_CUSTOM_INSTRUCTIONS, MEMORY_MEM0_MIN_CHARS, MEMORY_MIN_SCORE
+from config import MEM0_CUSTOM_INSTRUCTIONS, MEMORY_MIN_SCORE
 
 
 def test_memory_initialization_retries(monkeypatch):
@@ -26,9 +26,7 @@ def test_memory_initialization_retries(monkeypatch):
 
 
 def test_memory_quality_settings_are_strict_and_explicit():
-    assert MEMORY_MEM0_MIN_CHARS == 18
-    assert MEMORY_MIN_SCORE == 0.27
-    assert "Короткие реакции и подтверждения" in MEM0_CUSTOM_INSTRUCTIONS
-    assert "Сообщения без конкретной информации" in MEM0_CUSTOM_INSTRUCTIONS
-    assert "Не пытайся выжимать факт из ничего" in MEM0_CUSTOM_INSTRUCTIONS
-    assert "Извлекай факт только если он реально полезен" in MEM0_CUSTOM_INSTRUCTIONS
+    assert MEMORY_MIN_SCORE == 0.5
+    assert "только один уже одобренный факт" in MEM0_CUSTOM_INSTRUCTIONS
+    assert "не перефразируй" in MEM0_CUSTOM_INSTRUCTIONS
+    assert "точный переданный текст" in MEM0_CUSTOM_INSTRUCTIONS

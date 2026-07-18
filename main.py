@@ -157,12 +157,12 @@ async def sync_stickers_on_start():
 
 
 async def periodic_memory_flush():
-    """Периодически сохраняет короткие накопленные реплики в Mem0."""
+    """Периодически подбирает durable memory-очередь после фоновых попыток."""
     if MEMORY_FLUSH_INTERVAL_SECONDS <= 0:
-        logger.info("🧠 [dim]Периодический flush памяти выключен[/]")
+        logger.info("🧠 [dim]Периодический retry памяти выключен[/]")
         return
 
-    from llm_client import flush_pending_memory
+    from memory_pipeline import process_pending_memory
 
     while True:
         await asyncio.sleep(MEMORY_FLUSH_INTERVAL_SECONDS)
@@ -175,9 +175,17 @@ async def periodic_memory_flush():
                 )
             if memory_store.memory is None:
                 continue
-            flushed = await flush_pending_memory()
-            if flushed:
-                logger.info(f"🧠 [green]Периодический flush памяти:[/] {flushed} реплик")
+            report = await process_pending_memory()
+            if report.processed:
+                logger.info(
+                    "🧠 [green]Память: обработано источников %s, одобрено %s, "
+                    "отброшено %s, retry %s, dead-letter %s[/]",
+                    report.processed,
+                    report.approved,
+                    report.discarded,
+                    report.retried,
+                    report.dead_lettered,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -293,20 +301,18 @@ def main():
             logger.info("💾 [green]Истории сохранены в БД[/]")
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения историй: {e}")
-        # Флаш остатков буфера долговременной памяти
+        # Финальная попытка обработать durable-очередь долговременной памяти.
         try:
-            from llm_client import (
-                flush_pending_memory,
-                flush_pending_memory_blocking,
-                wait_for_memory_flush_tasks,
-            )
+            from memory_pipeline import process_pending_memory, wait_for_memory_worker
             if not loop.is_closed():
-                loop.run_until_complete(wait_for_memory_flush_tasks())
-                flushed = loop.run_until_complete(flush_pending_memory())
-                logger.info(f"🧠 [green]Остатки памяти сохранены[/] ({flushed} реплик)")
+                loop.run_until_complete(wait_for_memory_worker())
+                report = loop.run_until_complete(process_pending_memory())
+                logger.info(
+                    "🧠 [green]Остатки памяти обработаны[/] "
+                    f"(источников={report.processed}, одобрено={report.approved})"
+                )
             else:
-                flush_pending_memory_blocking()
-                logger.info("🧠 [green]Остатки памяти сохранены[/]")
+                logger.info("🧠 [green]Очередь памяти сохранена в SQLite[/]")
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")

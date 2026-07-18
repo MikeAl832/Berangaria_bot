@@ -84,36 +84,32 @@ mem0_llm_model: "deepseek-v4-flash"
 embedding_model: "models/text-embedding-004"
 embedding_dims: 768
 memory_search_limit: 10
-memory_min_score: 0.27
+memory_min_score: 0.5
 memory_max_chars: 1200
-memory_flush_max_chars: 2000
 memory_flush_interval_seconds: 300
-memory_mem0_min_chars: 18
 memory_query_min_chars: 12
 memory_query_recent_messages: 3
-memory_media_max_chars: 600
+memory_queue_batch_size: 20
 ```
 
 **Parameters:**
-- `mem0_llm_model`: DeepSeek model used by Mem0 for extracting and updating memories
+- `mem0_llm_model`: DeepSeek model used by the strict extractor and independent verifier
 - `embedding_model`: Gemini embedding model (must include "models/" prefix)
 - `embedding_dims`: Vector dimensions (fixed at 768 for text-embedding-004)
 - `memory_search_limit`: Number of facts retrieved per query
 - `memory_min_score`: Relevance threshold (0.0-1.0)
 - `memory_max_chars`: Maximum total length of memory context
-- `memory_flush_max_chars`: Maximum pending text batch sent to Mem0
-- `memory_flush_interval_seconds`: Periodic flush interval for short pending messages
-- `memory_mem0_min_chars`: User messages shorter than this are never sent to Mem0
+- `memory_flush_interval_seconds`: Periodic retry interval for the durable SQLite queue
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
 - `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
-- `memory_media_max_chars`: Maximum compact media-description fragment sent to memory
+- `memory_queue_batch_size`: Maximum source messages processed per worker pass
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)
 - `0.2`: Soft filtering
-- `0.27`: Current default
+- `0.27`: Permissive legacy value
 - `0.3`: Balanced
-- `0.5`: Strict (only highly relevant facts)
+- `0.5`: Current strict default
 
 ### Bot Behavior
 
@@ -190,53 +186,30 @@ Current prices for DeepSeek v4 Flash. Update when prices change.
 
 ## Memory Configuration
 
-### Custom Instructions
+### Strict fail-closed pipeline
 
-Located in `config.py` as `MEM0_CUSTOM_INSTRUCTIONS`. Current version uses minimal instructions:
+1. Every non-empty original text message, including short and low-signal text, is stored as an atomic SQLite queue item with chat scope, author, Telegram message ID, timestamp, and source text. A later Telegram edit with the same message ID does not overwrite it.
+2. DeepSeek extracts structured candidates containing a normalized fact, stable `fact_key`, and exact source quote.
+3. A separate verifier independently checks self-attribution, stability, source entailment, modality, and sensitive-data exclusions.
+4. Deterministic validation confirms the quote exists verbatim in the source and rejects malformed or unsafe candidates.
+5. All candidates receive a final decision before storage. Mem0 receives each approved fact with `infer=False`; one SQLite transaction publishes all facts from the source, partial failure compensates new/replaced vectors, and a retry reconciles crash leftovers by `source_id` before new writes.
+6. A newer fact with the same scope, subject, and `fact_key` updates the existing vector in place.
+7. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope before adding it to the prompt.
 
-```python
-MEM0_CUSTOM_INSTRUCTIONS = """
-Extract facts about people in Russian.
-Group chats: name at message start
-Don't extract: bot meta-comments
-"""
-```
-
-### Three Configuration Options
-
-**Option 1: Project instructions (current, recommended)**
-- Explicit rules for useful long-term facts
-- Short reactions and messages without concrete information are excluded
-- Group chat attribution is handled
-- Every extracted fact is post-moderated by DeepSeek Flash; moderation is fail-open
-
-**Option 2: No instructions**
-```python
-# Comment out in config.py:
-# "custom_instructions": MEM0_CUSTOM_INSTRUCTIONS,
-```
-- Standard Mem0 behavior
-- May be less accurate for Russian
-
-**Option 3: Detailed**
-- Add comprehensive extraction rules
-- More control over what's saved
-- Risk of over-filtering
+The worker starts after the buffered Telegram turn completes, so verification is not on the reply's critical path. The pipeline is fail-closed. Any DeepSeek, Mem0, Qdrant, parsing, or validation failure creates no memory. Technical failures retry from SQLite in FIFO order exactly five times, then become dead-letter records. Full raw source text is retained only while a retry is possible; completed and dead-letter records are redacted, while approved facts keep only their exact evidence quote and Telegram provenance.
 
 ### What Gets Remembered
 
 **Included:**
-- Personal information and facts
-- Preferences and opinions
-- Questions (show interests)
-- Current activities and projects
-- Technical details
-- Communication style
+- Clear, stable self-statements by the message author
+- Durable preferences, biographical facts, habits, and long-lived projects
+- Facts backed by an exact quote from the same source message
 
 **Excluded:**
-- Bare greetings
-- Meaningless interjections
-- Bot meta-comments (API, models, settings)
+- Statements about other people, group-level “we” claims, questions, plans, guesses, quotes, and irony
+- Temporary states and low-signal messages
+- Credentials, precise addresses/documents, financial or medical data
+- Forwarded messages, vision/audio descriptions, and media-only messages
 
 ## Debug Mode
 
@@ -259,16 +232,9 @@ Mem0 initialized
 ### Memory Operations
 
 ```
-Mem0 search: query='configure bot', scope=private_123456
-Mem0 results: found 5 facts
-Memory: 5 facts, 345 chars
-Facts:
-- User works with DeepSeek API
-- User studies embeddings
-...
-
-Mem0 save: 'configured Gemini embeddings...' (scope=private_123456)
-Memory saved: 2 facts (scope=private_123456)
+Память: факт одобрен (source_id=17, scope=private_123456, key=software.os)
+Память: обработано источников 3, одобрено 1, отброшено 2, retry 0, dead-letter 0
+Память: найдено 5 → загружено 2 фактов (86 символов)
 ```
 
 ### Request Tracking
@@ -342,11 +308,12 @@ Use `/summarize` command to compress chat history immediately.
 
 **Solutions:**
 1. Enable `full_debug_logs` and check memory saves/retrieval
-2. Verify periodic flush logs (`Периодический flush памяти`)
-3. Lower `memory_min_score` to 0.1 if relevant facts are filtered out
-4. Increase `memory_search_limit` to 15-20 only if context budget allows it
-5. Verify Qdrant has data: check qdrant_storage/ directory size
-6. Ensure `fastembed` is installed so Qdrant BM25 keyword search is enabled
+2. Check periodic queue reports for retries or dead-letter sources
+3. Confirm the fact passed extractor, verifier, and deterministic validation
+4. Keep `memory_min_score` at `0.5` unless a retrieval benchmark supports a change
+5. Increase `memory_search_limit` only if the context budget allows it
+6. Verify Qdrant has data: check qdrant_storage/ directory size
+7. Ensure `fastembed` is installed so Qdrant BM25 keyword search is enabled
 
 ## Migration Guide
 
@@ -396,10 +363,10 @@ Bot will rebuild memory from new conversations.
 
 ### Memory Quality
 
-- Start with `memory_min_score: 0.27`
+- Keep `memory_min_score: 0.5` unless an audited retrieval benchmark justifies changing it
 - Enable debug mode to audit what's saved
-- Adjust custom_instructions if needed
-- Keep extraction rules focused on independently useful facts
+- Monitor pending/dead-letter queue counts and verifier rejection reasons
+- Keep media descriptions and raw conversation batches out of Mem0
 
 ### System Performance
 
@@ -468,8 +435,9 @@ Berangaria_bot/
 ├── handlers.py          # Telegram event handlers
 ├── llm_client.py        # DeepSeek client
 ├── vision_provider.py   # Gemini vision client
+├── memory_pipeline.py   # Strict memory verification pipeline
 ├── memory_store.py      # Mem0 initialization
-├── state.py             # In-memory state
+├── state.py             # In-memory and SQLite state
 ├── utils.py             # Helper functions
 ├── tools.py             # Tool definitions
 ├── docker-compose.yml   # Qdrant container

@@ -129,16 +129,15 @@ MEM0_LLM_MODEL = config_yaml.get("mem0_llm_model", "deepseek-v4-flash")
 EMBEDDING_MODEL = config_yaml.get("embedding_model", "gemini-embedding-2")
 EMBEDDING_DIMS = config_yaml.get("embedding_dims", 768)
 MEMORY_SEARCH_LIMIT = config_yaml.get("memory_search_limit", 5)
-MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.27)
+MEMORY_MIN_SCORE = config_yaml.get("memory_min_score", 0.5)
 MEMORY_MAX_CHARS = config_yaml.get("memory_max_chars", 800)
-# Макс. размер одного батча, отправляемого в Mem0 (символы). Держим под лимитом
-# входа embedding-модели (~2048 токенов): на этапе дедупа Mem0 эмбеддит весь кусок целиком.
-MEMORY_FLUSH_MAX_CHARS = config_yaml.get("memory_flush_max_chars", 2000)
 MEMORY_FLUSH_INTERVAL_SECONDS = config_yaml.get("memory_flush_interval_seconds", 300)
-MEMORY_MEM0_MIN_CHARS = config_yaml.get("memory_mem0_min_chars", 18)
 MEMORY_QUERY_MIN_CHARS = config_yaml.get("memory_query_min_chars", 12)
 MEMORY_QUERY_RECENT_MESSAGES = config_yaml.get("memory_query_recent_messages", 3)
-MEMORY_MEDIA_MAX_CHARS = config_yaml.get("memory_media_max_chars", 600)
+MEMORY_QUEUE_BATCH_SIZE = max(
+    1,
+    min(_as_int(config_yaml.get("memory_queue_batch_size", 20), 20), 100),
+)
 
 # ========================================
 # 🗄️ QDRANT (общий для mem0 и стикеров)
@@ -235,30 +234,9 @@ PRICE_COMPLETION = config_yaml.get("price_completion", 0.28)
 # ========================================
 # 🧠 MEM0 КОНФИГУРАЦИЯ
 # ========================================
-MEM0_CUSTOM_INSTRUCTIONS = """Ты ведёшь долговременную память о компании друзей из группового чата.
-Сохраняй то, что помогает узнать людей и поддерживать разговор.
-
-СОХРАНЯЙ:
-- Характер и устойчивые черты людей (Костя — душнила, Аня вечно опаздывает)
-- Вкусы, предпочтения, мнения, взгляды (любит/терпеть не может X, болеет за Y)
-- Повторяющиеся темы и интересы, о которых человек говорит регулярно
-- Зашедшие шутки, мемы, внутряки компании
-- Важные факты жизни: работа, учёба, техника, питомцы, планы, отношения между людьми
-
-НЕ СОХРАНЯЙ:
-- Одноразовые проходные реплики и сиюминутные наблюдения ("увидел космическую пыль")
-- Короткие реакции и подтверждения ("ок", "ладно", "понял", "ага")
-- Сообщения без конкретной информации, из которых нельзя извлечь самостоятельный полезный факт
-- Фразы и вопросы, которые без контекста треда ничего не значат
-- Мету про бота, его настройки, API, модели
-- Голые приветствия и дежурный смолток
-
-ПРАВИЛА:
-- В группе сообщения идут как "Имя: текст" — всегда привязывай факт к имени.
-- Формулируй кратко и так, чтобы факт был понятен сам по себе, без исходного сообщения.
-- Извлекай факт только если он реально полезен для будущих разговоров.
-- Не пытайся выжимать факт из ничего.
-- Если в куске разговора нет ничего стоящего — ничего не выдумывай, верни пусто."""
+MEM0_CUSTOM_INSTRUCTIONS = """Mem0 получает только один уже одобренный факт.
+Не извлекай дополнительные сведения, не перефразируй и не дополняй вход.
+Храни только точный переданный текст."""
 
 # Отключаем телеметрию и прокси
 os.environ["MEM0_TELEMETRY"] = "false"
@@ -274,7 +252,7 @@ MEM0_CONFIG = {
         "config": {
             "model": MEM0_LLM_MODEL,
             "api_key": DEEPSEEK_API_KEY,
-            "temperature": 0.3,
+            "temperature": 0,
             "max_tokens": 2000,
         }
     },

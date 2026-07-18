@@ -2,7 +2,6 @@ import re
 import logging
 import asyncio
 import copy
-import time
 import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -11,20 +10,24 @@ from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS, PRICE_PROMPT_CACHE_MISS,
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
-    MEM0_LLM_MODEL, MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
-    MEMORY_MEM0_MIN_CHARS, MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
+    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
+    MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
 )
-import state
 from state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
 import memory_store
+import state
 from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
 from streaming import TelegramStreamPreview, stream_chat_completion
-from utils import now_local, is_low_signal_user_text, is_url_only_text, strip_tiktok_urls
+from utils import now_local, is_low_signal_user_text, strip_tiktok_urls
 
 logger = logging.getLogger(__name__)
+
+
+class ReplyDeliveryError(RuntimeError):
+    """Финальный ответ не был подтверждён Telegram и ход нельзя коммитить."""
 
 
 def markdown_to_html(text: str) -> str:
@@ -356,265 +359,29 @@ def _format_memory_block(mem_results: dict) -> str:
     return "\n".join(lines)
 
 
-# ========================================
-# 💾 ДОЛГОВРЕМЕННАЯ ПАМЯТЬ v2 (батчи под лимит эмбеддера)
-# ========================================
-
-_MEMORY_MODERATION_PROMPT = """Ты модерируешь факты для долговременной памяти о людях.
-Верни ровно одну строку в одном из форматов:
-KEEP: краткая причина
-DISCARD: краткая причина
-
-KEEP — только если факт конкретный, достоверный по формулировке и реально полезен в будущих разговорах.
-DISCARD — короткие реакции и подтверждения, общие или расплывчатые фразы, сообщения без конкретной
-информации, разовые наблюдения, мета про бота и факты, выжатые из ничего.
-Не пытайся выжимать факт из ничего."""
-
-
-async def _moderate_memory_fact(fact: str) -> tuple[bool, str]:
-    """Возвращает решение модератора; при любой ошибке оставляет факт (fail-open)."""
-    payload = {
-        "model": MEM0_LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": _MEMORY_MODERATION_PROMPT},
-            {"role": "user", "content": fact},
-        ],
-        "max_tokens": 80,
-        "temperature": 0,
+def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
+    """Fail-closed: сверяет scope, ID и точный текст с SQLite-реестром."""
+    approved = {
+        fact.mem0_id: fact.fact
+        for fact in state.list_memory_facts(scope)
     }
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-        usage = data.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-        logger.info(
-            f"🧠 Mem0 модерация: запрос={prompt_tokens}, "
-            f"ответ={completion_tokens}, всего={total_tokens}"
-        )
-
-        content = data["choices"][0]["message"]["content"]
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        match = re.match(r"^\**(KEEP|DISCARD)\**\s*(?::|[-—])?\s*(.*)$", content, flags=re.IGNORECASE)
-        if not match:
-            raise ValueError(f"неожиданный ответ модератора: {content[:120]!r}")
-        decision = match.group(1).upper()
-        reason = match.group(2).strip() or "причина не указана"
-        return decision == "KEEP", reason
-    except Exception as exc:
-        logger.warning(f"⚠️ Mem0 модерация не сработала, факт сохранён: {exc}")
-        return True, "модерация недоступна"
-
-
-async def _moderate_added_memory_facts(result: object, key: str) -> None:
-    """Удаляет из Mem0 факты, которые пост-модератор признал шумом."""
-    results = result.get("results", []) if isinstance(result, dict) else []
-    if not isinstance(results, (list, tuple)):
-        logger.warning("⚠️ Mem0 модерация пропущена: ответ не содержит списка фактов, оставляем память")
-        return
-    for item in results:
+    raw_results = (mem_results or {}).get("results") or []
+    results = []
+    seen_ids: set[str] = set()
+    for item in raw_results:
         if not isinstance(item, dict):
             continue
-        fact = str(item.get("memory") or "").strip()
-        if not fact:
+        memory_id = str(item.get("id") or "")
+        memory_text = item.get("memory")
+        if (
+            not memory_id
+            or memory_id in seen_ids
+            or approved.get(memory_id) != memory_text
+        ):
             continue
-        event = str(item.get("event") or "").upper()
-        if event and event not in {"ADD", "UPDATE"}:
-            continue
-
-        keep, reason = await _moderate_memory_fact(fact)
-        if keep:
-            continue
-
-        memory_id = item.get("id")
-        if not memory_id:
-            logger.error(
-                f"⚠️ Память: отклонённый факт нельзя удалить — Mem0 не вернул id (scope={key})"
-            )
-            continue
-        try:
-            await asyncio.to_thread(memory_store.memory.delete, memory_id)
-        except Exception as exc:
-            logger.error(
-                f"⚠️ Память: не удалось удалить отклонённый факт {memory_id} "
-                f"(scope={key}): {exc}"
-            )
-            continue
-        logger.info(f"❌ Память: факт отклонён ({reason}) {fact[:200]}")
-
-def _chunk_lines_by_chars(lines: list, max_chars: int) -> list:
-    """Режет список строк на под-батчи, каждый не длиннее max_chars символов."""
-    chunks, cur, cur_len = [], [], 0
-    for line in lines:
-        # Если одна строка сама по себе больше лимита — режем её жёстко
-        if len(line) > max_chars:
-            if cur:
-                chunks.append(cur)
-                cur, cur_len = [], 0
-            for i in range(0, len(line), max_chars):
-                chunks.append([line[i:i + max_chars]])
-            continue
-        if cur and cur_len + len(line) > max_chars:
-            chunks.append(cur)
-            cur, cur_len = [], 0
-        cur.append(line)
-        cur_len += len(line) + 1
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-async def _add_memory_chunks(key: str, lines: list) -> None:
-    """Отправляет накопленные реплики в Mem0 батчами под лимит эмбеддера."""
-    if not lines:
-        return
-    if not memory_store.memory:
-        pending = state.pending_memory.setdefault(key, [])
-        pending[0:0] = lines
-        return
-    for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
-        text = "\n".join(chunk)
-        saved = False
-        for attempt in range(3):
-            try:
-                result = await asyncio.to_thread(
-                    memory_store.memory.add,
-                    [{"role": "user", "content": text}],
-                    user_id=key,
-                )
-                added = len(result.get('results', [])) if isinstance(result, dict) else 0
-                logger.info(
-                    f"✅ Память: батч {len(text)} симв. → "
-                    f"[bright_green]{added}[/] фактов (scope={key})"
-                )
-                await _moderate_added_memory_facts(result, key)
-                saved = True
-                break
-            except Exception as exc:
-                logger.warning(
-                    f"⚠️ Ошибка сохранения памяти (scope={key}, "
-                    f"попытка {attempt + 1}/3): {exc}"
-                )
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-
-        if not saved:
-            # Не теряем батч: ставим перед более свежими репликами и повторим его
-            # при следующем периодическом flush или graceful shutdown.
-            pending = state.pending_memory.setdefault(key, [])
-            pending[0:0] = chunk
-            logger.error(
-                f"🧠 Батч памяти возвращён в очередь после исчерпания retry "
-                f"(scope={key}, строк={len(chunk)})"
-            )
-
-
-def _track_memory_flush(task: asyncio.Task[None]) -> None:
-    state.memory_flush_tasks.add(task)
-    task.add_done_callback(state.memory_flush_tasks.discard)
-
-
-def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> None:
-    """
-    Кладёт реплику юзера в буфер памяти. При достижении лимита символов —
-    запускает фоновый флаш батчем. Вызывается из обработчика сообщений.
-    """
-    text = strip_tiktok_urls((text or "").strip())
-    if len(text) < MEMORY_MEM0_MIN_CHARS:
-        return
-    # Голые ссылки / «ок» в Mem0 не кладём — только шум для extraction
-    if is_url_only_text(text) or is_low_signal_user_text(text, min_alnum=MEMORY_QUERY_MIN_CHARS):
-        # медиа-батчи вида "Изображение: …" уже длинные и осмысленные — проходят
-        return
-
-    line = f"{user_name}: {text}" if is_group else text
-    buf = state.pending_memory.setdefault(key, [])
-    buf.append(line)
-
-    if memory_store.memory and sum(len(item) for item in buf) >= MEMORY_FLUSH_MAX_CHARS:
-        # Снимаем снимок и очищаем синхронно (без await) — без гонок в одном loop
-        lines = list(buf)
-        state.pending_memory[key] = []
-        _track_memory_flush(asyncio.create_task(_add_memory_chunks(key, lines)))
-
-
-async def flush_pending_memory() -> int:
-    """Асинхронно сохраняет все накопленные короткие реплики в Mem0."""
-    if not memory_store.memory:
-        return 0
-
-    snapshots: list[tuple[str, list[str]]] = []
-    for key in list(state.pending_memory.keys()):
-        lines = state.pending_memory.get(key) or []
-        if not lines:
-            continue
-        state.pending_memory[key] = []
-        snapshots.append((key, list(lines)))
-
-    for key, lines in snapshots:
-        await _add_memory_chunks(key, lines)
-
-    return sum(len(lines) for _, lines in snapshots)
-
-
-async def wait_for_memory_flush_tasks() -> None:
-    """Дожидается фоновых flush-задач, если они были запущены по лимиту батча."""
-    tasks = [task for task in state.memory_flush_tasks if not task.done()]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def flush_pending_memory_blocking() -> None:
-    """Синхронно сохраняет остатки буфера при остановке бота (loop уже не крутится)."""
-    if not memory_store.memory:
-        return
-    for key in list(state.pending_memory.keys()):
-        lines = state.pending_memory.get(key) or []
-        if not lines:
-            continue
-        state.pending_memory[key] = []
-        failed_lines = []
-        for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
-            saved = False
-            for attempt in range(3):
-                try:
-                    result = memory_store.memory.add(
-                        [{"role": "user", "content": "\n".join(chunk)}],
-                        user_id=key,
-                    )
-                    # При остановке event loop уже не крутится, поэтому можно
-                    # завершить ту же fail-open модерацию синхронно.
-                    asyncio.run(_moderate_added_memory_facts(result, key))
-                    saved = True
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        f"⚠️ Ошибка финального сохранения памяти '{key}' "
-                        f"(попытка {attempt + 1}/3): {exc}"
-                    )
-                    if attempt < 2:
-                        time.sleep(2 ** attempt)
-            if not saved:
-                failed_lines.extend(chunk)
-
-        if failed_lines:
-            # Сохраняем исходный порядок: эти строки будут повторены при
-            # следующем flush, если процесс не завершится окончательно.
-            pending = state.pending_memory.setdefault(key, [])
-            pending[0:0] = failed_lines
-            logger.error(
-                f"🧠 Батч памяти возвращён в очередь после финального flush "
-                f"(scope={key}, строк={len(failed_lines)})"
-            )
+        seen_ids.add(memory_id)
+        results.append(item)
+    return {"results": results}
 
 
 async def summarize_history(history: list) -> list:
@@ -710,7 +477,7 @@ async def send_llm_request(
     if memory_store.memory:
         try:
             # Валидация ключа для безопасности
-            if not re.match(r'^(private|group)_-?\d+$', key):
+            if not state.is_valid_memory_scope(key):
                 logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
             else:
                 query = _build_memory_search_query(history, user_name)
@@ -733,7 +500,8 @@ async def send_llm_request(
                     )
 
                     results_count = len(mem_results.get('results', []))
-                    mem_text = _format_memory_block(mem_results)
+                    approved_results = _filter_approved_memory_results(mem_results, key)
+                    mem_text = _format_memory_block(approved_results)
 
                     if mem_text and payload_messages[-1]["role"] == "user":
                         last_content = payload_messages[-1]["content"]
@@ -1047,7 +815,9 @@ async def send_llm_request(
                                 logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
                                 if turn.reactions_made or turn.stickers_made:
                                     await _save_assistant("")
-                                return
+                                raise ReplyDeliveryError(
+                                    "Telegram не подтвердил доставку ответа"
+                                ) from exc
                             saved = await _save_assistant(reply_text)
                             await _remember_bot_mid(saved, sent_mid)
                         else:
@@ -1145,9 +915,8 @@ async def send_llm_request(
                     logger.warning(f"⚠️ [yellow]Ответ обрезан по лимиту токенов[/] (ключ={key})")
                     reply += "\n\n_(ответ обрезан)_"
 
-                # Сохранение в долговременную память происходит не здесь, а батчами:
-                # реплики юзеров копятся в state.pending_memory (см. record_user_memory)
-                # и флашатся по достижении лимита символов (memory v2).
+                # Долговременная память обрабатывается отдельно из SQLite-очереди;
+                # доставка ответа не зависит от extractor/verifier.
 
                 # Модель не выбрала инструмент reply_to_message:
                 # адресное обращение → реплай на триггер (как раньше);
@@ -1159,11 +928,17 @@ async def send_llm_request(
                     logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
                     if turn.reactions_made or turn.stickers_made:
                         await _save_assistant("")
-                    return
+                    raise ReplyDeliveryError(
+                        "Telegram не подтвердил доставку ответа"
+                    ) from exc
                 saved = await _save_assistant(reply)
                 await _remember_bot_mid(saved, sent_mid)
                 return
 
+            except ReplyDeliveryError:
+                # Доставка — часть логической транзакции хода. Не повторяем LLM/tools
+                # и даём debounce-слою оставить memory sources в waiting.
+                raise
             except httpx.ConnectError:
                 logger.error("❌ [bright_red]API недоступен![/]")
                 api_failures += 1
