@@ -194,7 +194,7 @@ Current prices for DeepSeek v4 Flash. Update when prices change.
 4. Deterministic validation confirms the quote exists verbatim in the source and rejects malformed or unsafe candidates.
 5. All candidates receive a final decision before storage. Mem0 receives each approved fact with `infer=False`; one SQLite transaction publishes all facts from the source, partial failure compensates new/replaced vectors, and a retry reconciles crash leftovers by `source_id` before new writes.
 6. A newer fact with the same scope, subject, and `fact_key` updates the existing vector in place.
-7. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope before adding it to the prompt.
+7. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope, applies the score threshold, and requires a topical match with the latest meaningful user message before adding a fact to the prompt. Explicit general recall questions bypass only the topical-match check, never the approval or score checks.
 
 The worker starts after the buffered Telegram turn completes, so verification is not on the reply's critical path. The pipeline is fail-closed. Any DeepSeek, Mem0, Qdrant, parsing, or validation failure creates no memory. Technical failures retry from SQLite in FIFO order exactly five times, then become dead-letter records. Full raw source text is retained only while a retry is possible; completed and dead-letter records are redacted, while approved facts keep only their exact evidence quote and Telegram provenance.
 
