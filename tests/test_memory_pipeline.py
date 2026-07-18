@@ -256,6 +256,7 @@ def test_extractor_requests_deepseek_json_output(monkeypatch):
 
     assert asyncio.run(DeepSeekMemoryExtractor().extract(source)) == []
     assert captured["response_format"] == {"type": "json_object"}
+    assert captured["thinking"] == {"type": "disabled"}
 
 
 def test_extractor_reports_truncated_deepseek_json(monkeypatch):
