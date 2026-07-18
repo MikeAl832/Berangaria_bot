@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import handlers
 from handlers import _build_memory_text
+import pytest
 import state
 
 
@@ -81,3 +82,79 @@ def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
     state.message_buffer.clear()
 
     assert events == ["enqueue", "turn-finished", ("release", [17])]
+
+
+def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
+    events = []
+    state.message_buffer.clear()
+    monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(handlers, "is_bot_mentioned", lambda *args: (False, ""))
+    monkeypatch.setattr(handlers, "enqueue_memory_source", lambda **kwargs: 17)
+    monkeypatch.setattr(
+        handlers,
+        "release_memory_sources",
+        lambda source_ids: events.append(("release", source_ids)),
+    )
+
+    async def fail_turn(*args, **kwargs):
+        raise RuntimeError("reply delivery failed")
+
+    monkeypatch.setattr(handlers, "process_buffered_messages", fail_turn)
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=7, type="private"),
+        effective_user=SimpleNamespace(id=42, first_name="Миша"),
+        message=SimpleNamespace(
+            message_id=902,
+            date=None,
+            forward_origin=None,
+            reply_to_message=None,
+        ),
+    )
+
+    async def run():
+        await handlers.queue_message(
+            update, SimpleNamespace(), "Я постоянно использую Fedora"
+        )
+        task = state.message_buffer["7_42"]["task"]
+        with pytest.raises(RuntimeError, match="reply delivery failed"):
+            await task
+
+    asyncio.run(run())
+    state.message_buffer.clear()
+
+    assert events == []
+
+
+def test_tiktok_only_message_keeps_provenance_without_creating_llm_turn(monkeypatch):
+    events = []
+    state.message_buffer.clear()
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(handlers, "is_bot_mentioned", lambda *args: (False, ""))
+
+    def enqueue(**kwargs):
+        events.append(("enqueue", kwargs["text"]))
+        return 17
+
+    monkeypatch.setattr(handlers, "enqueue_memory_source", enqueue)
+    monkeypatch.setattr(
+        handlers,
+        "release_memory_sources",
+        lambda source_ids: events.append(("release", source_ids)),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=7, type="private"),
+        effective_user=SimpleNamespace(id=42, first_name="Миша"),
+        message=SimpleNamespace(
+            message_id=903,
+            date=None,
+            forward_origin=None,
+            reply_to_message=None,
+        ),
+    )
+    original = "https://www.tiktok.com/@x/video/1"
+
+    asyncio.run(handlers.queue_message(update, SimpleNamespace(), original))
+
+    assert events == [("enqueue", original), ("release", [17])]
+    assert state.message_buffer == {}

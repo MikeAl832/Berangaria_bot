@@ -358,7 +358,7 @@ def _format_memory_block(mem_results: dict) -> str:
 def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
     """Fail-closed: сверяет scope, ID и точный текст с SQLite-реестром."""
     approved = {
-        fact.mem0_id: " ".join(fact.fact.split())
+        fact.mem0_id: fact.fact
         for fact in state.list_memory_facts(scope)
     }
     raw_results = (mem_results or {}).get("results") or []
@@ -368,7 +368,7 @@ def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
         if not isinstance(item, dict):
             continue
         memory_id = str(item.get("id") or "")
-        memory_text = " ".join(str(item.get("memory") or "").split())
+        memory_text = item.get("memory")
         if (
             not memory_id
             or memory_id in seen_ids

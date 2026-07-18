@@ -236,6 +236,7 @@ def test_memory_results_include_only_registered_ids_from_same_scope(
     raw = {
         "results": [
             {"id": "approved-private", "memory": "Миша использует Fedora", "score": 0.9},
+            {"id": "approved-private", "memory": "Миша  использует Fedora", "score": 0.95},
             {"id": "approved-private", "memory": "подменённый факт", "score": 0.99},
             {"id": "approved-group", "memory": "Миша использует Arch", "score": 0.9},
             {"id": "legacy-unapproved", "memory": "непроверенный факт", "score": 0.99},

@@ -4,16 +4,19 @@ import logging
 import json
 
 import memory_pipeline
+import pytest
 
 from memory_pipeline import (
     DeepSeekMemoryExtractor,
     DeepSeekMemoryVerifier,
     Mem0ApprovedFactStore,
     MemoryCandidate,
+    MemoryCandidateRejected,
     MemoryDiscard,
     MemoryTransientError,
     VerifiedMemoryFact,
     process_pending_memory,
+    _validate_verified_fact,
 )
 import memory_store
 
@@ -431,6 +434,40 @@ def test_sensitive_source_quote_is_rejected_even_if_fact_hides_category(
     assert state.list_memory_facts("private_42") == []
 
 
+@pytest.mark.parametrize(
+    ("text", "fact", "quote"),
+    [
+        ("У меня диабет", "У Миши диабет", "У меня диабет"),
+        (
+            "Номер моей карты 1234 5678 9012 3456",
+            "Карта Миши: 1234 5678 9012 3456",
+            "Номер моей карты 1234 5678 9012 3456",
+        ),
+        ("Надеюсь переехать в Казань", "Миша переедет в Казань", "Надеюсь переехать"),
+        ("Мечтаю купить дом", "Миша купит дом", "Мечтаю купить дом"),
+    ],
+)
+def test_deterministic_policy_rejects_sensitive_and_modal_language(
+    text, fact, quote
+):
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=917,
+        created_at=1_725_000_016.0,
+        text=text,
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+    verified = VerifiedMemoryFact(fact, quote, "profile.fact", "ошибочный KEEP")
+
+    with pytest.raises(MemoryCandidateRejected):
+        _validate_verified_fact(source, verified)
+
+
 def test_source_enters_dead_letter_after_five_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
     state.init_db()
@@ -669,6 +706,148 @@ def test_mem0_indexes_exact_approved_fact_without_inference(monkeypatch):
     assert memory.calls[0][1]["user_id"] == "private_42"
     assert memory.calls[0][1]["infer"] is False
     assert memory.calls[0][1]["metadata"]["source_quote"] == fact.source_quote
+
+
+def test_mem0_rejects_whitespace_rewrite_and_deletes_result(monkeypatch):
+    class Memory:
+        def __init__(self):
+            self.deleted = []
+
+        def add(self, messages, **kwargs):
+            return {
+                "results": [
+                    {
+                        "id": "mem0-1",
+                        "memory": "Миша  использует Fedora Linux",
+                        "event": "ADD",
+                    }
+                ]
+            }
+
+        def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+    memory = Memory()
+    monkeypatch.setattr(memory_store, "memory", memory)
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=918,
+        created_at=1_725_000_017.0,
+        text="Я постоянно использую Fedora Linux",
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+    fact = VerifiedMemoryFact(
+        "Миша использует Fedora Linux",
+        "использую Fedora Linux",
+        "software.os",
+        "прямое утверждение",
+    )
+
+    with pytest.raises(MemoryTransientError, match="изменил"):
+        asyncio.run(Mem0ApprovedFactStore().save(source, fact))
+
+    assert memory.deleted == ["mem0-1"]
+
+
+def test_mem0_cleanup_failure_is_reported(monkeypatch):
+    class Memory:
+        def add(self, messages, **kwargs):
+            return {
+                "results": [
+                    {"id": "mem0-1", "memory": "подмена", "event": "ADD"}
+                ]
+            }
+
+        def delete(self, memory_id):
+            raise RuntimeError("Qdrant unavailable")
+
+    monkeypatch.setattr(memory_store, "memory", Memory())
+    source = state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=919,
+        created_at=1_725_000_018.0,
+        text="Я постоянно использую Fedora Linux",
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+    fact = VerifiedMemoryFact(
+        "Миша использует Fedora Linux",
+        "использую Fedora Linux",
+        "software.os",
+        "прямое утверждение",
+    )
+
+    with pytest.raises(MemoryTransientError, match="не удалось удалить"):
+        asyncio.run(Mem0ApprovedFactStore().save(source, fact))
+
+
+def test_mem0_reconcile_deletes_orphans_and_restores_registered_fact(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+    state.upsert_memory_fact(
+        scope="private_42",
+        subject_id="42",
+        fact_key="profile.city",
+        fact="Миша живёт в Москве",
+        source_id=1,
+        source_quote="живу в Москве",
+        source_message_id=900,
+        source_created_at=1_725_000_000.0,
+        mem0_id="registered",
+    )
+
+    class Memory:
+        def __init__(self):
+            self.deleted = []
+            self.updated = []
+
+        def get_all(self, **kwargs):
+            return {
+                "results": [
+                    {"id": "registered", "memory": "новая незавершённая версия"},
+                    {"id": "orphan", "memory": "незавершённый новый факт"},
+                ]
+            }
+
+        def update(self, memory_id, data, metadata=None):
+            self.updated.append((memory_id, data, metadata))
+
+        def get(self, memory_id):
+            return {"id": memory_id, "memory": "Миша живёт в Москве"}
+
+        def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+    memory = Memory()
+    monkeypatch.setattr(memory_store, "memory", memory)
+    source = state.MemorySourceRecord(
+        id=2,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=920,
+        created_at=1_725_000_019.0,
+        text="Я постоянно живу в Казани",
+        status="processing",
+        attempts=2,
+        last_error="process crashed",
+    )
+
+    asyncio.run(Mem0ApprovedFactStore().reconcile(source))
+
+    assert memory.deleted == ["orphan"]
+    assert memory.updated[0][0:2] == ("registered", "Миша живёт в Москве")
 
 
 def test_verifier_receives_existing_fact_keys_for_canonical_replacement(

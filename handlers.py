@@ -400,8 +400,6 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # TikTok-ссылки модели не отдаём: только вырезаем, ничего не подставляем.
     original_text = text or ""
     text = strip_tiktok_urls(original_text)
-    if not text and not media_description:
-        return
 
     # Формируем метаданные сообщения
     now = now_local()
@@ -451,6 +449,12 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
     msg_data["memory_source_id"] = memory_source_id
 
+    # TikTok-only сообщение по-прежнему не создаёт LLM-ход, но его исходник
+    # получает фоновое окончательное решение и provenance не теряется.
+    if not text and not media_description:
+        release_memory_sources([memory_source_id])
+        return
+
     # Запускаем новый таймер
     async def wait_and_process():
         try:
@@ -461,13 +465,11 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     message.get("memory_source_id")
                     for message in list(data["messages"])
                 ]
-                try:
-                    await process_buffered_messages(
-                        buffer_key, update, context, key, is_group, user_id, user_name,
-                        data["mentioned"], data["random_reply"]
-                    )
-                finally:
-                    release_memory_sources(source_ids)
+                await process_buffered_messages(
+                    buffer_key, update, context, key, is_group, user_id, user_name,
+                    data["mentioned"], data["random_reply"]
+                )
+                release_memory_sources(source_ids)
         except asyncio.CancelledError:
             pass  # Таймер был отменен из-за нового сообщения
 

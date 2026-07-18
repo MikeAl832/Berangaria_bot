@@ -29,16 +29,19 @@ _SENSITIVE_RE = re.compile(
     r"\b(?:парол\w*|токен\w*|api[ _-]?key|secret\w*|паспорт\w*|"
     r"адрес\w*|улиц\w*|проспект\w*|переул\w*|шоссе|бульвар\w*|"
     r"набережн\w*|площад\w*|квартир\w*|корпус\w*|банковск\w*|"
-    r"кредитн\w*|cvv|"
-    r"диагноз\w*|медицин\w*|лечение\w*|болезн\w*|снилс|инн|"
+    r"кредитн\w*|карт\w*|сч[её]т\w*|зарплат\w*|доход\w*|ипотек\w*|"
+    r"долг\w*|iban|кошел\w*|cvv|диагноз\w*|медицин\w*|лечение\w*|"
+    r"болезн\w*|диабет\w*|онколог\w*|рак|астм\w*|вич|спид|"
+    r"депресс\w*|беремен\w*|инвалид\w*|психиатр\w*|снилс|инн|"
     r"телефон\w*|e-?mail|электронн\w+\s+почт\w*|политическ\w*|"
     r"религи\w*|ориентац\w*)\b|\b(?:дом|д\.)\s*\d+",
     re.IGNORECASE,
 )
 _UNCERTAIN_RE = re.compile(
     r"(?:\b(?:кажется|наверно|наверное|возможно|хочу|хотел\w*|планир\w*|"
-    r"собира\w*ся|думаю|если|попробую|сейчас|завтра|вчера|сегодня|"
-    r"может быть|не уверен\w*)\b|\?|\"|«|»)",
+    r"собира\w*ся|думаю|если|попробую|наде\w*|мечта\w*|когда-нибудь|"
+    r"может|сейчас|завтра|вчера|сегодня|было бы|хотелось бы|"
+    r"не уверен\w*)\b|\?|\"|«|»)",
     re.IGNORECASE,
 )
 
@@ -98,6 +101,8 @@ class MemoryVerifier(Protocol):
 
 
 class ApprovedFactStore(Protocol):
+    async def reconcile(self, source: state.MemorySourceRecord) -> None: ...
+
     async def save(self, source: state.MemorySourceRecord, fact: VerifiedMemoryFact) -> str: ...
 
     async def replace(
@@ -285,6 +290,35 @@ class Mem0ApprovedFactStore:
             "fact_key": fact.fact_key,
         }
 
+    async def reconcile(self, source: state.MemorySourceRecord) -> None:
+        """Убирает writes прошлого оборванного/неоткаченного запуска источника."""
+        if memory_store.memory is None:
+            raise MemoryTransientError("Mem0 недоступен")
+        try:
+            result = await asyncio.to_thread(
+                memory_store.memory.get_all,
+                filters={"user_id": source.scope, "source_id": str(source.id)},
+                top_k=100,
+            )
+        except Exception as exc:
+            raise MemoryTransientError(f"Mem0 reconcile недоступен: {exc}") from exc
+        results = result.get("results") if isinstance(result, dict) else None
+        if not isinstance(results, list):
+            raise MemoryTransientError("Mem0 reconcile не вернул results[]")
+
+        approved_by_id = {
+            item.mem0_id: item for item in state.list_memory_facts(source.scope)
+        }
+        for item in results:
+            if not isinstance(item, dict) or not item.get("id"):
+                raise MemoryTransientError("Mem0 reconcile вернул результат без id")
+            memory_id = str(item["id"])
+            previous = approved_by_id.get(memory_id)
+            if previous is None:
+                await self.delete(memory_id)
+            else:
+                await self.restore(previous)
+
     async def save(self, source: state.MemorySourceRecord, fact: VerifiedMemoryFact) -> str:
         if memory_store.memory is None:
             raise MemoryTransientError("Mem0 недоступен")
@@ -304,12 +338,12 @@ class Mem0ApprovedFactStore:
             raise MemoryTransientError("Mem0 вернул не ровно один факт")
         item = results[0] if isinstance(results[0], dict) else {}
         memory_id = item.get("id")
-        stored_fact = _normalise_text(item.get("memory") or "")
+        stored_fact = item.get("memory")
         event = str(item.get("event") or "").upper()
         if (
             not memory_id
             or event not in {"ADD", "UPDATE"}
-            or stored_fact != _normalise_text(fact.fact)
+            or stored_fact != fact.fact
         ):
             await self._delete_results(results)
             raise MemoryTransientError("Mem0 изменил или не подтвердил одобренный факт")
@@ -334,9 +368,7 @@ class Mem0ApprovedFactStore:
             stored = await asyncio.to_thread(memory_store.memory.get, memory_id)
         except Exception as exc:
             raise MemoryTransientError(f"Mem0 update недоступен: {exc}") from exc
-        if not isinstance(stored, dict) or _normalise_text(
-            stored.get("memory") or ""
-        ) != _normalise_text(fact.fact):
+        if not isinstance(stored, dict) or stored.get("memory") != fact.fact:
             raise MemoryTransientError("Mem0 не подтвердил замену одобренного факта")
         return memory_id
 
@@ -370,20 +402,24 @@ class Mem0ApprovedFactStore:
             stored = await asyncio.to_thread(memory_store.memory.get, previous.mem0_id)
         except Exception as exc:
             raise MemoryTransientError(f"Mem0 restore недоступен: {exc}") from exc
-        if not isinstance(stored, dict) or _normalise_text(
-            stored.get("memory") or ""
-        ) != _normalise_text(previous.fact):
+        if not isinstance(stored, dict) or stored.get("memory") != previous.fact:
             raise MemoryTransientError("Mem0 не подтвердил восстановление прежнего факта")
 
     async def _delete_results(self, results: object) -> None:
         if not isinstance(results, list):
             return
+        failures = []
         for item in results:
             if isinstance(item, dict) and item.get("id"):
                 try:
                     await asyncio.to_thread(memory_store.memory.delete, item["id"])
                 except Exception as exc:
-                    logger.error("Память: не удалось удалить неподтверждённый результат Mem0: %s", exc)
+                    failures.append(str(exc))
+        if failures:
+            raise MemoryTransientError(
+                "не удалось удалить неподтверждённый результат Mem0: "
+                + "; ".join(failures)[:300]
+            )
 
 def _validate_verified_fact(
     source: state.MemorySourceRecord, fact: VerifiedMemoryFact
@@ -449,6 +485,10 @@ async def _process_pending_memory(
         source = claimed[0]
         processed += 1
         try:
+            if source.attempts > 1:
+                reconcile = getattr(store, "reconcile", None)
+                if reconcile is not None:
+                    await reconcile(source)
             candidates = await extractor.extract(source)
             if not isinstance(candidates, list):
                 raise MemoryTransientError("extractor вернул не список")
@@ -529,7 +569,7 @@ async def _process_pending_memory(
                         scope=source.scope,
                         subject_id=source.author_id,
                         fact_key=write.fact.fact_key,
-                        fact=_normalise_text(write.fact.fact),
+                        fact=write.fact.fact.strip(),
                         source_id=source.id,
                         source_quote=write.fact.source_quote.strip(),
                         source_message_id=source.message_id,

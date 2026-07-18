@@ -192,7 +192,7 @@ Current prices for DeepSeek v4 Flash. Update when prices change.
 2. DeepSeek extracts structured candidates containing a normalized fact, stable `fact_key`, and exact source quote.
 3. A separate verifier independently checks self-attribution, stability, source entailment, modality, and sensitive-data exclusions.
 4. Deterministic validation confirms the quote exists verbatim in the source and rejects malformed or unsafe candidates.
-5. All candidates receive a final decision before storage. Mem0 receives each approved fact with `infer=False`; one SQLite transaction publishes all facts from the source, and partial failure compensates new/replaced vectors.
+5. All candidates receive a final decision before storage. Mem0 receives each approved fact with `infer=False`; one SQLite transaction publishes all facts from the source, partial failure compensates new/replaced vectors, and a retry reconciles crash leftovers by `source_id` before new writes.
 6. A newer fact with the same scope, subject, and `fact_key` updates the existing vector in place.
 7. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope before adding it to the prompt.
 
