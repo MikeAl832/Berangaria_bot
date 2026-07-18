@@ -88,6 +88,7 @@ Key settings:
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by Mem0 for memory extraction
 - `memory_search_limit`: facts injected into context
+- `memory_mem0_min_chars`: minimum user-message length accepted by Mem0
 - `allowed_users` / `allowed_groups`: access control
 
 ### 5. Run
@@ -106,7 +107,7 @@ Memory is partitioned by chat:
 - **Groups**: shared memory for entire chat (`group_<chat_id>`)
 - **Private**: per-user memory (`private_<user_id>`)
 
-Only user messages are stored (bot replies and media descriptions excluded). Facts are extracted using DeepSeek with minimal custom instructions - Mem0 decides what's important. Retrieval uses semantic similarity with configurable thresholds.
+User messages shorter than `memory_mem0_min_chars` and low-signal phrases are discarded before Mem0. DeepSeek extracts facts from the remaining batches, then separately moderates every extracted fact as `KEEP` or `DISCARD`; moderation failures are fail-open. Retrieval uses semantic similarity with configurable thresholds.
 
 ### Vision Processing
 

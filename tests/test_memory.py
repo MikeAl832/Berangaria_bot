@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import llm_client
 import memory_store
@@ -78,3 +79,158 @@ def test_memory_is_buffered_while_mem0_is_unavailable(monkeypatch):
     assert state.pending_memory["private_42"] == [
         "сегодня купил новую видеокарту и хочу запомнить модель"
     ]
+
+
+def test_message_shorter_than_mem0_minimum_is_not_buffered(monkeypatch):
+    monkeypatch.setattr(memory_store, "memory", None)
+    state.pending_memory.clear()
+
+    llm_client.record_user_memory(
+        "private_42",
+        "x" * 17,
+        "Миша",
+        False,
+    )
+
+    assert "private_42" not in state.pending_memory
+
+
+def test_repeated_low_signal_fillers_are_not_buffered(monkeypatch):
+    monkeypatch.setattr(memory_store, "memory", None)
+    state.pending_memory.clear()
+
+    llm_client.record_user_memory(
+        "private_42",
+        "ну типа как бы ну типа",
+        "Миша",
+        False,
+    )
+
+    assert "private_42" not in state.pending_memory
+
+
+def test_discarded_mem0_fact_is_deleted_and_logged(monkeypatch, caplog):
+    class Memory:
+        def __init__(self):
+            self.deleted = []
+
+        def add(self, *args, **kwargs):
+            return {
+                "results": [
+                    {
+                        "id": "fact-1",
+                        "memory": "Миша обычно отвечает: ну типа как бы",
+                        "event": "ADD",
+                    },
+                    {
+                        "id": "fact-2",
+                        "memory": "Миша написал общее подтверждение",
+                        "event": "ADD",
+                    },
+                ]
+            }
+
+        def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": "DISCARD: общая реакция, малоинформативно",
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 87,
+                    "completion_tokens": 12,
+                    "total_tokens": 99,
+                },
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return Response()
+
+    memory = Memory()
+    monkeypatch.setattr(memory_store, "memory", memory)
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", Client)
+    state.pending_memory.clear()
+    state.pending_memory["private_42"] = ["обсуждение достаточно длинное для Mem0"]
+    caplog.set_level(logging.INFO, logger="llm_client")
+
+    asyncio.run(llm_client.flush_pending_memory())
+
+    assert memory.deleted == ["fact-1", "fact-2"]
+    assert caplog.text.count("🧠 Mem0 модерация: запрос=87, ответ=12, всего=99") == 2
+    assert caplog.text.count("❌ Память: факт отклонён (общая реакция, малоинформативно)") == 2
+
+
+def test_mem0_fact_is_kept_when_moderation_fails(monkeypatch, caplog):
+    class Memory:
+        def __init__(self):
+            self.deleted = []
+
+        def add(self, *args, **kwargs):
+            return {
+                "results": [{
+                    "id": "fact-1",
+                    "memory": "Миша использует видеокарту RTX 5070 Ti",
+                    "event": "ADD",
+                }]
+            }
+
+        def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            raise RuntimeError("DeepSeek unavailable")
+
+    memory = Memory()
+    monkeypatch.setattr(memory_store, "memory", memory)
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", FailingClient)
+    state.pending_memory.clear()
+    state.pending_memory["private_42"] = ["Моя видеокарта — RTX 5070 Ti"]
+    caplog.set_level(logging.WARNING, logger="llm_client")
+
+    asyncio.run(llm_client.flush_pending_memory())
+
+    assert memory.deleted == []
+    assert "Mem0 модерация не сработала, факт сохранён" in caplog.text
+
+
+def test_final_memory_flush_requeues_failed_batch(monkeypatch):
+    class FailingMemory:
+        def add(self, *args, **kwargs):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(memory_store, "memory", FailingMemory())
+    monkeypatch.setattr(llm_client.time, "sleep", lambda seconds: None)
+    state.pending_memory.clear()
+    state.pending_memory["private_42"] = ["важная реплика для повторной попытки"]
+
+    llm_client.flush_pending_memory_blocking()
+
+    assert state.pending_memory["private_42"] == ["важная реплика для повторной попытки"]

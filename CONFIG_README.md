@@ -84,10 +84,11 @@ mem0_llm_model: "deepseek-v4-flash"
 embedding_model: "models/text-embedding-004"
 embedding_dims: 768
 memory_search_limit: 10
-memory_min_score: 0.2
+memory_min_score: 0.27
 memory_max_chars: 1200
 memory_flush_max_chars: 2000
 memory_flush_interval_seconds: 300
+memory_mem0_min_chars: 18
 memory_query_min_chars: 12
 memory_query_recent_messages: 3
 memory_media_max_chars: 600
@@ -102,13 +103,15 @@ memory_media_max_chars: 600
 - `memory_max_chars`: Maximum total length of memory context
 - `memory_flush_max_chars`: Maximum pending text batch sent to Mem0
 - `memory_flush_interval_seconds`: Periodic flush interval for short pending messages
+- `memory_mem0_min_chars`: User messages shorter than this are never sent to Mem0
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
 - `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
 - `memory_media_max_chars`: Maximum compact media-description fragment sent to memory
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)
-- `0.2`: Soft filtering (current default)
+- `0.2`: Soft filtering
+- `0.27`: Current default
 - `0.3`: Balanced
 - `0.5`: Strict (only highly relevant facts)
 
@@ -201,10 +204,11 @@ Don't extract: bot meta-comments
 
 ### Three Configuration Options
 
-**Option 1: Minimal (current, recommended)**
-- Short instructions (~10 lines)
-- Mem0 decides what's important
-- Group chat attribution handled
+**Option 1: Project instructions (current, recommended)**
+- Explicit rules for useful long-term facts
+- Short reactions and messages without concrete information are excluded
+- Group chat attribution is handled
+- Every extracted fact is post-moderated by DeepSeek Flash; moderation is fail-open
 
 **Option 2: No instructions**
 ```python
@@ -392,10 +396,10 @@ Bot will rebuild memory from new conversations.
 
 ### Memory Quality
 
-- Start with `memory_min_score: 0.2`
+- Start with `memory_min_score: 0.27`
 - Enable debug mode to audit what's saved
 - Adjust custom_instructions if needed
-- Use minimal instructions for best results
+- Keep extraction rules focused on independently useful facts
 
 ### System Performance
 

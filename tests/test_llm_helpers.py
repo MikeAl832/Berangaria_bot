@@ -195,13 +195,12 @@ def test_format_memory_empty():
 
 
 def test_format_memory_filters_below_min_score():
-    # MEMORY_MIN_SCORE == 0.2 в конфиге
     res = {"results": [
-        {"memory": "хороший факт", "score": 0.9},
-        {"memory": "слабый факт", "score": 0.05},
+        {"memory": "пороговый факт", "score": 0.27},
+        {"memory": "слабый факт", "score": 0.26},
     ]}
     out = _format_memory_block(res)
-    assert "хороший факт" in out
+    assert "пороговый факт" in out
     assert "слабый факт" not in out
 
 

@@ -2,6 +2,7 @@ import re
 import logging
 import asyncio
 import copy
+import time
 import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -10,8 +11,8 @@ from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS, PRICE_PROMPT_CACHE_MISS,
     PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION, SYSTEM_PROMPT,
-    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
-    MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
+    MEM0_LLM_MODEL, MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS, MEMORY_FLUSH_MAX_CHARS,
+    MEMORY_MEM0_MIN_CHARS, MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
 )
@@ -359,6 +360,97 @@ def _format_memory_block(mem_results: dict) -> str:
 # 💾 ДОЛГОВРЕМЕННАЯ ПАМЯТЬ v2 (батчи под лимит эмбеддера)
 # ========================================
 
+_MEMORY_MODERATION_PROMPT = """Ты модерируешь факты для долговременной памяти о людях.
+Верни ровно одну строку в одном из форматов:
+KEEP: краткая причина
+DISCARD: краткая причина
+
+KEEP — только если факт конкретный, достоверный по формулировке и реально полезен в будущих разговорах.
+DISCARD — короткие реакции и подтверждения, общие или расплывчатые фразы, сообщения без конкретной
+информации, разовые наблюдения, мета про бота и факты, выжатые из ничего.
+Не пытайся выжимать факт из ничего."""
+
+
+async def _moderate_memory_fact(fact: str) -> tuple[bool, str]:
+    """Возвращает решение модератора; при любой ошибке оставляет факт (fail-open)."""
+    payload = {
+        "model": MEM0_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": _MEMORY_MODERATION_PROMPT},
+            {"role": "user", "content": fact},
+        ],
+        "max_tokens": 80,
+        "temperature": 0,
+    }
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        usage = data.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        logger.info(
+            f"🧠 Mem0 модерация: запрос={prompt_tokens}, "
+            f"ответ={completion_tokens}, всего={total_tokens}"
+        )
+
+        content = data["choices"][0]["message"]["content"]
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        match = re.match(r"^\**(KEEP|DISCARD)\**\s*(?::|[-—])?\s*(.*)$", content, flags=re.IGNORECASE)
+        if not match:
+            raise ValueError(f"неожиданный ответ модератора: {content[:120]!r}")
+        decision = match.group(1).upper()
+        reason = match.group(2).strip() or "причина не указана"
+        return decision == "KEEP", reason
+    except Exception as exc:
+        logger.warning(f"⚠️ Mem0 модерация не сработала, факт сохранён: {exc}")
+        return True, "модерация недоступна"
+
+
+async def _moderate_added_memory_facts(result: object, key: str) -> None:
+    """Удаляет из Mem0 факты, которые пост-модератор признал шумом."""
+    results = result.get("results", []) if isinstance(result, dict) else []
+    if not isinstance(results, (list, tuple)):
+        logger.warning("⚠️ Mem0 модерация пропущена: ответ не содержит списка фактов, оставляем память")
+        return
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        fact = str(item.get("memory") or "").strip()
+        if not fact:
+            continue
+        event = str(item.get("event") or "").upper()
+        if event and event not in {"ADD", "UPDATE"}:
+            continue
+
+        keep, reason = await _moderate_memory_fact(fact)
+        if keep:
+            continue
+
+        memory_id = item.get("id")
+        if not memory_id:
+            logger.error(
+                f"⚠️ Память: отклонённый факт нельзя удалить — Mem0 не вернул id (scope={key})"
+            )
+            continue
+        try:
+            await asyncio.to_thread(memory_store.memory.delete, memory_id)
+        except Exception as exc:
+            logger.error(
+                f"⚠️ Память: не удалось удалить отклонённый факт {memory_id} "
+                f"(scope={key}): {exc}"
+            )
+            continue
+        logger.info(f"❌ Память: факт отклонён ({reason}) {fact[:200]}")
+
 def _chunk_lines_by_chars(lines: list, max_chars: int) -> list:
     """Режет список строк на под-батчи, каждый не длиннее max_chars символов."""
     chunks, cur, cur_len = [], [], 0
@@ -404,6 +496,7 @@ async def _add_memory_chunks(key: str, lines: list) -> None:
                     f"✅ Память: батч {len(text)} симв. → "
                     f"[bright_green]{added}[/] фактов (scope={key})"
                 )
+                await _moderate_added_memory_facts(result, key)
                 saved = True
                 break
             except Exception as exc:
@@ -436,7 +529,7 @@ def record_user_memory(key: str, text: str, user_name: str, is_group: bool) -> N
     запускает фоновый флаш батчем. Вызывается из обработчика сообщений.
     """
     text = strip_tiktok_urls((text or "").strip())
-    if not text:
+    if len(text) < MEMORY_MEM0_MIN_CHARS:
         return
     # Голые ссылки / «ок» в Mem0 не кладём — только шум для extraction
     if is_url_only_text(text) or is_low_signal_user_text(text, min_alnum=MEMORY_QUERY_MIN_CHARS):
@@ -489,11 +582,39 @@ def flush_pending_memory_blocking() -> None:
         if not lines:
             continue
         state.pending_memory[key] = []
+        failed_lines = []
         for chunk in _chunk_lines_by_chars(lines, MEMORY_FLUSH_MAX_CHARS):
-            try:
-                memory_store.memory.add([{"role": "user", "content": "\n".join(chunk)}], user_id=key)
-            except Exception as e:
-                logger.error(f"⚠️ Ошибка финального сохранения памяти '{key}': {e}")
+            saved = False
+            for attempt in range(3):
+                try:
+                    result = memory_store.memory.add(
+                        [{"role": "user", "content": "\n".join(chunk)}],
+                        user_id=key,
+                    )
+                    # При остановке event loop уже не крутится, поэтому можно
+                    # завершить ту же fail-open модерацию синхронно.
+                    asyncio.run(_moderate_added_memory_facts(result, key))
+                    saved = True
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        f"⚠️ Ошибка финального сохранения памяти '{key}' "
+                        f"(попытка {attempt + 1}/3): {exc}"
+                    )
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+            if not saved:
+                failed_lines.extend(chunk)
+
+        if failed_lines:
+            # Сохраняем исходный порядок: эти строки будут повторены при
+            # следующем flush, если процесс не завершится окончательно.
+            pending = state.pending_memory.setdefault(key, [])
+            pending[0:0] = failed_lines
+            logger.error(
+                f"🧠 Батч памяти возвращён в очередь после финального flush "
+                f"(scope={key}, строк={len(failed_lines)})"
+            )
 
 
 async def summarize_history(history: list) -> list:

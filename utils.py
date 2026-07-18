@@ -42,19 +42,55 @@ _TRIVIAL_USER_TEXTS = {
     "ладно",
     "ок",
     "окей",
+    "хорошо",
+    "ясно",
+    "понятно",
     "пон",
+    "понял",
+    "поняла",
     "норм",
+    "нормально",
     "да",
     "нет",
     "угу",
     "ага",
     "лол",
     "кек",
+    "бля",
+    "блин",
+    "хз",
+    "не знаю",
+    "без понятия",
+    "ну",
+    "типа",
+    "как бы",
+    "короче",
+    "в общем",
+    "вобщем",
+    "мда",
+    "мм",
+    "ммм",
+    "хм",
+    "хмм",
+    "жесть",
+    "капец",
+    "пофиг",
+    "похуй",
+    "согласен",
+    "согласна",
+    "спасибо",
+    "пожалуйста",
     "+",
     "-",
     "жми",
     "ждём",
     "ждем",
+}
+
+_TRIVIAL_USER_TOKENS = {
+    token
+    for phrase in _TRIVIAL_USER_TEXTS
+    for token in re.findall(r"\w+", phrase)
 }
 
 
@@ -95,8 +131,12 @@ def is_low_signal_user_text(text: str | None, *, min_alnum: int = 12) -> bool:
     Пустые/односложные/URL-only реплики: не гоняем ambient LLM и не ищем в Mem0.
     История при этом может писаться — контекст чата сохраняется.
     """
-    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    normalized = re.sub(r"[^\w\s+-]", " ", (text or "").strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     if normalized in _TRIVIAL_USER_TEXTS:
+        return True
+    words = normalized.split()
+    if words and all(word in _TRIVIAL_USER_TOKENS for word in words):
         return True
     if is_url_only_text(text):
         return True
