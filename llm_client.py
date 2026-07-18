@@ -26,6 +26,10 @@ from utils import now_local, is_low_signal_user_text, strip_tiktok_urls
 logger = logging.getLogger(__name__)
 
 
+class ReplyDeliveryError(RuntimeError):
+    """Финальный ответ не был подтверждён Telegram и ход нельзя коммитить."""
+
+
 def markdown_to_html(text: str) -> str:
     """
     Конвертирует базовый Markdown в HTML для Telegram.
@@ -811,7 +815,9 @@ async def send_llm_request(
                                 logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
                                 if turn.reactions_made or turn.stickers_made:
                                     await _save_assistant("")
-                                return
+                                raise ReplyDeliveryError(
+                                    "Telegram не подтвердил доставку ответа"
+                                ) from exc
                             saved = await _save_assistant(reply_text)
                             await _remember_bot_mid(saved, sent_mid)
                         else:
@@ -922,11 +928,17 @@ async def send_llm_request(
                     logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
                     if turn.reactions_made or turn.stickers_made:
                         await _save_assistant("")
-                    return
+                    raise ReplyDeliveryError(
+                        "Telegram не подтвердил доставку ответа"
+                    ) from exc
                 saved = await _save_assistant(reply)
                 await _remember_bot_mid(saved, sent_mid)
                 return
 
+            except ReplyDeliveryError:
+                # Доставка — часть логической транзакции хода. Не повторяем LLM/tools
+                # и даём debounce-слою оставить memory sources в waiting.
+                raise
             except httpx.ConnectError:
                 logger.error("❌ [bright_red]API недоступен![/]")
                 api_failures += 1

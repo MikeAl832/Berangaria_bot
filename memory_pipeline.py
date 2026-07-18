@@ -434,7 +434,9 @@ def _validate_verified_fact(
         raise MemoryCandidateRejected("доказательная цитата не найдена в источнике")
     if not _FACT_KEY_RE.fullmatch(fact.fact_key):
         raise MemoryCandidateRejected("некорректный fact_key")
-    evidence_text = f"{normalized_fact} {normalized_quote}"
+    # Проверяем весь неизменяемый источник: extractor/verifier не должны обходить
+    # policy, выбрав короткую цитату без модального или чувствительного маркера.
+    evidence_text = f"{normalized_source} {normalized_fact} {normalized_quote}"
     if _SENSITIVE_RE.search(evidence_text):
         raise MemoryCandidateRejected("чувствительная категория")
     if _UNCERTAIN_RE.search(evidence_text):
