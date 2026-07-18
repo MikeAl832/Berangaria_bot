@@ -377,8 +377,12 @@ def _memory_terms(text: str) -> set[str]:
     }
 
 
+def _is_general_memory_recall(query: str) -> bool:
+    return bool(_MEMORY_RECALL_RE.search(query or ""))
+
+
 def _memory_fact_matches_query(fact: str, query: str) -> bool:
-    if not query or _MEMORY_RECALL_RE.search(query):
+    if not query or _is_general_memory_recall(query):
         return True
     fact_terms = _memory_terms(fact)
     query_terms = _memory_terms(query)
@@ -392,6 +396,17 @@ def _memory_fact_matches_query(fact: str, query: str) -> bool:
         for fact_term in fact_terms
         for query_term in query_terms
     )
+
+
+def _approved_memory_recall_results(scope: str) -> dict:
+    """Возвращает только одобренный SQLite-реестр для общего recall-запроса."""
+    facts = state.list_memory_facts(scope)[-MEMORY_SEARCH_LIMIT:]
+    return {
+        "results": [
+            {"id": fact.mem0_id, "memory": fact.fact, "score": 1.0}
+            for fact in facts
+        ]
+    }
 
 
 def _format_memory_block(mem_results: dict, query: str = "") -> str:
@@ -547,18 +562,23 @@ async def send_llm_request(
     payload_messages = [{"role": "system", "content": system_prompt}] + _render_history_for_api(history)
     sid_to_mid = _build_sid_map(history)
 
-    if memory_store.memory:
-        try:
-            # Валидация ключа для безопасности
-            if not state.is_valid_memory_scope(key):
-                logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
+    try:
+        # Валидация ключа для безопасности
+        if not state.is_valid_memory_scope(key):
+            logger.warning(f"⚠️ [yellow]Невалидный ключ памяти:[/] {key}")
+        else:
+            query = _build_memory_search_query(history, user_name)
+            if not query:
+                if FULL_DEBUG_LOGS:
+                    logger.debug(f"🔍 Mem0 поиск пропущен: нет содержательного query (scope={key})")
             else:
-                query = _build_memory_search_query(history, user_name)
-                if not query:
+                relevance_query = _build_memory_relevance_query(history, user_name)
+                if _is_general_memory_recall(relevance_query):
+                    approved_results = _approved_memory_recall_results(key)
+                    results_count = len(approved_results["results"])
                     if FULL_DEBUG_LOGS:
-                        logger.debug(f"🔍 Mem0 поиск пропущен: нет содержательного query (scope={key})")
-                else:
-                    relevance_query = _build_memory_relevance_query(history, user_name)
+                        logger.debug(f"🔍 Память: общий recall из SQLite (scope={key})")
+                elif memory_store.memory:
                     if FULL_DEBUG_LOGS:
                         logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
 
@@ -575,29 +595,35 @@ async def send_llm_request(
 
                     results_count = len(mem_results.get('results', []))
                     approved_results = _filter_approved_memory_results(mem_results, key)
-                    mem_text = _format_memory_block(
-                        approved_results,
-                        query=relevance_query,
-                    )
+                else:
+                    approved_results = {"results": []}
+                    results_count = 0
+                    if FULL_DEBUG_LOGS:
+                        logger.debug(f"🔍 Mem0 поиск пропущен: хранилище недоступно (scope={key})")
 
-                    if mem_text and payload_messages[-1]["role"] == "user":
-                        last_content = payload_messages[-1]["content"]
-                        payload_messages[-1] = {
-                            "role": "user",
-                            "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
-                        }
-                        facts_count = _count_memory_block_facts(mem_text)
+                mem_text = _format_memory_block(
+                    approved_results,
+                    query=relevance_query,
+                )
 
-                        # Краткий лог для INFO, детальный для DEBUG
-                        logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
+                if mem_text and payload_messages[-1]["role"] == "user":
+                    last_content = payload_messages[-1]["content"]
+                    payload_messages[-1] = {
+                        "role": "user",
+                        "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
+                    }
+                    facts_count = _count_memory_block_facts(mem_text)
 
-                        if FULL_DEBUG_LOGS:
-                            logger.debug(f"📝 Факты:\n{mem_text}")
+                    # Краткий лог для INFO, детальный для DEBUG
+                    logger.info(f"🧠 Память: найдено {results_count} → загружено {facts_count} фактов ({len(mem_text)} символов)")
 
-        except asyncio.TimeoutError:
-            logger.warning(f"⚠️ [yellow]Память: таймаут поиска (15s), продолжаем без неё[/] scope={key}")
-        except Exception as e:
-            logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
+                    if FULL_DEBUG_LOGS:
+                        logger.debug(f"📝 Факты:\n{mem_text}")
+
+    except asyncio.TimeoutError:
+        logger.warning(f"⚠️ [yellow]Память: таймаут поиска (15s), продолжаем без неё[/] scope={key}")
+    except Exception as e:
+        logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
 
     # Мутируемое состояние хода (статусная плашка, реакции, стикеры, pending_reply) —
     # см. tool_handlers.ToolTurn. Живёт весь retry-цикл.
