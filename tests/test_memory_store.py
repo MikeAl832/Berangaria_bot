@@ -26,7 +26,7 @@ def test_memory_initialization_retries(monkeypatch):
 
 
 def test_memory_quality_settings_are_strict_and_explicit():
-    assert MEMORY_MIN_SCORE == 0.5
+    assert MEMORY_MIN_SCORE == 0.3
     assert "только один уже одобренный факт" in MEM0_CUSTOM_INSTRUCTIONS
     assert "не перефразируй" in MEM0_CUSTOM_INSTRUCTIONS
     assert "точный переданный текст" in MEM0_CUSTOM_INSTRUCTIONS

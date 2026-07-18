@@ -37,7 +37,7 @@
 "embedding_model": "gemini-embedding-2"  # Gemini API embedding (бесплатно, multilingual)
 "embedding_dims": 768                    # Размерность векторов
 "memory_search_limit": 8                 # Сколько фактов подмешивать в контекст (больше=лучше контекст)
-"memory_min_score": 0.5                  # Строгий порог релевантности; слабые совпадения не подмешиваются
+"memory_min_score": 0.3                  # Нижний vector floor; затем обязательны SQLite approval и тематическое совпадение
 "memory_max_chars": 1200                 # Максимальная длина блока памяти (bigger=больше контекста)
 "memory_flush_interval_seconds": 900     # Периодический retry SQLite-очереди памяти
 "memory_query_min_chars": 12             # Минимальная содержательная длина query для поиска по памяти
