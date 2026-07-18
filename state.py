@@ -33,6 +33,34 @@ class RuntimeSettings:
     random_reply_chance: int
 
 
+@dataclass(frozen=True)
+class MemorySourceRecord:
+    id: int
+    scope: str
+    author_id: str
+    author_name: str
+    message_id: int
+    created_at: float
+    text: str
+    status: str
+    attempts: int
+    last_error: str | None
+
+
+@dataclass(frozen=True)
+class MemoryFactRecord:
+    id: int
+    scope: str
+    subject_id: str
+    fact_key: str
+    fact: str
+    source_id: int
+    source_quote: str
+    source_message_id: int
+    source_created_at: float
+    mem0_id: str
+
+
 # Изменяемый шанс случайного ответа (для команды /random)
 random_reply_chance: int = DEFAULT_RANDOM_REPLY_CHANCE  # загружается из config/БД при старте
 
@@ -170,8 +198,273 @@ def init_db() -> None:
             "value TEXT NOT NULL, "
             "updated_at REAL NOT NULL)"
         )
+        _db_execute(
+            "CREATE TABLE IF NOT EXISTS memory_sources ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "scope TEXT NOT NULL, "
+            "author_id TEXT NOT NULL, "
+            "author_name TEXT NOT NULL, "
+            "message_id INTEGER NOT NULL, "
+            "created_at REAL NOT NULL, "
+            "text TEXT NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'pending', "
+            "attempts INTEGER NOT NULL DEFAULT 0, "
+            "last_error TEXT, "
+            "queued_at REAL NOT NULL, "
+            "updated_at REAL NOT NULL)"
+        )
+        _db_execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_sources_status "
+            "ON memory_sources(status, id)"
+        )
+        _db_execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_sources_scope_message "
+            "ON memory_sources(scope, message_id)"
+        )
+        _db_execute(
+            "CREATE TABLE IF NOT EXISTS memory_facts ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "scope TEXT NOT NULL, "
+            "subject_id TEXT NOT NULL, "
+            "fact_key TEXT NOT NULL, "
+            "fact TEXT NOT NULL, "
+            "source_id INTEGER NOT NULL, "
+            "source_quote TEXT NOT NULL, "
+            "source_message_id INTEGER NOT NULL, "
+            "source_created_at REAL NOT NULL, "
+            "mem0_id TEXT NOT NULL, "
+            "created_at REAL NOT NULL, "
+            "updated_at REAL NOT NULL, "
+            "UNIQUE(scope, subject_id, fact_key))"
+        )
+        _db_execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_facts_scope "
+            "ON memory_facts(scope, subject_id)"
+        )
+        _db_execute(
+            "UPDATE memory_sources SET status='pending', updated_at=? "
+            "WHERE status='processing'",
+            (time.time(),),
+        )
     except Exception as e:
         logger.error(f"❌ Не удалось инициализировать БД {DB_PATH}: {e}")
+
+
+def insert_memory_source(
+    *,
+    scope: str,
+    author_id: str,
+    author_name: str,
+    message_id: int,
+    created_at: float,
+    text: str,
+) -> int:
+    """Долговечно ставит одно сообщение в очередь проверки памяти."""
+    now = time.time()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO memory_sources "
+            "(scope, author_id, author_name, message_id, created_at, text, "
+            "status, attempts, queued_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)",
+            (scope, author_id, author_name, message_id, created_at, text, now, now),
+        )
+        if cur.rowcount == 0:
+            row = conn.execute(
+                "SELECT id FROM memory_sources WHERE scope=? AND message_id=?",
+                (scope, message_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("не удалось получить существующий источник памяти")
+            conn.commit()
+            return int(row[0])
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def _memory_source_from_row(row: tuple[Any, ...]) -> MemorySourceRecord:
+    return MemorySourceRecord(
+        id=int(row[0]),
+        scope=str(row[1]),
+        author_id=str(row[2]),
+        author_name=str(row[3]),
+        message_id=int(row[4]),
+        created_at=float(row[5]),
+        text=str(row[6]),
+        status=str(row[7]),
+        attempts=int(row[8]),
+        last_error=row[9],
+    )
+
+
+def list_memory_sources(status: str | None = None) -> list[MemorySourceRecord]:
+    """Возвращает сообщения очереди в исходном порядке."""
+    query = (
+        "SELECT id, scope, author_id, author_name, message_id, created_at, text, "
+        "status, attempts, last_error FROM memory_sources"
+    )
+    params: tuple[Any, ...] = ()
+    if status is not None:
+        query += " WHERE status=?"
+        params = (status,)
+    query += " ORDER BY id"
+    rows = _db_execute(query, params, fetch=True) or []
+    return [_memory_source_from_row(row) for row in rows]
+
+
+def claim_memory_sources(limit: int) -> list[MemorySourceRecord]:
+    """Атомарно забирает FIFO-порцию pending-сообщений на обработку."""
+    bounded_limit = max(1, min(int(limit), 100))
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT id, scope, author_id, author_name, message_id, created_at, text, "
+            "status, attempts, last_error FROM memory_sources "
+            "WHERE status='pending' ORDER BY id LIMIT ?",
+            (bounded_limit,),
+        ).fetchall()
+        now = time.time()
+        for row in rows:
+            conn.execute(
+                "UPDATE memory_sources SET status='processing', attempts=attempts+1, "
+                "updated_at=? WHERE id=? AND status='pending'",
+                (now, row[0]),
+            )
+        conn.commit()
+        claimed = []
+        for row in rows:
+            claimed.append(
+                MemorySourceRecord(
+                    id=int(row[0]),
+                    scope=str(row[1]),
+                    author_id=str(row[2]),
+                    author_name=str(row[3]),
+                    message_id=int(row[4]),
+                    created_at=float(row[5]),
+                    text=str(row[6]),
+                    status="processing",
+                    attempts=int(row[8]) + 1,
+                    last_error=row[9],
+                )
+            )
+        return claimed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def complete_memory_source(source_id: int) -> None:
+    """Помечает сообщение обработанным и удаляет полный сырой текст."""
+    _db_execute(
+        "UPDATE memory_sources SET status='completed', text='', last_error=NULL, updated_at=? "
+        "WHERE id=?",
+        (time.time(), source_id),
+    )
+
+
+def fail_memory_source(source_id: int, error: str, max_attempts: int = 5) -> bool:
+    """Возвращает сообщение в очередь или переводит в dead-letter.
+
+    Возвращает True, если достигнут терминальный лимит попыток.
+    """
+    rows = _db_execute(
+        "SELECT attempts FROM memory_sources WHERE id=?", (source_id,), fetch=True
+    ) or []
+    attempts = int(rows[0][0]) if rows else max_attempts
+    terminal = attempts >= max_attempts
+    status = "dead" if terminal else "pending"
+    params = (status, str(error)[:500], time.time(), source_id)
+    if terminal:
+        _db_execute(
+            "UPDATE memory_sources SET status=?, last_error=?, updated_at=?, text='' "
+            "WHERE id=?",
+            params,
+        )
+    else:
+        _db_execute(
+            "UPDATE memory_sources SET status=?, last_error=?, updated_at=? WHERE id=?",
+            params,
+        )
+    return terminal
+
+
+def _memory_fact_from_row(row: tuple[Any, ...]) -> MemoryFactRecord:
+    return MemoryFactRecord(
+        id=int(row[0]),
+        scope=str(row[1]),
+        subject_id=str(row[2]),
+        fact_key=str(row[3]),
+        fact=str(row[4]),
+        source_id=int(row[5]),
+        source_quote=str(row[6]),
+        source_message_id=int(row[7]),
+        source_created_at=float(row[8]),
+        mem0_id=str(row[9]),
+    )
+
+
+def get_memory_fact(scope: str, subject_id: str, fact_key: str) -> MemoryFactRecord | None:
+    rows = _db_execute(
+        "SELECT id, scope, subject_id, fact_key, fact, source_id, source_quote, "
+        "source_message_id, source_created_at, mem0_id FROM memory_facts "
+        "WHERE scope=? AND subject_id=? AND fact_key=?",
+        (scope, subject_id, fact_key),
+        fetch=True,
+    ) or []
+    return _memory_fact_from_row(rows[0]) if rows else None
+
+
+def upsert_memory_fact(
+    *,
+    scope: str,
+    subject_id: str,
+    fact_key: str,
+    fact: str,
+    source_id: int,
+    source_quote: str,
+    source_message_id: int,
+    source_created_at: float,
+    mem0_id: str,
+) -> MemoryFactRecord | None:
+    """Сохраняет provenance одобренного факта и возвращает прежнюю запись."""
+    previous = get_memory_fact(scope, subject_id, fact_key)
+    now = time.time()
+    _db_execute(
+        "INSERT INTO memory_facts "
+        "(scope, subject_id, fact_key, fact, source_id, source_quote, "
+        "source_message_id, source_created_at, mem0_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(scope, subject_id, fact_key) DO UPDATE SET "
+        "fact=excluded.fact, source_id=excluded.source_id, "
+        "source_quote=excluded.source_quote, source_message_id=excluded.source_message_id, "
+        "source_created_at=excluded.source_created_at, mem0_id=excluded.mem0_id, "
+        "updated_at=excluded.updated_at",
+        (
+            scope, subject_id, fact_key, fact, source_id, source_quote,
+            source_message_id, source_created_at, mem0_id, now, now,
+        ),
+    )
+    return previous
+
+
+def list_memory_facts(scope: str | None = None) -> list[MemoryFactRecord]:
+    query = (
+        "SELECT id, scope, subject_id, fact_key, fact, source_id, source_quote, "
+        "source_message_id, source_created_at, mem0_id FROM memory_facts"
+    )
+    params: tuple[Any, ...] = ()
+    if scope is not None:
+        query += " WHERE scope=?"
+        params = (scope,)
+    query += " ORDER BY id"
+    rows = _db_execute(query, params, fetch=True) or []
+    return [_memory_fact_from_row(row) for row in rows]
 
 
 def validate_random_reply_chance(value: Any) -> int:

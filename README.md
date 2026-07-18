@@ -4,13 +4,13 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: DeepSeek v4 Flash (chat, summarization, memory extraction)
+- **Main LLM**: DeepSeek v4 Flash (chat, summarization, strict memory extraction/verification)
   - Alternative: DeepSeek v4 Pro for better instruction following
   - Alternative: Grok-4.3 for superior humor and character consistency
 - **Vision**: Google Gemini 3.1 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
 - **Vector Store**: Qdrant (local Docker container)
-- **Memory**: Mem0 (fact extraction and retrieval)
+- **Memory**: SQLite durable verification queue + Mem0/Qdrant approved-fact index
 
 ## Key Features
 
@@ -86,9 +86,9 @@ Key settings:
 - `model`: DeepSeek model name
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
-- `mem0_llm_model`: DeepSeek model used by Mem0 for memory extraction
+- `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
 - `memory_search_limit`: facts injected into context
-- `memory_mem0_min_chars`: minimum user-message length accepted by Mem0
+- `memory_mem0_min_chars`: minimum user-message length queued for verification
 - `allowed_users` / `allowed_groups`: access control
 
 ### 5. Run
@@ -107,7 +107,7 @@ Memory is partitioned by chat:
 - **Groups**: shared memory for entire chat (`group_<chat_id>`)
 - **Private**: per-user memory (`private_<user_id>`)
 
-User messages shorter than `memory_mem0_min_chars` and low-signal phrases are discarded before Mem0. DeepSeek extracts facts from the remaining batches, then separately moderates every extracted fact as `KEEP` or `DISCARD`; moderation failures are fail-open. Retrieval uses semantic similarity with configurable thresholds.
+Each original text message is queued durably in SQLite with its author, chat scope, Telegram message ID, timestamp, and source text. A later Telegram edit cannot replace that source. DeepSeek first extracts a candidate with an exact quote, then a separate verifier must approve it; malformed output, ambiguity, sensitive data, forwarded text, media-only context, or any service failure is fail-closed and never reaches Mem0. Failed sources retry in FIFO order up to `memory_max_attempts`. Mem0 receives only approved facts with `infer=False`, and later statements replace the same fact in place. Completed raw source text is erased; retrieval accepts only exact ID/text matches from the chat-scoped SQLite approval registry and the strict relevance threshold.
 
 ### Vision Processing
 
@@ -188,8 +188,9 @@ Berangaria_bot/
 ├── handlers.py          # Telegram handlers
 ├── llm_client.py        # DeepSeek API client
 ├── vision_provider.py   # Gemini vision
+├── memory_pipeline.py   # Strict extraction, verification, and indexing
 ├── memory_store.py      # Mem0 initialization
-├── state.py             # In-memory state
+├── state.py             # In-memory and SQLite state
 ├── utils.py             # Utilities
 ├── tools.py             # Tool definitions
 ├── config.py            # Configuration loader

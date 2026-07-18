@@ -81,3 +81,17 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Add regression tests for bug fixes, especially races, failure ordering, security boundaries, and persistence behavior.
 - Prefer focused patches over broad rewrites of `handlers.py` or `llm_client.py` unless the behavior is protected by tests.
 - Update `README.md` or `CONFIG_README.md` when configuration, startup, commands, deployment, or externally visible behavior changes.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage role labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository with `CONTEXT.md` at the root and ADRs under `docs/adr/`. See `docs/agents/domain.md`.
