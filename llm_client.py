@@ -266,6 +266,13 @@ def _clean_reply(reply: str) -> str:
     reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
     reply = re.sub(r'<\|.*?\|>', '', reply).strip()
 
+    reply = re.sub(
+        r'\[Context from memory(?:\s*:[^\]]*)?\]',
+        'долгосрочной памяти',
+        reply,
+        flags=re.IGNORECASE,
+    )
+
     # [#N] — внутренние reply-хэндлы для инструментов. Модель иногда всё же
     # цитирует их вопреки системному промпту, поэтому не выпускаем их в Telegram.
     reply = re.sub(r'\[#\d+\](?:\s*(?:,|и|или)\s*\[#\d+\])*', '', reply)
