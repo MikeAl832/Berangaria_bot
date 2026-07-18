@@ -125,18 +125,32 @@ def _parse_json_response(data: object) -> dict:
     if not isinstance(data, dict):
         raise MemoryTransientError("ответ DeepSeek не является объектом")
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise MemoryTransientError("в ответе DeepSeek нет message.content") from exc
     if not isinstance(content, str):
         raise MemoryTransientError("message.content DeepSeek не является строкой")
+    finish_reason = str(choice.get("finish_reason") or "unknown")
+    if finish_reason == "length":
+        raise MemoryTransientError(
+            f"DeepSeek обрезал JSON (content_len={len(content)})"
+        )
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    if not content:
+        raise MemoryTransientError(
+            f"DeepSeek вернул пустой JSON (finish_reason={finish_reason})"
+        )
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content).strip()
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise MemoryTransientError("DeepSeek вернул невалидный JSON") from exc
+        raise MemoryTransientError(
+            "DeepSeek вернул невалидный JSON "
+            f"(finish_reason={finish_reason}, content_len={len(content)}, "
+            f"line={exc.lineno}, column={exc.colno})"
+        ) from exc
     if not isinstance(parsed, dict):
         raise MemoryTransientError("JSON DeepSeek должен быть объектом")
     return parsed
@@ -151,6 +165,7 @@ async def _deepseek_json(*, system: str, user: str, max_tokens: int) -> dict:
         ],
         "max_tokens": max_tokens,
         "temperature": 0,
+        "response_format": {"type": "json_object"},
     }
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
