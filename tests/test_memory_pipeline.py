@@ -6,6 +6,7 @@ import json
 import memory_pipeline
 
 from memory_pipeline import (
+    DeepSeekMemoryExtractor,
     DeepSeekMemoryVerifier,
     Mem0ApprovedFactStore,
     MemoryCandidate,
@@ -113,6 +114,96 @@ def test_source_waits_for_turn_completion_before_it_can_be_claimed(
     release_memory_sources([source_id])
 
     assert state.claim_memory_sources(1)[0].id == source_id
+
+
+def test_waiting_source_blocks_newer_ready_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source, release_memory_sources
+
+    older_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=911,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_010.0,
+        ready=False,
+    )
+    enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=912,
+        text="Я постоянно живу в Москве",
+        created_at=1_725_000_011.0,
+    )
+
+    assert state.claim_memory_sources(1) == []
+
+    release_memory_sources([older_id])
+
+    assert state.claim_memory_sources(1)[0].id == older_id
+
+
+def test_interrupted_waiting_source_is_abandoned_on_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    source_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=913,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_012.0,
+        ready=False,
+    )
+
+    state.init_db()
+
+    source = state.list_memory_sources()[0]
+    assert source.id == source_id
+    assert source.status == "abandoned"
+    assert source.text == ""
+    assert state.claim_memory_sources(1) == []
+
+
+def test_tiktok_source_is_preserved_but_not_sent_to_extractor_as_a_url(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    original = "смотри https://www.tiktok.com/@x/video/1 смешно"
+    source_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=914,
+        text=original,
+        created_at=1_725_000_013.0,
+    )
+
+    source = state.list_memory_sources(status="pending")[0]
+    assert source.id == source_id
+    assert source.text == original
+
+    captured = {}
+
+    async def fake_deepseek_json(*, system, user, max_tokens):
+        captured.update(json.loads(user))
+        return {"candidates": []}
+
+    monkeypatch.setattr(memory_pipeline, "_deepseek_json", fake_deepseek_json)
+    asyncio.run(DeepSeekMemoryExtractor().extract(source))
+
+    assert "tiktok.com" not in captured["text"]
 
 
 def test_approved_candidate_is_stored_with_provenance(monkeypatch, tmp_path):
@@ -304,7 +395,7 @@ def test_sensitive_source_quote_is_rejected_even_if_fact_hides_category(
         author_id="42",
         author_name="Миша",
         message_id=905,
-        text="Я живу: улица Ленина, дом 1",
+        text="Я живу: Невский проспект, 12",
         created_at=1_725_000_004.0,
     )
 
@@ -312,8 +403,8 @@ def test_sensitive_source_quote_is_rejected_even_if_fact_hides_category(
         async def extract(self, source):
             return [
                 MemoryCandidate(
-                    "Миша живёт на улице Ленина, дом 1",
-                    "улица Ленина, дом 1",
+                    "Миша живёт: Невский проспект, 12",
+                    "Невский проспект, 12",
                     "profile.location",
                 )
             ]
@@ -409,6 +500,130 @@ def test_retrying_older_source_blocks_newer_conflicting_source(monkeypatch, tmp_
         (906, "pending", 1),
         (907, "pending", 0),
     ]
+
+
+def test_partial_store_failure_rolls_back_all_facts_from_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=915,
+        text="Я постоянно использую Fedora, а моя видеокарта — RTX 5070 Ti",
+        created_at=1_725_000_014.0,
+    )
+
+    class Extractor:
+        async def extract(self, source):
+            return [
+                MemoryCandidate(
+                    "Миша постоянно использует Fedora",
+                    "постоянно использую Fedora",
+                    "software.os",
+                ),
+                MemoryCandidate(
+                    "Видеокарта Миши — RTX 5070 Ti",
+                    "моя видеокарта — RTX 5070 Ti",
+                    "hardware.gpu",
+                ),
+            ]
+
+    class Verifier:
+        async def verify(self, source, candidate):
+            return VerifiedMemoryFact(
+                candidate.fact,
+                candidate.source_quote,
+                candidate.fact_key,
+                "прямое утверждение",
+            )
+
+    class Store:
+        def __init__(self):
+            self.saved = []
+            self.deleted = []
+
+        async def save(self, source, fact):
+            if self.saved:
+                raise MemoryTransientError("второй Mem0 write не удался")
+            self.saved.append("mem0-1")
+            return "mem0-1"
+
+        async def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+        async def restore(self, previous):
+            raise AssertionError("новый факт не требует restore")
+
+    store = Store()
+    report = asyncio.run(process_pending_memory(Extractor(), Verifier(), store))
+
+    assert report.retried == 1
+    assert store.deleted == ["mem0-1"]
+    assert state.list_memory_facts("private_42") == []
+
+
+def test_registry_failure_deletes_staged_mem0_fact(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=916,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_015.0,
+    )
+
+    class Extractor:
+        async def extract(self, source):
+            return [
+                MemoryCandidate(
+                    "Миша постоянно использует Fedora Linux",
+                    "постоянно использую Fedora Linux",
+                    "software.os",
+                )
+            ]
+
+    class Verifier:
+        async def verify(self, source, candidate):
+            return VerifiedMemoryFact(
+                candidate.fact,
+                candidate.source_quote,
+                candidate.fact_key,
+                "прямое утверждение",
+            )
+
+    class Store:
+        def __init__(self):
+            self.deleted = []
+
+        async def save(self, source, fact):
+            return "mem0-1"
+
+        async def delete(self, memory_id):
+            self.deleted.append(memory_id)
+
+        async def restore(self, previous):
+            raise AssertionError("новый факт не требует restore")
+
+    def fail_commit(*args, **kwargs):
+        raise RuntimeError("SQLite commit failed")
+
+    monkeypatch.setattr(state, "commit_memory_facts", fail_commit)
+    store = Store()
+
+    report = asyncio.run(process_pending_memory(Extractor(), Verifier(), store))
+
+    assert report.retried == 1
+    assert store.deleted == ["mem0-1"]
+    assert state.list_memory_facts("private_42") == []
 
 
 def test_mem0_indexes_exact_approved_fact_without_inference(monkeypatch):

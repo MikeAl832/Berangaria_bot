@@ -44,7 +44,7 @@ def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
         events.append("enqueue")
         return 17
 
-    monkeypatch.setattr(handlers, "record_user_memory", enqueue)
+    monkeypatch.setattr(handlers, "enqueue_memory_source", enqueue)
     monkeypatch.setattr(
         handlers,
         "release_memory_sources",
@@ -54,6 +54,9 @@ def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
 
     async def finish_turn(*args, **kwargs):
         events.append("turn-finished")
+        state.message_buffer["7_42"]["messages"].append(
+            {"memory_source_id": 18}
+        )
 
     monkeypatch.setattr(handlers, "process_buffered_messages", finish_turn)
     message = SimpleNamespace(

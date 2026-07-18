@@ -15,7 +15,6 @@ from config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_API_URL,
     MEM0_LLM_MODEL,
-    MEMORY_MAX_ATTEMPTS,
     MEMORY_QUEUE_BATCH_SIZE,
 )
 from utils import strip_tiktok_urls_preserving_whitespace
@@ -28,7 +27,9 @@ _processing_lock = asyncio.Lock()
 _FACT_KEY_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$")
 _SENSITIVE_RE = re.compile(
     r"\b(?:парол\w*|токен\w*|api[ _-]?key|secret\w*|паспорт\w*|"
-    r"адрес\w*|улиц\w*|квартир\w*|банковск\w*|кредитн\w*|cvv|"
+    r"адрес\w*|улиц\w*|проспект\w*|переул\w*|шоссе|бульвар\w*|"
+    r"набережн\w*|площад\w*|квартир\w*|корпус\w*|банковск\w*|"
+    r"кредитн\w*|cvv|"
     r"диагноз\w*|медицин\w*|лечение\w*|болезн\w*|снилс|инн|"
     r"телефон\w*|e-?mail|электронн\w+\s+почт\w*|политическ\w*|"
     r"религи\w*|ориентац\w*)\b|\b(?:дом|д\.)\s*\d+",
@@ -79,6 +80,13 @@ class MemoryProcessReport:
     dead_lettered: int = 0
 
 
+@dataclass(frozen=True)
+class _StagedMemoryWrite:
+    fact: VerifiedMemoryFact
+    previous: state.MemoryFactRecord | None
+    mem0_id: str
+
+
 class MemoryExtractor(Protocol):
     async def extract(self, source: state.MemorySourceRecord) -> list[MemoryCandidate]: ...
 
@@ -98,6 +106,10 @@ class ApprovedFactStore(Protocol):
         source: state.MemorySourceRecord,
         fact: VerifiedMemoryFact,
     ) -> str: ...
+
+    async def delete(self, memory_id: str) -> None: ...
+
+    async def restore(self, previous: state.MemoryFactRecord) -> None: ...
 
 
 def _normalise_text(value: str) -> str:
@@ -166,12 +178,15 @@ class DeepSeekMemoryExtractor:
 """
 
     async def extract(self, source: state.MemorySourceRecord) -> list[MemoryCandidate]:
+        model_text = strip_tiktok_urls_preserving_whitespace(source.text)
+        if not model_text:
+            return []
         payload = json.dumps(
             {
                 "author_name": source.author_name,
                 "scope": source.scope,
                 "source_message_id": source.message_id,
-                "text": source.text,
+                "text": model_text,
             },
             ensure_ascii=False,
         )
@@ -212,6 +227,9 @@ KEEP разрешён только когда одновременно верн�
     async def verify(
         self, source: state.MemorySourceRecord, candidate: MemoryCandidate
     ) -> VerifiedMemoryFact | MemoryDiscard:
+        model_text = strip_tiktok_urls_preserving_whitespace(source.text)
+        if not model_text:
+            return MemoryDiscard("после удаления TikTok-ссылок не осталось текста")
         existing_facts = [
             {"fact_key": item.fact_key, "fact": item.fact}
             for item in state.list_memory_facts(source.scope)
@@ -223,7 +241,7 @@ KEEP разрешён только когда одновременно верн�
                     "author_name": source.author_name,
                     "author_id": source.author_id,
                     "message_id": source.message_id,
-                    "text": source.text,
+                    "text": model_text,
                 },
                 "candidate": {
                     "fact": candidate.fact,
@@ -322,6 +340,41 @@ class Mem0ApprovedFactStore:
             raise MemoryTransientError("Mem0 не подтвердил замену одобренного факта")
         return memory_id
 
+    async def delete(self, memory_id: str) -> None:
+        if memory_store.memory is None:
+            raise MemoryTransientError("Mem0 недоступен")
+        try:
+            await asyncio.to_thread(memory_store.memory.delete, memory_id)
+        except Exception as exc:
+            raise MemoryTransientError(f"Mem0 delete недоступен: {exc}") from exc
+
+    async def restore(self, previous: state.MemoryFactRecord) -> None:
+        """Возвращает прежнюю точную версию при неуспешной source-транзакции."""
+        if memory_store.memory is None:
+            raise MemoryTransientError("Mem0 недоступен")
+        metadata = {
+            "source_id": str(previous.source_id),
+            "source_message_id": str(previous.source_message_id),
+            "source_created_at": str(previous.source_created_at),
+            "source_quote": previous.source_quote,
+            "subject_id": previous.subject_id,
+            "fact_key": previous.fact_key,
+        }
+        try:
+            await asyncio.to_thread(
+                memory_store.memory.update,
+                previous.mem0_id,
+                previous.fact,
+                metadata=metadata,
+            )
+            stored = await asyncio.to_thread(memory_store.memory.get, previous.mem0_id)
+        except Exception as exc:
+            raise MemoryTransientError(f"Mem0 restore недоступен: {exc}") from exc
+        if not isinstance(stored, dict) or _normalise_text(
+            stored.get("memory") or ""
+        ) != _normalise_text(previous.fact):
+            raise MemoryTransientError("Mem0 не подтвердил восстановление прежнего факта")
+
     async def _delete_results(self, results: object) -> None:
         if not isinstance(results, list):
             return
@@ -354,13 +407,31 @@ def _validate_verified_fact(
         raise MemoryCandidateRejected("медиа не является источником памяти")
 
 
+async def _rollback_staged_writes(
+    staged: list[_StagedMemoryWrite], store: ApprovedFactStore
+) -> None:
+    failures = []
+    for write in reversed(staged):
+        try:
+            if write.previous is None:
+                await store.delete(write.mem0_id)
+            else:
+                await store.restore(write.previous)
+        except Exception as exc:
+            failures.append(str(exc))
+    if failures:
+        raise MemoryTransientError(
+            "не удалось компенсировать Mem0 source-транзакцию: "
+            + "; ".join(failures)[:300]
+        )
+
+
 async def _process_pending_memory(
     extractor: MemoryExtractor | None = None,
     verifier: MemoryVerifier | None = None,
     store: ApprovedFactStore | None = None,
     *,
     limit: int = MEMORY_QUEUE_BATCH_SIZE,
-    max_attempts: int = MEMORY_MAX_ATTEMPTS,
 ) -> MemoryProcessReport:
     """Обрабатывает FIFO-очередь, сохраняя только прошедшие проверки факты."""
     if store is None and memory_store.memory is None:
@@ -387,11 +458,13 @@ async def _process_pending_memory(
                     "(source_id=%s, reason=extractor не нашёл устойчивых фактов)",
                     source.id,
                 )
-            seen_keys: set[str] = set()
+            seen_candidate_keys: set[str] = set()
+            seen_verified_keys: set[str] = set()
+            verified_facts: list[VerifiedMemoryFact] = []
             for candidate in candidates:
                 if not isinstance(candidate, MemoryCandidate):
                     raise MemoryTransientError("extractor вернул не MemoryCandidate")
-                if candidate.fact_key in seen_keys:
+                if candidate.fact_key in seen_candidate_keys:
                     discarded += 1
                     logger.info(
                         "Память: кандидат отклонён "
@@ -399,7 +472,7 @@ async def _process_pending_memory(
                         source.id,
                     )
                     continue
-                seen_keys.add(candidate.fact_key)
+                seen_candidate_keys.add(candidate.fact_key)
                 try:
                     verified = await verifier.verify(source, candidate)
                     if isinstance(verified, MemoryDiscard):
@@ -414,33 +487,16 @@ async def _process_pending_memory(
                     if not isinstance(verified, VerifiedMemoryFact):
                         raise MemoryTransientError("verifier вернул неизвестное решение")
                     _validate_verified_fact(source, verified)
-                    previous = state.get_memory_fact(
-                        source.scope, source.author_id, verified.fact_key
-                    )
-                    if previous:
-                        mem0_id = await store.replace(previous.mem0_id, source, verified)
-                    else:
-                        mem0_id = await store.save(source, verified)
-                    state.upsert_memory_fact(
-                        scope=source.scope,
-                        subject_id=source.author_id,
-                        fact_key=verified.fact_key,
-                        fact=_normalise_text(verified.fact),
-                        source_id=source.id,
-                        source_quote=verified.source_quote.strip(),
-                        source_message_id=source.message_id,
-                        source_created_at=source.created_at,
-                        mem0_id=mem0_id,
-                    )
-                    approved += 1
-                    logger.info(
-                        "Память: факт одобрен "
-                        "(source_id=%s, scope=%s, key=%s, reason=%s)",
-                        source.id,
-                        source.scope,
-                        verified.fact_key,
-                        verified.reason,
-                    )
+                    if verified.fact_key in seen_verified_keys:
+                        discarded += 1
+                        logger.info(
+                            "Память: кандидат отклонён "
+                            "(source_id=%s, reason=verifier вернул дублирующий fact_key)",
+                            source.id,
+                        )
+                        continue
+                    seen_verified_keys.add(verified.fact_key)
+                    verified_facts.append(verified)
                 except MemoryCandidateRejected as exc:
                     discarded += 1
                     logger.info(
@@ -448,19 +504,85 @@ async def _process_pending_memory(
                         source.id,
                         str(exc),
                     )
-            state.complete_memory_source(source.id)
+
+            staged: list[_StagedMemoryWrite] = []
+            try:
+                for verified in verified_facts:
+                    previous = state.get_memory_fact(
+                        source.scope, source.author_id, verified.fact_key
+                    )
+                    if previous:
+                        staged.append(
+                            _StagedMemoryWrite(verified, previous, previous.mem0_id)
+                        )
+                        mem0_id = await store.replace(previous.mem0_id, source, verified)
+                        if mem0_id != previous.mem0_id:
+                            raise MemoryTransientError(
+                                "Mem0 replace изменил идентификатор существующего факта"
+                            )
+                    else:
+                        mem0_id = await store.save(source, verified)
+                        staged.append(_StagedMemoryWrite(verified, None, mem0_id))
+
+                writes = [
+                    state.MemoryFactWrite(
+                        scope=source.scope,
+                        subject_id=source.author_id,
+                        fact_key=write.fact.fact_key,
+                        fact=_normalise_text(write.fact.fact),
+                        source_id=source.id,
+                        source_quote=write.fact.source_quote.strip(),
+                        source_message_id=source.message_id,
+                        source_created_at=source.created_at,
+                        mem0_id=write.mem0_id,
+                    )
+                    for write in staged
+                ]
+                if writes:
+                    state.commit_memory_facts(writes, complete_source_id=source.id)
+                else:
+                    state.complete_memory_source(source.id)
+            except Exception as exc:
+                try:
+                    await _rollback_staged_writes(staged, store)
+                except Exception as rollback_exc:
+                    raise MemoryTransientError(
+                        f"source-транзакция: {exc}; rollback: {rollback_exc}"
+                    ) from rollback_exc
+                raise
+
+            approved += len(staged)
+            for write in staged:
+                logger.info(
+                    "Память: факт одобрен "
+                    "(source_id=%s, scope=%s, key=%s, reason=%s)",
+                    source.id,
+                    source.scope,
+                    write.fact.fact_key,
+                    write.fact.reason,
+                )
         except Exception as exc:
             if isinstance(exc, MemoryCandidateRejected):
                 state.complete_memory_source(source.id)
                 discarded += 1
                 continue
-            terminal = state.fail_memory_source(source.id, str(exc), max_attempts=max_attempts)
+            terminal = state.fail_memory_source(source.id, str(exc))
             if terminal:
                 dead_lettered += 1
-                logger.error("Память: источник отправлен в dead-letter (source_id=%s)", source.id)
+                logger.error(
+                    "Память: источник отправлен в dead-letter "
+                    "(source_id=%s, reason=%s)",
+                    source.id,
+                    str(exc)[:200],
+                )
             else:
                 retried += 1
-                logger.warning("Память: источник возвращён в очередь (source_id=%s)", source.id)
+                logger.warning(
+                    "Память: источник возвращён в очередь "
+                    "(source_id=%s, reason=%s)",
+                    source.id,
+                    str(exc)[:200],
+                )
                 # Более новое сообщение не должно обогнать старое и затем быть
                 # перезаписано его запоздавшим retry.
                 break
@@ -480,7 +602,6 @@ async def process_pending_memory(
     store: ApprovedFactStore | None = None,
     *,
     limit: int = MEMORY_QUEUE_BATCH_SIZE,
-    max_attempts: int = MEMORY_MAX_ATTEMPTS,
 ) -> MemoryProcessReport:
     """Сериализует обработку очереди, сохраняя FIFO-порядок конфликтов."""
     async with _processing_lock:
@@ -489,7 +610,6 @@ async def process_pending_memory(
             verifier,
             store,
             limit=limit,
-            max_attempts=max_attempts,
         )
 
 
@@ -508,7 +628,7 @@ def enqueue_memory_source(
     Отсутствие provenance или текста отбрасывается до внешней модели. Медиа
     сюда нельзя передать отдельным параметром намеренно.
     """
-    clean_text = strip_tiktok_urls_preserving_whitespace(text)
+    clean_text = (text or "").strip()
     if not state.is_valid_memory_scope(scope):
         return None
     if not str(author_id).strip() or not str(author_name).strip():

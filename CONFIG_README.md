@@ -90,7 +90,6 @@ memory_flush_interval_seconds: 300
 memory_query_min_chars: 12
 memory_query_recent_messages: 3
 memory_queue_batch_size: 20
-memory_max_attempts: 5
 ```
 
 **Parameters:**
@@ -104,7 +103,6 @@ memory_max_attempts: 5
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
 - `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
 - `memory_queue_batch_size`: Maximum source messages processed per worker pass
-- `memory_max_attempts`: Technical failures before a source becomes dead-letter
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)
@@ -194,10 +192,11 @@ Current prices for DeepSeek v4 Flash. Update when prices change.
 2. DeepSeek extracts structured candidates containing a normalized fact, stable `fact_key`, and exact source quote.
 3. A separate verifier independently checks self-attribution, stability, source entailment, modality, and sensitive-data exclusions.
 4. Deterministic validation confirms the quote exists verbatim in the source and rejects malformed or unsafe candidates.
-5. Mem0 receives one approved fact with `infer=False`; it only embeds and indexes the exact text. A newer fact with the same scope, subject, and `fact_key` updates the existing vector in place.
-6. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope before adding it to the prompt.
+5. All candidates receive a final decision before storage. Mem0 receives each approved fact with `infer=False`; one SQLite transaction publishes all facts from the source, and partial failure compensates new/replaced vectors.
+6. A newer fact with the same scope, subject, and `fact_key` updates the existing vector in place.
+7. Retrieval cross-checks the Mem0 ID and exact fact text against the SQLite approval registry for the same chat scope before adding it to the prompt.
 
-The worker starts after the buffered Telegram turn completes, so verification is not on the reply's critical path. The pipeline is fail-closed. Any DeepSeek, Mem0, Qdrant, parsing, or validation failure creates no memory. Technical failures retry from SQLite in FIFO order up to `memory_max_attempts`, then become dead-letter records. Full raw source text is retained only while a retry is possible; completed and dead-letter records are redacted, while approved facts keep only their exact evidence quote and Telegram provenance.
+The worker starts after the buffered Telegram turn completes, so verification is not on the reply's critical path. The pipeline is fail-closed. Any DeepSeek, Mem0, Qdrant, parsing, or validation failure creates no memory. Technical failures retry from SQLite in FIFO order exactly five times, then become dead-letter records. Full raw source text is retained only while a retry is possible; completed and dead-letter records are redacted, while approved facts keep only their exact evidence quote and Telegram provenance.
 
 ### What Gets Remembered
 

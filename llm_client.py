@@ -22,7 +22,6 @@ from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
 from streaming import TelegramStreamPreview, stream_chat_completion
 from utils import now_local, is_low_signal_user_text, strip_tiktok_urls
-from memory_pipeline import enqueue_memory_source
 
 logger = logging.getLogger(__name__)
 
@@ -379,33 +378,6 @@ def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
         seen_ids.add(memory_id)
         results.append(item)
     return {"results": results}
-
-
-def record_user_memory(
-    key: str,
-    text: str,
-    user_name: str,
-    is_group: bool,
-    *,
-    author_id: str | None = None,
-    message_id: int | None = None,
-    created_at: float | None = None,
-    ready: bool = True,
-) -> int | None:
-    """Ставит одну текстовую реплику в строгую долговечную очередь."""
-    del is_group  # scope уже содержит приватную/групповую область памяти.
-    if author_id is None or message_id is None or created_at is None:
-        logger.warning("Память: источник без provenance отброшен")
-        return None
-    return enqueue_memory_source(
-        scope=key,
-        author_id=author_id,
-        author_name=user_name,
-        message_id=message_id,
-        text=text,
-        created_at=created_at,
-        ready=ready,
-    )
 
 
 async def summarize_history(history: list) -> list:

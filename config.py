@@ -138,10 +138,6 @@ MEMORY_QUEUE_BATCH_SIZE = max(
     1,
     min(_as_int(config_yaml.get("memory_queue_batch_size", 20), 20), 100),
 )
-MEMORY_MAX_ATTEMPTS = max(
-    1,
-    min(_as_int(config_yaml.get("memory_max_attempts", 5), 5), 20),
-)
 
 # ========================================
 # 🗄️ QDRANT (общий для mem0 и стикеров)

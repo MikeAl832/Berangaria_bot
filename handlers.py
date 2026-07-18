@@ -17,14 +17,13 @@ from state import (
     get_history_lock, get_turn_lock, _buffer_lock, touch_activity, save_history,
 )
 import state
-from llm_client import summarize_history, send_llm_request, record_user_memory
-from memory_pipeline import release_memory_sources
+from llm_client import summarize_history, send_llm_request
+from memory_pipeline import enqueue_memory_source, release_memory_sources
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
     download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
     now_local, is_low_signal_user_text, strip_tiktok_urls,
-    strip_tiktok_urls_preserving_whitespace,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +64,7 @@ def _build_memory_text(
     del media_items
     if is_forwarded:
         return ""
-    return strip_tiktok_urls_preserving_whitespace(combined_text)
+    return (combined_text or "").strip()
 
 
 # ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
@@ -441,11 +440,10 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
     )
     memory_source_id = None
     if memory_text:
-        memory_source_id = record_user_memory(
-            key,
-            memory_text,
-            user_name,
-            is_group,
+        memory_source_id = enqueue_memory_source(
+            scope=key,
+            text=memory_text,
+            author_name=user_name,
             author_id=str(user_id),
             message_id=update.message.message_id,
             created_at=msg_data["created_at"],
@@ -459,15 +457,17 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await asyncio.sleep(MESSAGE_DEBOUNCE_SECONDS)
             data = message_buffer.get(buffer_key)
             if data:
+                source_ids = [
+                    message.get("memory_source_id")
+                    for message in list(data["messages"])
+                ]
                 try:
                     await process_buffered_messages(
                         buffer_key, update, context, key, is_group, user_id, user_name,
                         data["mentioned"], data["random_reply"]
                     )
                 finally:
-                    release_memory_sources(
-                        [message.get("memory_source_id") for message in data["messages"]]
-                    )
+                    release_memory_sources(source_ids)
         except asyncio.CancelledError:
             pass  # Таймер был отменен из-за нового сообщения
 

@@ -66,7 +66,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 
 - SQLite writes are write-through for history changes. A reported reset or clear must be durable before confirming it to the user.
 - Use `memory_store.memory` dynamically; do not import the object by value. Startup retries initialization because Qdrant may not yet be ready in Docker.
-- A source may be completed only after every approved fact is confirmed by Mem0 and written to the SQLite approval registry. Technical failures return the source to the durable SQLite queue, in FIFO order, for at most `memory_max_attempts`; terminal sources are dead-lettered without creating memory.
+- A source may be completed only after every approved fact is confirmed by Mem0 and atomically written to the SQLite approval registry. A partial Mem0 source-transaction must be compensated before retry. Technical failures return the source to the durable SQLite queue in FIFO order; after exactly five failed attempts, terminal sources are dead-lettered without approved or retrievable memory.
 - Do not commit `.env`, API keys, bot tokens, `bot_data/`, Qdrant storage, databases, logs, or generated virtual environments.
 
 ## Configuration and deployment
