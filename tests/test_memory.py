@@ -5,6 +5,11 @@ import handlers
 from handlers import _build_memory_text
 import pytest
 import state
+from config import SYSTEM_PROMPT
+
+
+def test_memory_prompt_does_not_treat_missing_context_as_missing_storage():
+    assert "does NOT prove that long-term storage has no such record" in SYSTEM_PROMPT
 
 
 def test_memory_text_keeps_only_user_text_when_media_is_present():
