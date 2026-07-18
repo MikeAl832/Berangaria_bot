@@ -24,6 +24,7 @@ from llm_client import (
     _filter_approved_memory_results,
     _is_meaningful_memory_query,
     _build_memory_search_query,
+    _build_memory_relevance_query,
 )
 
 
@@ -202,6 +203,15 @@ def test_build_memory_search_query_returns_empty_for_trivial_history():
     assert _build_memory_search_query(hist, "Миша") == ""
 
 
+def test_memory_relevance_query_uses_current_topic_only():
+    hist = [
+        {"role": "user", "content": "[Message: мой редактор Helix]"},
+        {"role": "user", "content": "[Message: нужен ли сегодня зонт из-за погоды]"},
+    ]
+
+    assert _build_memory_relevance_query(hist, "Миша") == "нужен ли сегодня зонт из-за погоды"
+
+
 # ---------- _format_memory_block ----------
 
 def test_format_memory_empty():
@@ -264,6 +274,58 @@ def test_memory_results_include_only_registered_ids_from_same_scope(
 def test_format_memory_formats_as_bullet():
     res = {"results": [{"memory": "факт", "score": 0.9}]}
     assert _format_memory_block(res) == "- факт"
+
+
+def test_format_memory_rejects_fact_unrelated_to_current_query():
+    res = {
+        "results": [
+            {
+                "memory": "Пользователь titlo10 использует Helix как основной редактор",
+                "score": 0.9,
+            }
+        ]
+    }
+
+    assert _format_memory_block(res, query="нужен ли зонт из-за погоды") == ""
+
+
+def test_format_memory_keeps_fact_related_to_current_query():
+    res = {
+        "results": [
+            {
+                "memory": "Пользователь titlo10 использует Helix как основной редактор",
+                "score": 0.9,
+            }
+        ]
+    }
+
+    assert "Helix" in _format_memory_block(res, query="какой у меня редактор Helix")
+
+
+def test_format_memory_allows_explicit_general_recall_query():
+    res = {
+        "results": [
+            {
+                "memory": "Пользователь titlo10 использует Helix как основной редактор",
+                "score": 0.9,
+            }
+        ]
+    }
+
+    assert "Helix" in _format_memory_block(res, query="что ты обо мне помнишь?")
+
+
+def test_format_memory_does_not_treat_topical_recall_as_general_recall():
+    res = {
+        "results": [
+            {
+                "memory": "Пользователь titlo10 использует Helix как основной редактор",
+                "score": 0.9,
+            }
+        ]
+    }
+
+    assert _format_memory_block(res, query="что ты помнишь про погоду?") == ""
 
 
 def test_count_memory_block_facts_counts_single_line():

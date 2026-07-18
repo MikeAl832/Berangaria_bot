@@ -342,7 +342,59 @@ def _build_memory_search_query(history: list, user_name: str) -> str:
     return user_name if _is_meaningful_memory_query(user_name) else ""
 
 
-def _format_memory_block(mem_results: dict) -> str:
+def _build_memory_relevance_query(history: list, user_name: str) -> str:
+    """Возвращает только последнюю содержательную тему для fail-closed фильтра."""
+    for entry in reversed(history or []):
+        if entry.get("role") != "user":
+            continue
+        plain = _extract_plain_text(entry.get("content", ""))
+        if _is_meaningful_memory_query(plain):
+            return plain[:1000]
+    return user_name if _is_meaningful_memory_query(user_name) else ""
+
+
+_MEMORY_TERM_RE = re.compile(r"[^\W_]{4,}", flags=re.UNICODE)
+_MEMORY_RECALL_RE = re.compile(
+    r"\b(?:что|чего)\s+ты\s+(?:обо?\s+мне|про\s+меня)\s+помни\w*|"
+    r"\bчто\s+ты\s+знаешь\s+(?:обо?\s+мне|про\s+меня)|"
+    r"\b(?:расскажи|напомни)\w*(?:\s+мне)?\s+"
+    r"(?:обо?\s+мне|про\s+меня)",
+    flags=re.IGNORECASE,
+)
+_MEMORY_STOP_WORDS = {
+    "какой", "какая", "какие", "который", "которая", "которые",
+    "меня", "мне", "тебя", "тебе", "твой", "твоя", "свой", "своя",
+    "пользователь", "использует", "сейчас", "сегодня", "просто",
+    "скажи", "назови", "пожалуйста", "about", "what", "which", "user",
+}
+
+
+def _memory_terms(text: str) -> set[str]:
+    return {
+        token
+        for token in _MEMORY_TERM_RE.findall((text or "").casefold())
+        if token not in _MEMORY_STOP_WORDS
+    }
+
+
+def _memory_fact_matches_query(fact: str, query: str) -> bool:
+    if not query or _MEMORY_RECALL_RE.search(query):
+        return True
+    fact_terms = _memory_terms(fact)
+    query_terms = _memory_terms(query)
+    return any(
+        fact_term == query_term
+        or (
+            len(fact_term) >= 5
+            and len(query_term) >= 5
+            and fact_term[:5] == query_term[:5]
+        )
+        for fact_term in fact_terms
+        for query_term in query_terms
+    )
+
+
+def _format_memory_block(mem_results: dict, query: str = "") -> str:
     """
     Формирует компактный блок памяти с фильтрацией по релевантности.
     Возвращает готовый текст или пустую строку.
@@ -361,6 +413,8 @@ def _format_memory_block(mem_results: dict) -> str:
             continue
         fact = (item.get('memory') or '').strip()
         if not fact:
+            continue
+        if not _memory_fact_matches_query(fact, query):
             continue
         line = f"- {fact}"
         if total + len(line) > MEMORY_MAX_CHARS:
@@ -504,6 +558,7 @@ async def send_llm_request(
                     if FULL_DEBUG_LOGS:
                         logger.debug(f"🔍 Mem0 поиск пропущен: нет содержательного query (scope={key})")
                 else:
+                    relevance_query = _build_memory_relevance_query(history, user_name)
                     if FULL_DEBUG_LOGS:
                         logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
 
@@ -520,7 +575,10 @@ async def send_llm_request(
 
                     results_count = len(mem_results.get('results', []))
                     approved_results = _filter_approved_memory_results(mem_results, key)
-                    mem_text = _format_memory_block(approved_results)
+                    mem_text = _format_memory_block(
+                        approved_results,
+                        query=relevance_query,
+                    )
 
                     if mem_text and payload_messages[-1]["role"] == "user":
                         last_content = payload_messages[-1]["content"]
