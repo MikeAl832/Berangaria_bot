@@ -45,7 +45,8 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
+          # This VPS exposes SSH on its non-default hardening port.
+          port: ${{ secrets.VPS_PORT }}
           timeout: 60s
           command_timeout: 10m
           
@@ -60,7 +61,9 @@ jobs:
             
             if [ ! -d ".git" ]; then
               echo "Repository not found. Cloning..."
-              git clone git@github.com:${{ github.repository }}.git .
+              # The repository is public; HTTPS avoids requiring a second
+              # deploy key on the target VPS just to fetch the source.
+              git clone https://github.com/${{ github.repository }}.git .
             else
               echo "Repository exists. Pulling latest changes..."
               git pull --ff-only origin main

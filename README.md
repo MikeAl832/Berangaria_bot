@@ -62,11 +62,16 @@ Create `.env` file:
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 API_KEY=your_deepseek_api_key
 GEMINI_API_KEY=your_gemini_api_key
+# Telegram API application credentials for the local Bot API server:
+TELEGRAM_API_ID=your_telegram_api_id
+TELEGRAM_API_HASH=your_telegram_api_hash
 ```
 
-The production Compose configuration uses the local Telegram Bot API server at
-`127.0.0.1:8081` in local mode and mounts its file directory read-only. This
-allows media larger than the cloud Bot API `getFile` limit to be processed.
+The production Compose configuration starts the local Telegram Bot API server
+at `127.0.0.1:8081` in local mode and mounts its persistent file directory
+read-only into the bot. `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are required
+for this service. This allows media larger than the cloud Bot API `getFile`
+limit to be processed.
 
 API keys:
 - Telegram: [@BotFather](https://t.me/botfather)

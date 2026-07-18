@@ -16,12 +16,17 @@ Environment variables for sensitive data:
 TELEGRAM_BOT_TOKEN=<token>
 API_KEY=<deepseek_key>
 GEMINI_API_KEY=<gemini_key>
+# Telegram API application credentials for the local Bot API server:
+TELEGRAM_API_ID=<api_id>
+TELEGRAM_API_HASH=<api_hash>
 # Optional local Telegram Bot API server:
 TELEGRAM_BOT_API_BASE_URL=http://127.0.0.1:8081
 TELEGRAM_BOT_API_LOCAL_MODE=true
 BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
 ```
 
+The production Compose file starts `aiogram/telegram-bot-api` with
+`TELEGRAM_LOCAL=1` and persists its files under `/var/lib/telegram-bot-api`.
 When local mode is enabled, `TELEGRAM_BOT_API_BASE_FILE_URL` defaults to
 `<TELEGRAM_BOT_API_BASE_URL>/file`. The bot container must be able to read the
 same absolute file paths returned by the API server; the provided Compose file

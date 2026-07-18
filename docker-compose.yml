@@ -1,4 +1,16 @@
 services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api@sha256:39eb1b74c367e9a2fa7e7185a8e403a29f5c5d7bece8c0b9da441525ac8561c4
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
+      TELEGRAM_LOCAL: "1"
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - /var/lib/telegram-bot-api:/var/lib/telegram-bot-api
+    restart: always
+
   qdrant:
     image: qdrant/qdrant
     labels:
@@ -25,6 +37,7 @@ services:
       - TELEGRAM_BOT_API_LOCAL_MODE=true
     depends_on:
       - qdrant
+      - telegram-bot-api
     network_mode: host
     volumes:
       - ./bot_data:/data
