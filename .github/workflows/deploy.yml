@@ -79,8 +79,18 @@ jobs:
               # deploy key on the target VPS just to fetch the source.
               git clone https://github.com/${{ github.repository }}.git .
             else
-              echo "Repository exists. Pulling latest changes..."
-              git pull --ff-only origin main
+              # Раньше здесь был `git pull --ff-only origin main`. Он отказывается
+              # работать после любого переписывания истории на main: ветка сервера
+              # перестаёт быть предком origin/main, деплой падает, и выкатка
+              # требует ручного захода по SSH — хотя весь смысл CD в обратном.
+              # Чекаут на сервере — это зеркало origin/main, а не рабочее дерево:
+              # строчкой ниже деплой и так требует точного совпадения с github.sha,
+              # так что жёсткая синхронизация ничего не теряет.
+              # `reset --hard` не трогает неотслеживаемые файлы, поэтому
+              # bind-mount'ы bot_data/ и qdrant_storage/ с состоянием живы.
+              echo "Repository exists. Syncing to origin/main..."
+              git fetch --prune origin main
+              git reset --hard FETCH_HEAD
             fi
 
             test "$(git rev-parse HEAD)" = "${{ github.sha }}"
