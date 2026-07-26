@@ -27,14 +27,26 @@ _processing_lock = asyncio.Lock()
 _FACT_KEY_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$")
 _SENSITIVE_RE = re.compile(
     r"\b(?:парол\w*|токен\w*|api[ _-]?key|secret\w*|паспорт\w*|"
-    r"адрес\w*|улиц\w*|проспект\w*|переул\w*|шоссе|бульвар\w*|"
-    r"набережн\w*|площад\w*|квартир\w*|корпус\w*|банковск\w*|"
-    r"кредитн\w*|карт\w*|сч[её]т\w*|зарплат\w*|доход\w*|ипотек\w*|"
-    r"долг\w*|iban|кошел\w*|cvv|диагноз\w*|медицин\w*|лечение\w*|"
-    r"болезн\w*|диабет\w*|онколог\w*|рак|астм\w*|вич|спид|"
+    # `адрес`/`улиц` без \w*: иначе «адресую» и «улица моего детства»
+    # блокируют факт, не имея отношения к месту жительства.
+    r"адрес(?:а|у|е|ом|ов|ах)?|улиц(?:а|ы|у|е|ой)|проспект\w*|переул\w*|шоссе|"
+    r"бульвар\w*|набережн\w*|площад\w*|квартир\w*|корпус\w*|банковск\w*|"
+    r"кредитн\w*|зарплат\w*|доход\w*|ипотек\w*|"
+    # `долг\w*` ловило «долгий», `сч[её]т\w*` — «счётчик».
+    r"долг(?:а|у|и|ов|ам|ах)?|сч[её]т(?:а|у|е|ом|ов|ах)?|"
+    r"iban|кошел\w*|cvv|диагноз\w*|медицин\w*|лечение\w*|"
+    r"болезн\w*|диабет\w*|онколог\w*|астм\w*|вич|спид|"
     r"депресс\w*|беремен\w*|инвалид\w*|психиатр\w*|снилс|инн|"
-    r"телефон\w*|e-?mail|электронн\w+\s+почт\w*|политическ\w*|"
-    r"религи\w*|ориентац\w*)\b|\b(?:дом|д\.)\s*\d+",
+    # `телефон\w*` ловило «телефонный», `религи\w*` — «религиозный праздник».
+    r"телефон(?:а|у|е|ом|ов|ы|ах)?|e-?mail|электронн\w+\s+почт\w*|"
+    r"политическ\w*|религи(?:я|и|ю|ей)|ориентац\w*)\b"
+    # Карта — только в платёжном смысле. Голое `карт\w*` блокировало картошку,
+    # картину, карточную игру и картографию, то есть обычную бытовую речь.
+    # `рак` убран как омоним (рак-отшельник): онкология покрыта `онколог\w*`.
+    r"|\b(?:банковск\w*|кредитн\w*|дебетов\w*|зарплатн\w*|платёжн\w*|платежн\w*)\s+карт\w*"
+    r"|\bкарт(?:а|ы|е|у|ой|ах)\b[^.!?]{0,40}?\d{4}"
+    r"|\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}"
+    r"|\b(?:дом|д\.)\s*\d+",
     re.IGNORECASE,
 )
 _UNCERTAIN_RE = re.compile(
@@ -452,11 +464,19 @@ def _validate_verified_fact(
         raise MemoryCandidateRejected("некорректный fact_key")
     # Проверяем весь неизменяемый источник: extractor/verifier не должны обходить
     # policy, выбрав короткую цитату без модального или чувствительного маркера.
+    # Это несущая защита — именно она ловит «У меня диагноз: ...» и «Надеюсь
+    # переехать...», когда сам факт уже переписан в утвердительной форме.
     evidence_text = f"{normalized_source} {normalized_fact} {normalized_quote}"
-    if _SENSITIVE_RE.search(evidence_text):
-        raise MemoryCandidateRejected("чувствительная категория")
-    if _UNCERTAIN_RE.search(evidence_text):
-        raise MemoryCandidateRejected("неясная или временная формулировка")
+    sensitive = _SENSITIVE_RE.search(evidence_text)
+    if sensitive:
+        raise MemoryCandidateRejected(
+            f"чувствительная категория ({sensitive.group()!r})"
+        )
+    uncertain = _UNCERTAIN_RE.search(evidence_text)
+    if uncertain:
+        raise MemoryCandidateRejected(
+            f"неясная или временная формулировка ({uncertain.group()!r})"
+        )
     if "[image description:" in normalized_source.lower() or "[video description:" in normalized_source.lower():
         raise MemoryCandidateRejected("медиа не является источником памяти")
 
@@ -715,6 +735,21 @@ def release_memory_sources(source_ids: list[int | None]) -> None:
     )
     if released:
         schedule_memory_processing()
+
+
+def abandon_memory_sources(source_ids: list[int | None]) -> None:
+    """Хоронит источники хода, оборвавшегося до подтверждённой доставки.
+
+    Памяти из недоставленного хода быть не должно, но и висеть в 'waiting'
+    источник не может: он блокирует очередь своей области памяти.
+    """
+    abandoned = state.abandon_memory_sources(
+        [source_id for source_id in source_ids if source_id is not None]
+    )
+    if abandoned:
+        logger.info(
+            "Память: источники хода отброшены без доставки (count=%s)", abandoned
+        )
 
 
 def schedule_memory_processing() -> None:

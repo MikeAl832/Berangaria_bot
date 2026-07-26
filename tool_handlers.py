@@ -369,7 +369,11 @@ def handle_reply(turn, update, args, sid_to_mid):
         reply_sid = int(args.get('id'))
     except (TypeError, ValueError):
         reply_sid = None
-    reply_text = args.get('text', '') or ''
+    # Аргументы приходят из модели: `text` может оказаться числом, списком или
+    # словарём. Приводим через isinstance, а не str(): str(42) уехало бы в чат
+    # как осмысленный ответ, а нестроковый аргумент — это отсутствие ответа.
+    raw_text = args.get('text')
+    reply_text = raw_text if isinstance(raw_text, str) else ''
     reply_mid = sid_to_mid.get(reply_sid)
     if reply_mid is None:
         # Невалидный/устаревший [#N] — отвечаем на текущее сообщение

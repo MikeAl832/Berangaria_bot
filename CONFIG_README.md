@@ -90,6 +90,7 @@ memory_flush_interval_seconds: 300
 memory_query_min_chars: 12
 memory_query_recent_messages: 3
 memory_queue_batch_size: 20
+memory_waiting_max_age_seconds: 1800
 ```
 
 **Parameters:**
@@ -103,6 +104,11 @@ memory_queue_batch_size: 20
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
 - `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
 - `memory_queue_batch_size`: Maximum source messages processed per worker pass
+- `memory_waiting_max_age_seconds`: Age at which a source still in `waiting` is treated as
+  the remains of an interrupted turn and abandoned (raw text erased). A turn cannot outlive
+  debounce plus the full LLM retry budget, so keep this comfortably above that; the floor is
+  60 s. This is a safety net behind the compensation in `handlers.wait_and_process` — a
+  `waiting` source blocks the FIFO queue of its own memory scope until it is resolved.
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)

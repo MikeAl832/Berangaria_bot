@@ -105,6 +105,11 @@ def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
         "release_memory_sources",
         lambda source_ids: events.append(("release", source_ids)),
     )
+    monkeypatch.setattr(
+        handlers,
+        "abandon_memory_sources",
+        lambda source_ids: events.append(("abandon", source_ids)),
+    )
 
     async def fail_turn(*args, **kwargs):
         raise RuntimeError("reply delivery failed")
@@ -132,7 +137,9 @@ def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
     asyncio.run(run())
     state.message_buffer.clear()
 
-    assert events == []
+    # Недоставленный ход не порождает память (release не вызван), но источник
+    # обязан быть похоронен: иначе он блокирует очередь своей области памяти.
+    assert events == [("abandon", [17])]
 
 
 def test_tiktok_only_message_keeps_provenance_without_creating_llm_turn(monkeypatch):

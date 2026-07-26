@@ -4,6 +4,7 @@ import asyncio
 import copy
 import httpx
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from config import (
@@ -254,6 +255,57 @@ _SILENCE_RE = re.compile(
     r"[\s.…\-—–·*\"'()!?]*$",
     re.IGNORECASE,
 )
+
+
+def _split_for_telegram(text: str, limit: int = 4096) -> list[str]:
+    """Режет текст на куски в пределах лимита Telegram.
+
+    Лимит Telegram считается в UTF-16 code units, а не в символах Python:
+    эмодзи вне BMP занимают две единицы, поэтому нарезка по len() может дать
+    чанк, который Telegram отвергнет. Границы по возможности ставим по строкам
+    и пробелам, чтобы не рвать слово пополам.
+    """
+    def utf16_len(value: str) -> int:
+        return len(value.encode("utf-16-le")) // 2
+
+    if utf16_len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    rest = text
+    while rest:
+        if utf16_len(rest) <= limit:
+            chunks.append(rest)
+            break
+        # Двоичный поиск максимального префикса, влезающего в лимит.
+        low, high = 1, len(rest)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if utf16_len(rest[:mid]) <= limit:
+                low = mid
+            else:
+                high = mid - 1
+        cut = low
+        window = rest[:cut]
+        for separator in ("\n\n", "\n", " "):
+            position = window.rfind(separator)
+            if position > cut * 0.6:
+                cut = position + len(separator)
+                break
+        chunks.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    return [chunk for chunk in chunks if chunk]
+
+
+def _is_parse_error(error: BaseException) -> bool:
+    """Отличает ошибку HTML-разметки от любой другой ошибки Telegram.
+
+    Фолбэк на чистый текст осмыслен только когда Telegram отверг саму разметку.
+    Сетевые и неоднозначные ошибки повторять нельзя: сообщение может быть уже
+    создано, и повтор даст дубль.
+    """
+    text = str(error).lower()
+    return "parse" in text or "entity" in text or "entities" in text or "tag" in text
 
 
 def _clean_reply(reply: str) -> str:
@@ -686,8 +738,18 @@ async def send_llm_request(
                 try:
                     await status_msg.edit_text(reply_html, parse_mode="HTML")
                     return status_msg.message_id  # отредактированная плашка и есть сообщение бота
-                except Exception as e:
+                except BadRequest as e:
+                    # Правка идемпотентна (тот же message_id), поэтому сетевую
+                    # ошибку здесь пережить можно — но только не молча: при
+                    # неоднозначном таймауте плашка могла уже стать ответом.
                     logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
+                except Exception as e:
+                    logger.error(
+                        f"❌ [red]Правка статуса оборвалась неоднозначно:[/] {e}"
+                    )
+                    raise ReplyDeliveryError(
+                        "Telegram не подтвердил правку статусного сообщения"
+                    ) from e
             try:
                 await status_msg.delete()
             except Exception:
@@ -708,18 +770,37 @@ async def send_llm_request(
         if len(reply_html) <= 4096:
             try:
                 return await _raw(reply_html, True)
-            except Exception as e:
+            except BadRequest as e:
+                # Ловим ТОЛЬКО ошибку разметки. Раньше здесь стоял except
+                # Exception, из-за чего TimedOut (дефолтный read_timeout PTB — 5 с)
+                # приводил ко второй отправке уже созданного Telegram сообщения:
+                # пользователь получал ответ дважды, а в историю попадал mid копии.
+                if not _is_parse_error(e):
+                    raise
                 logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
                 return await _raw(reply_plain, False)
         else:
             # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
             first_mid = None
-            for i in range(0, len(reply_plain), 4096):
-                chunk = reply_plain[i:i + 4096]
+            for chunk in _split_for_telegram(reply_plain):
+                kw = {"chat_id": chat_id, "text": chunk}
                 if thread_id is not None:
-                    sent = await context.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
-                else:
-                    sent = await context.bot.send_message(chat_id=chat_id, text=chunk)
+                    kw["message_thread_id"] = thread_id
+                if first_mid is None and target_mid is not None:
+                    # Реплай ставим только на первый чанк — остальные идут следом.
+                    kw["reply_to_message_id"] = target_mid
+                    kw["allow_sending_without_reply"] = True
+                try:
+                    sent = await context.bot.send_message(**kw)
+                except Exception as e:
+                    if first_mid is None:
+                        raise
+                    # Часть ответа уже в чате. Рвать ход нельзя: пользователь его
+                    # видел, и повтор с начала дал бы дубль. Сохраняем то, что дошло.
+                    logger.error(
+                        f"❌ [red]Длинный ответ оборвался после первого чанка:[/] {e}"
+                    )
+                    return first_mid
                 if first_mid is None:
                     first_mid = sent.message_id
             return first_mid
@@ -908,7 +989,22 @@ async def send_llm_request(
                     # и без дефолтного реплая ниже (двойной отправки не будет).
                     if turn.pending_reply is not None:
                         reply_mid, reply_text, reply_sid = turn.pending_reply
-                        reply_text = _clean_reply(reply_text)
+                        try:
+                            reply_text = _clean_reply(reply_text)
+                        except Exception as exc:
+                            # Ход терминальный: payload_messages уже содержит
+                            # assistant-сообщение с tool_calls, на которые нет
+                            # ответов. Уронить это в общий retry-обработчик значит
+                            # переотправить такой payload, получить 400 и стереть
+                            # историю чата. Завершаем ход здесь.
+                            logger.error(
+                                f"❌ Не удалось подготовить текст реплая: {exc}",
+                                exc_info=True,
+                            )
+                            await _delete_turn_status()
+                            if turn.reactions_made or turn.stickers_made:
+                                await _save_assistant("")
+                            return
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")

@@ -150,6 +150,175 @@ def test_waiting_source_blocks_newer_ready_source(monkeypatch, tmp_path):
     assert state.claim_memory_sources(1)[0].id == older_id
 
 
+def test_waiting_source_does_not_block_other_scopes(monkeypatch, tmp_path):
+    """Гейт FIFO действует внутри области памяти, а не глобально.
+
+    Конфликт перезаписи возможен только внутри области (memory_facts уникален по
+    scope+subject_id+fact_key). Глобальный гейт означал бы, что один
+    недоставленный ход в любом чате останавливает память во всех остальных.
+    """
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source, release_memory_sources
+
+    # Застрявший источник в личке — попал раньше всех, released не будет.
+    stuck_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=920,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_020.0,
+        ready=False,
+    )
+    # Здоровые источники в другой области, все новее застрявшего.
+    group_ids = [
+        enqueue_memory_source(
+            scope="group_-100",
+            author_id="42",
+            author_name="Миша",
+            message_id=930 + offset,
+            text=f"Я работаю программистом уже {offset + 3} года",
+            created_at=1_725_000_030.0 + offset,
+            ready=False,
+        )
+        for offset in range(3)
+    ]
+    release_memory_sources(group_ids)
+
+    claimed = state.claim_memory_sources(10)
+
+    assert [source.id for source in claimed] == group_ids
+    assert all(source.scope == "group_-100" for source in claimed)
+    # Застрявший так и остался ждать — его область по-прежнему заблокирована.
+    assert state.list_memory_sources("waiting")[0].id == stuck_id
+
+
+def test_abandoning_stuck_source_unblocks_its_own_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import (
+        abandon_memory_sources,
+        enqueue_memory_source,
+        release_memory_sources,
+    )
+
+    stuck_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=940,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_040.0,
+        ready=False,
+    )
+    newer_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=941,
+        text="Я больше десяти лет живу в Москве",
+        created_at=1_725_000_041.0,
+        ready=False,
+    )
+    release_memory_sources([newer_id])
+
+    # Пока застрявший висит — своя область заблокирована.
+    assert state.claim_memory_sources(5) == []
+
+    abandon_memory_sources([stuck_id])
+
+    assert [source.id for source in state.claim_memory_sources(5)] == [newer_id]
+    abandoned = {source.id: source for source in state.list_memory_sources("abandoned")}
+    # Сырой текст недоставленного хода стирается, как при восстановлении на старте.
+    assert abandoned[stuck_id].text == ""
+
+
+def test_abandon_does_not_touch_already_processed_sources(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source, release_memory_sources
+
+    source_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=950,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_050.0,
+        ready=False,
+    )
+    release_memory_sources([source_id])
+    state.claim_memory_sources(1)
+    state.complete_memory_source(source_id)
+
+    assert state.abandon_memory_sources([source_id]) == 0
+    assert state.list_memory_sources("completed")[0].id == source_id
+
+
+def test_reaper_buries_only_stale_waiting_sources(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    stale_id = enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=960,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_060.0,
+        ready=False,
+    )
+    fresh_id = enqueue_memory_source(
+        scope="group_-100",
+        author_id="42",
+        author_name="Миша",
+        message_id=961,
+        text="Я больше десяти лет живу в Москве",
+        created_at=1_725_000_061.0,
+        ready=False,
+    )
+    # Состариваем только первый — ход, начавшийся час назад, живым быть не может.
+    state._db_execute(
+        "UPDATE memory_sources SET updated_at=updated_at-3600 WHERE id=?",
+        (stale_id,),
+    )
+
+    assert state.reap_stale_waiting_sources(1800) == 1
+
+    waiting = [source.id for source in state.list_memory_sources("waiting")]
+    abandoned = {source.id: source for source in state.list_memory_sources("abandoned")}
+    assert waiting == [fresh_id]
+    assert abandoned[stale_id].text == ""
+    # Повторный проход ничего не находит — жнец идемпотентен.
+    assert state.reap_stale_waiting_sources(1800) == 0
+
+
+def test_reaper_disabled_by_non_positive_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from memory_pipeline import enqueue_memory_source
+
+    enqueue_memory_source(
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=970,
+        text="Я постоянно использую Fedora Linux",
+        created_at=1_725_000_070.0,
+        ready=False,
+    )
+
+    assert state.reap_stale_waiting_sources(0) == 0
+    assert len(state.list_memory_sources("waiting")) == 1
+
+
 def test_interrupted_waiting_source_is_abandoned_on_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
     state.init_db()
@@ -610,6 +779,83 @@ def test_deterministic_policy_rejects_sensitive_and_modal_language(
 
     with pytest.raises(MemoryCandidateRejected):
         _validate_verified_fact(source, verified)
+
+
+def _policy_source(text: str) -> state.MemorySourceRecord:
+    return state.MemorySourceRecord(
+        id=1,
+        scope="private_42",
+        author_id="42",
+        author_name="Миша",
+        message_id=918,
+        created_at=1_725_000_017.0,
+        text=text,
+        status="processing",
+        attempts=1,
+        last_error=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "text, fact, quote",
+    [
+        # `карт\w*` блокировало обычную бытовую речь: картошку, картину,
+        # карточную игру, картографию. Это не платёжные данные.
+        ("Обожаю картошку с грибами", "Миша любит картошку", "Обожаю картошку"),
+        ("Люблю рисовать картины маслом", "Миша рисует картины", "рисовать картины"),
+        ("Я увлекаюсь картографией", "Миша увлекается картографией", "увлекаюсь картографией"),
+        # `рак` — омоним: рак-отшельник не онкология.
+        ("Я развожу раков-отшельников", "Миша разводит раков-отшельников", "развожу раков-отшельников"),
+        # Префиксные `\w*` цепляли однокоренные слова без смысла категории.
+        ("Я телефонный мастер", "Миша телефонный мастер", "телефонный мастер"),
+        ("Я собираю счётчики Гейгера", "Миша собирает счётчики Гейгера", "собираю счётчики Гейгера"),
+        ("Я бегаю долгие дистанции", "Миша бегает долгие дистанции", "бегаю долгие дистанции"),
+        ("Я изучаю религиоведение", "Миша изучает религиоведение", "изучаю религиоведение"),
+    ],
+)
+def test_policy_does_not_reject_innocent_homonyms(text, fact, quote):
+    """Калибровка: категория должна ловить смысл, а не общий корень слова."""
+    _validate_verified_fact(_policy_source(text), VerifiedMemoryFact(
+        fact, quote, "profile.fact", "ok"
+    ))
+
+
+@pytest.mark.parametrize(
+    "text, fact, quote",
+    [
+        # Платёжная карта по-прежнему обязана блокироваться — во всех формах.
+        ("Моя банковская карта заблокирована", "У Миши банковская карта", "банковская карта"),
+        ("Карта 4276 1600 1234 5678", "Карта Миши 4276 1600 1234 5678", "Карта 4276 1600 1234 5678"),
+        ("Кредитная карта у меня в Сбере", "У Миши кредитная карта", "Кредитная карта"),
+        # Медицинская, адресная и контактная категории тоже не должны ослабнуть.
+        ("У меня онкология", "У Миши онкология", "У меня онкология"),
+        ("Мой адрес — Лесная 5", "Адрес Миши: Лесная 5", "Мой адрес"),
+        ("Я живу на улице Лесной", "Миша живёт на улице Лесной", "живу на улице Лесной"),
+        ("Мой телефон 89001234567", "Телефон Миши 89001234567", "Мой телефон"),
+        ("У меня долг по ипотеке", "У Миши долг по ипотеке", "долг по ипотеке"),
+        ("Мой счёт в банке пуст", "У Миши счёт в банке", "Мой счёт в банке"),
+    ],
+)
+def test_policy_still_rejects_real_sensitive_categories(text, fact, quote):
+    """Сужение токенов не должно было ослабить ни одну категорию."""
+    with pytest.raises(MemoryCandidateRejected):
+        _validate_verified_fact(_policy_source(text), VerifiedMemoryFact(
+            fact, quote, "profile.fact", "ошибочный KEEP"
+        ))
+
+
+def test_policy_rejection_names_the_matched_token():
+    """Причина отказа должна называть сработавший токен.
+
+    Без этого калибровать порог можно только наугад: в логе видно «чувствительная
+    категория», но не то, какое именно слово её вызвало.
+    """
+    with pytest.raises(MemoryCandidateRejected) as excinfo:
+        _validate_verified_fact(
+            _policy_source("У меня онкология"),
+            VerifiedMemoryFact("У Миши онкология", "У меня онкология", "profile.fact", "x"),
+        )
+    assert "онколог" in str(excinfo.value).lower()
 
 
 def test_source_enters_dead_letter_after_five_failures(monkeypatch, tmp_path):

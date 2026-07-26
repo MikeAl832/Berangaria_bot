@@ -10,7 +10,8 @@ from config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
     ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VIDEO_MAX_FILE_SIZE_BYTES,
-    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID
+    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID,
+    MAX_BUFFERED_MESSAGES, MAX_BUFFERED_CHARS,
 )
 from state import (
     histories, get_history_key, message_buffer, chat_tokens, api_call_count,
@@ -18,7 +19,11 @@ from state import (
 )
 import state
 from llm_client import summarize_history, send_llm_request
-from memory_pipeline import enqueue_memory_source, release_memory_sources
+from memory_pipeline import (
+    abandon_memory_sources,
+    enqueue_memory_source,
+    release_memory_sources,
+)
 from vision_provider import describe_image_bytes, describe_video, transcribe_audio
 from utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
@@ -67,7 +72,36 @@ def _build_memory_text(
     return (combined_text or "").strip()
 
 
-# ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНИСТРАТОРА ==========
+# ========== ДЕКОРАТОРЫ ДОСТУПА К КОМАНДАМ ==========
+
+def access_required(func):
+    """Применяет тот же список доступа, что и к обычным сообщениям.
+
+    Без него команды остаются единственным входом, не проходящим
+    `_check_access_permissions`: посторонний может добавить бота в свою группу
+    и управлять им, хотя ни одно его сообщение бот не обработает. Отвечать
+    отказом нельзя — это подтвердило бы присутствие бота, поэтому молча выходим.
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message is None:
+            return
+
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        is_group = update.effective_chat.type in ['group', 'supergroup']
+
+        if not _check_access_permissions(chat_id, user_id, is_group):
+            logger.info(
+                f"🚫 [dim]Команда от постороннего отклонена "
+                f"(chat={chat_id}, user={user_id})[/]"
+            )
+            return
+
+        return await func(update, context)
+
+    return wrapper
+
 
 def admin_required(func):
     """
@@ -78,15 +112,15 @@ def admin_required(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message is None:
             return
-        
+
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         is_group = update.effective_chat.type in ['group', 'supergroup']
-        
+
         # В личных чатах разрешаем всем
         if not is_group:
             return await func(update, context)
-        
+
         # В группах проверяем ADMIN_MODE
         if ADMIN_MODE:
             try:
@@ -103,6 +137,7 @@ def admin_required(func):
     
     return wrapper
 
+@access_required
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
         return
@@ -133,6 +168,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"/summarize — сжатие истории"
         )
 
+@access_required
 @admin_required
 async def random_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
@@ -159,6 +195,39 @@ async def random_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Укажите число от 0 до 100")
 
+async def _discard_pending_buffers(
+    key: str, chat_id: int, user_id: int, is_group: bool
+) -> int:
+    """Отменяет ждущие debounce-буферы чата и хоронит их источники памяти.
+
+    Источники именно хоронятся, а не освобождаются: их текст пользователь
+    только что попросил стереть, а брошенный `waiting` заблокировал бы очередь
+    памяти этой области.
+    """
+    # В группе история общая, но буферы — по пользователям: гасим все буферы чата.
+    prefix = f"{chat_id}_" if is_group else f"{chat_id}_{user_id}"
+    discarded = 0
+    source_ids: list[int | None] = []
+    async with _buffer_lock:
+        for buffer_key in [k for k in message_buffer if k.startswith(prefix)]:
+            data = message_buffer.pop(buffer_key)
+            task = data.get("task")
+            if task is not None:
+                task.cancel()
+            source_ids.extend(
+                message.get("memory_source_id") for message in data.get("messages", [])
+            )
+            discarded += 1
+    if source_ids:
+        abandon_memory_sources(source_ids)
+    if discarded:
+        logger.info(
+            f"🧹 [dim]Сброшено ждущих буферов для '{key}': {discarded}[/]"
+        )
+    return discarded
+
+
+@access_required
 @admin_required
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
@@ -169,17 +238,31 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_group = update.effective_chat.type in ['group', 'supergroup']
     key = get_history_key(chat_id, not is_group, user_id)
 
+    # Сначала гасим debounce-буфер: иначе его таймер проснётся через несколько
+    # секунд, пересоздаст историю из доклирового сообщения и ответит на то, что
+    # просили стереть. Делаем это ДО взятия turn-lock — вложенности
+    # turn -> _buffer_lock нет больше нигде, и заводить её нельзя.
+    await _discard_pending_buffers(key, chat_id, user_id, is_group)
+
     async with get_turn_lock(key):
         async with get_history_lock(key):
             existed = key in histories
-            histories.pop(key, None)
-            state.delete_history(key)  # Чистим и в БД
+            deleted = state.delete_history(key)  # Чистим и в БД
+            if deleted:
+                histories.pop(key, None)
+
+    if not deleted:
+        await update.message.reply_text(
+            "⚠️ Не удалось очистить историю — она осталась на месте. Попробуйте позже."
+        )
+        return
 
     if existed:
         await update.message.reply_text("🧹 История очищена!")
     else:
         await update.message.reply_text("История и так пуста!")
 
+@access_required
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
         return
@@ -202,6 +285,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎲 Шанс случайного ответа: {state.random_reply_chance}%"
     )
 
+@access_required
 @admin_required
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
@@ -214,10 +298,13 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with get_turn_lock(key):
         history = histories.get(key)
-        if not history or len(history) < SUMMARY_INTERVAL:
+        # `<=`: при длине ровно SUMMARY_INTERVAL сжимать нечего — summarize_history
+        # вернёт тот же список, и пользователь увидит «не удалось» вместо честного
+        # «слишком короткая», заплатив за вызов DeepSeek.
+        if not history or len(history) <= SUMMARY_INTERVAL:
             await update.message.reply_text(
                 f"📝 История слишком короткая для суммаризации "
-                f"(нужно минимум {SUMMARY_INTERVAL} сообщений)."
+                f"(нужно больше {SUMMARY_INTERVAL} сообщений)."
             )
             return
 
@@ -231,10 +318,28 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text("❌ Не удалось создать резюме.")
                 return
 
+            new_len = len(new_history)
+            # Резюме, которое не короче исходника, — не сжатие. Записывать его
+            # значит платить за вызов и рапортовать «сжат: 11 → 11».
+            if new_len >= old_len:
+                await status_msg.edit_text(
+                    "❌ Резюме не короче исходной истории — оставила как было."
+                )
+                logger.warning(
+                    f"📝 [yellow]Суммаризация не сократила историю {key}:[/] "
+                    f"{old_len} → {new_len}"
+                )
+                return
+
             async with get_history_lock(key):
                 histories[key] = new_history
-                state.save_history(key)
-            new_len = len(new_history)
+                saved = state.save_history(key)
+            if not saved:
+                await status_msg.edit_text(
+                    "⚠️ Резюме создано, но не записалось в БД — после перезапуска "
+                    "вернётся прежняя история."
+                )
+                return
 
             await status_msg.edit_text(
                 f"✅ Диалог сжат: {old_len} → {new_len} сообщений.\n"
@@ -456,9 +561,12 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     # Запускаем новый таймер
-    async def wait_and_process():
+    async def wait_and_process(debounce: float | None = None):
+        source_ids: list[int | None] = []
         try:
-            await asyncio.sleep(MESSAGE_DEBOUNCE_SECONDS)
+            await asyncio.sleep(
+                MESSAGE_DEBOUNCE_SECONDS if debounce is None else debounce
+            )
             data = message_buffer.get(buffer_key)
             if data:
                 source_ids = [
@@ -471,7 +579,15 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 )
                 release_memory_sources(source_ids)
         except asyncio.CancelledError:
-            pass  # Таймер был отменен из-за нового сообщения
+            # Таймер отменён новым сообщением: буфер (а с ним и эти источники)
+            # переходит к новому таймеру, поэтому хоронить их нельзя.
+            pass
+        except Exception:
+            # Ход не дошёл до подтверждённой доставки — памяти из него быть не
+            # должно. Но и оставить источники в 'waiting' нельзя: они блокируют
+            # очередь своей области памяти до перезапуска процесса.
+            abandon_memory_sources(source_ids)
+            raise
 
     # Добавляем в буфер с блокировкой (все операции атомарны)
     async with _buffer_lock:
@@ -479,12 +595,32 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Отменяем предыдущий таймер
             message_buffer[buffer_key]["task"].cancel()
             message_buffer[buffer_key]["messages"].append(msg_data)
-            
+
             # Обновляем флаги вызова
             if mentioned:
                 message_buffer[buffer_key]["mentioned"] = True
             if random_reply:
                 message_buffer[buffer_key]["random_reply"] = True
+
+            # Каждое сообщение перезапускает окно debounce, поэтому непрерывный
+            # поток может расти неограниченно и склеиться в одну гигантскую
+            # запись общей истории — ещё до гейта mentioned. Достигнув бюджета,
+            # окно больше не продлеваем: буфер уходит в обработку немедленно.
+            # Отбрасывать нельзя — осиротеют уже поставленные memory_source_id.
+            buffered = message_buffer[buffer_key]["messages"]
+            buffered_chars = sum(len(item.get("text") or "") for item in buffered)
+            if (
+                len(buffered) >= MAX_BUFFERED_MESSAGES
+                or buffered_chars >= MAX_BUFFERED_CHARS
+            ):
+                logger.info(
+                    f"📦 [dim]Буфер '{buffer_key}' достиг бюджета "
+                    f"({len(buffered)} сообщ., {buffered_chars} симв.) — флашим[/]"
+                )
+                message_buffer[buffer_key]["task"] = asyncio.create_task(
+                    wait_and_process(debounce=0)
+                )
+                return
         else:
             message_buffer[buffer_key] = {
                 "messages": [msg_data],

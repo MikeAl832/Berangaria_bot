@@ -235,33 +235,18 @@ async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_T
 def escape_user_text(text: str) -> str:
     """
     Экранирует текст пользователя для безопасной вставки в промпт.
-    Заменяет служебные скобки, которые могут быть восприняты как системные теги.
+
+    Квадратная скобка — единственный разделитель структуры промпта
+    (`[Message: ...]`, `[Context from memory: ...]`, `[#N]`), поэтому в тексте
+    пользователя не может остаться ни одной. Совпадение по шаблону `[Тег: ...]`
+    здесь недостаточно: вызывающий код сам дописывает закрывающую скобку
+    (`handlers.py`), так что одиночная `]` внутри текста закрывает наш тег и
+    делает следующий за ней блок пользователя неотличимым от служебного.
     """
     if not text:
         return ''
-    
-    # Список служебных тегов, которые могут конфликтовать с форматом промпта
-    service_tags = [
-        'User', 'Time', 'Message', 'Event', 'Reply to', 'Quoted message',
-        'Image description', 'Video description', 'Audio description',
-        'Context from memory', 'Forwarded from'
-    ]
-    
-    # Экранируем только потенциально опасные паттерны
-    for tag in service_tags:
-        # Заменяем [Тег: значение] на (Тег: значение)
-        text = re.sub(
-            rf'\[{re.escape(tag)}:\s*(.*?)\]',
-            r'(\1)',
-            text,
-            flags=re.DOTALL | re.IGNORECASE
-        )
 
-    # Нейтрализуем поддельные reply-хэндлы [#5] в тексте пользователя, чтобы их
-    # нельзя было выдать за наш служебный тег. Наш настоящий [#N] добавляется отдельно.
-    text = re.sub(r'\[#(\d+)\]', r'(#\1)', text)
-
-    return text
+    return text.replace('[', '(').replace(']', ')')
 
 
 def get_video_duration(video_obj) -> float:

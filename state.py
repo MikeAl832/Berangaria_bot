@@ -232,6 +232,12 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_memory_sources_status "
             "ON memory_sources(status, id)"
         )
+        # Гейт «ждущий источник блокирует более новые» проверяется в пределах
+        # одной области (см. claim_memory_sources), поэтому нужен scope-первый ключ.
+        _db_execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_sources_scope_status "
+            "ON memory_sources(scope, status, id)"
+        )
         _db_execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_sources_scope_message "
             "ON memory_sources(scope, message_id)"
@@ -327,6 +333,55 @@ def release_memory_sources(source_ids: list[int]) -> int:
         conn.close()
 
 
+def abandon_memory_sources(source_ids: list[int]) -> int:
+    """Хоронит источники хода, который не дошёл до подтверждённой доставки.
+
+    Недоставленный ход не должен порождать память, поэтому источники НЕ
+    возвращаются в 'pending'. Но и оставлять их в 'waiting' нельзя: такой
+    источник блокирует FIFO своей области до перезапуска процесса. Сырой текст
+    стирается — как в восстановлении при старте (init_db).
+    """
+    ids = [int(source_id) for source_id in source_ids if source_id is not None]
+    if not ids:
+        return 0
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.executemany(
+            "UPDATE memory_sources SET status='abandoned', text='', "
+            "last_error='turn failed before delivery', updated_at=? "
+            "WHERE id=? AND status='waiting'",
+            [(time.time(), source_id) for source_id in ids],
+        )
+        conn.commit()
+        return max(cur.rowcount, 0)
+    finally:
+        conn.close()
+
+
+def reap_stale_waiting_sources(max_age_seconds: float) -> int:
+    """Подстраховка: хоронит 'waiting', зависшие дольше любого разумного хода.
+
+    Ход не может длиться дольше debounce + retry-бюджета LLM, поэтому всё, что
+    висит существенно дольше, — след процесса, умершего между постановкой в
+    очередь и доставкой, или пути отказа без компенсации.
+    """
+    if max_age_seconds <= 0:
+        return 0
+    now = time.time()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "UPDATE memory_sources SET status='abandoned', text='', "
+            "last_error='turn abandoned: waiting past deadline', updated_at=? "
+            "WHERE status='waiting' AND updated_at < ?",
+            (now, now - max_age_seconds),
+        )
+        conn.commit()
+        return max(cur.rowcount, 0)
+    finally:
+        conn.close()
+
+
 def _memory_source_from_row(row: tuple[Any, ...]) -> MemorySourceRecord:
     return MemorySourceRecord(
         id=int(row[0]),
@@ -363,17 +418,20 @@ def claim_memory_sources(limit: int) -> list[MemorySourceRecord]:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        candidate_rows = conn.execute(
+        # Ждущий источник блокирует более новые ТОЛЬКО в своей области памяти:
+        # порядок важен из-за перезаписи факта (memory_facts уникален по
+        # scope+subject_id+fact_key), а между областями конфликта нет. Глобальный
+        # гейт означал бы, что один недоставленный ход в любом чате останавливает
+        # формирование памяти во всех остальных до перезапуска процесса.
+        rows = conn.execute(
             "SELECT id, scope, author_id, author_name, message_id, created_at, text, "
-            "status, attempts, last_error FROM memory_sources "
-            "WHERE status IN ('pending', 'waiting') ORDER BY id LIMIT ?",
+            "status, attempts, last_error FROM memory_sources AS s "
+            "WHERE s.status='pending' AND NOT EXISTS ("
+            "  SELECT 1 FROM memory_sources AS w "
+            "  WHERE w.status='waiting' AND w.scope=s.scope AND w.id<s.id"
+            ") ORDER BY s.id LIMIT ?",
             (bounded_limit,),
         ).fetchall()
-        rows = []
-        for row in candidate_rows:
-            if row[7] == "waiting":
-                break
-            rows.append(row)
         now = time.time()
         for row in rows:
             conn.execute(
@@ -645,8 +703,8 @@ def load_all_histories() -> int:
     return loaded
 
 
-def save_history(key: str) -> None:
-    """Сохраняет (upsert) историю одного чата в БД."""
+def save_history(key: str) -> bool:
+    """Сохраняет (upsert) историю одного чата в БД. True — запись прошла."""
     try:
         data = json.dumps(histories.get(key, []), ensure_ascii=False)
         _db_execute(
@@ -654,13 +712,22 @@ def save_history(key: str) -> None:
             "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
             (key, data),
         )
+        return True
     except Exception as e:
         logger.warning(f"⚠️ Не удалось сохранить историю '{key}': {e}")
+        return False
 
 
-def delete_history(key: str) -> None:
-    """Удаляет историю чата из БД."""
+def delete_history(key: str) -> bool:
+    """Удаляет историю чата из БД. True — удаление действительно дошло до диска.
+
+    Возвращаемое значение обязано проверяться везде, где пользователю
+    подтверждают очистку: сообщить «очищено» и оставить строку в SQLite значит
+    вернуть весь диалог в промпт после ближайшего перезапуска.
+    """
     try:
         _db_execute("DELETE FROM histories WHERE key=?", (key,))
+        return True
     except Exception as e:
         logger.warning(f"⚠️ Не удалось удалить историю '{key}' из БД: {e}")
+        return False
