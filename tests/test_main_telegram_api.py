@@ -1,6 +1,7 @@
-import main
 import pytest
 from telegram.ext import MessageReactionHandler
+
+import main
 
 
 def _handlers(app):

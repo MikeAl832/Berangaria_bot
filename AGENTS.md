@@ -25,8 +25,13 @@ Use Python 3.11, matching CI and Docker:
 
 ```bash
 uv venv .venv --python 3.11
-uv pip install --python .venv/bin/python -r requirements.txt pytest ruff bandit
+uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
 ```
+
+Checker versions are pinned in `requirements-dev.txt` and CI installs the same
+file. Do not install them unpinned: a checker release then fails a push that
+changed nothing related, and local runs stop matching CI. Bump the pin
+deliberately and resolve the new findings in their own commit.
 
 Tests supply placeholder API keys in `tests/conftest.py`; never add real credentials to tests or the repository.
 
