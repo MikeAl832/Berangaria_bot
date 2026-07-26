@@ -21,7 +21,9 @@
 # 👁️ VISION (Распознавание картинок/видео)
 # ========================================
 "vision_mode": true                      # Включить распознавание изображений и видео
-"gemini_model": "gemini-3.5-flash-lite"  # Модель Gemini (бесплатные: gemini-2.5-flash, gemini-3.1-flash-lite, gemini-3.5-flash-lite)
+"gemini_model": "gemini-3.5-flash-lite"  # Модель Gemini (GA с 21.07.2026, есть free tier).
+                                         # gemini-3.1-flash-lite объявлена устаревшей, выключение 07.05.2027 — это её штатная замена.
+                                         # gemini-2.0-flash уже выключена, gemini-2.5-flash выключается 16.10.2026.
 "video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — video_max_file_size_bytes: 20 МБ в облачном Bot API, 2 ГиБ в local mode
 "audio_max_duration_sec": 300            # Максимальная длительность голосовых/аудио (секунды)
 

@@ -3,10 +3,10 @@
 
 Общий модуль для:
   - scripts/build_sticker_index.py (разовая индексация jsonl -> Qdrant)
-  - llm_client.py (рантайм-поиск стикера по описанию через tool send_sticker)
+  - berangaria/chat/llm_client.py (рантайм-поиск стикера по описанию через tool send_sticker)
 
 Эмбеддинги считаем той же моделью, что и mem0 (Gemini `EMBEDDING_MODEL`),
-но напрямую по REST (как vision_provider.py) — ради контроля над батчингом,
+но напрямую по REST (как berangaria/media/vision.py) — ради контроля над батчингом,
 outputDimensionality и taskType. Индекс и запрос идут в ОДНОМ пространстве:
   - индексация: taskType=RETRIEVAL_DOCUMENT
   - поиск:      taskType=RETRIEVAL_QUERY

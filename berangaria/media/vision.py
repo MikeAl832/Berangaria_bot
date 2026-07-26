@@ -120,9 +120,10 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
                 {"inline_data": {"mime_type": mime, "data": b64}},
             ]
         }],
+        # temperature/topP намеренно не передаём: Gemini 3.x рассчитан на дефолтную
+        # температуру 1.0, а значения ниже документированно приводят к зацикливанию
+        # и деградации ответа. Сдержанность описаний задаётся текстом промпта.
         "generationConfig": {
-            "temperature": 0.4,
-            "topP": 0.95,
             "maxOutputTokens": 2048,
         },
     }
@@ -303,9 +304,9 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
 
     payload = {
         "contents": [{"role": "user", "parts": parts}],
+        # См. комментарий в describe_image_bytes: Gemini 3.x не принимает
+        # заниженную температуру без риска зацикливания.
         "generationConfig": {
-            "temperature": 0.4,
-            "topP": 0.95,
             "maxOutputTokens": 4096,
         },
     }
@@ -389,9 +390,9 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
 
     payload = {
         "contents": [{"role": "user", "parts": parts}],
+        # См. комментарий в describe_image_bytes: Gemini 3.x не принимает
+        # заниженную температуру без риска зацикливания.
         "generationConfig": {
-            "temperature": 0.2,
-            "topP": 0.95,
             "maxOutputTokens": 2048,
         },
     }

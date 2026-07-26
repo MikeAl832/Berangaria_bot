@@ -81,9 +81,14 @@ video_max_duration_sec: 300
   Files API upload polling budget and backoff
 
 **Available Gemini models:**
-- `gemini-2.5-flash` (free tier)
-- `gemini-3.1-flash-lite` (free tier, previous default)
-- `gemini-3.5-flash-lite` (free tier, current)
+- `gemini-3.5-flash-lite` (free tier, current default; GA since 21 July 2026)
+- `gemini-3.1-flash-lite` (deprecated, earliest shutdown 7 May 2027 — `gemini-3.5-flash-lite` is Google's named replacement)
+- `gemini-2.5-flash` (shutdown 16 October 2026)
+- `gemini-2.0-flash` (already shut down — do not use)
+
+Do not pass `temperature`, `topP`, or `topK` to Gemini 3.x models: they are tuned for the default
+temperature of 1.0, and lower values are documented to cause looping and degraded output. The vision
+requests in `berangaria/media/vision.py` deliberately send only `maxOutputTokens`.
 
 ### Memory (Mem0 + Embeddings)
 

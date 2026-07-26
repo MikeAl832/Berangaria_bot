@@ -14,7 +14,7 @@ os.environ.setdefault("API_KEY", "test-deepseek-key")
 os.environ.setdefault("GEMINI_API_KEY", "test-gemini-key")
 
 
-# Глобалы уровня модуля в state.py. Тест, оставивший здесь мусор, меняет
+# Глобалы уровня модуля в core/state.py. Тест, оставивший здесь мусор, меняет
 # поведение следующих: история «просачивается» в чужой чат, а закешированный
 # asyncio.Lock оказывается привязан к уже закрытому event loop.
 _STATE_DICTS = (

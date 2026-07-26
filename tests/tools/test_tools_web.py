@@ -1,5 +1,5 @@
 """
-Характеризационные тесты tools.py: rate limiter и read_url.
+Характеризационные тесты berangaria/tools/web.py: rate limiter и read_url.
 Сеть не трогаем — httpx.Client подменяется фейком.
 """
 from berangaria.tools import web as tools
