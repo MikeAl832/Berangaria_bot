@@ -74,7 +74,9 @@ def test_canonical_lock_order_completes():
     """Канонический порядок turn -> history проходит без блокировок."""
 
     async def canonical():
-        async with state.get_turn_lock("private_1"):
+        # Вложенность намеренная, а не небрежность: тест про ПОРЯДОК взятия
+        # локов, и два отдельных `async with` показывают его буквально.
+        async with state.get_turn_lock("private_1"):  # noqa: SIM117
             async with state.get_history_lock("private_1"):
                 return "ok"
 
