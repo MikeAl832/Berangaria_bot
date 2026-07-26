@@ -67,6 +67,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - SQLite writes are write-through for history changes. A reported reset or clear must be durable before confirming it to the user.
 - Use `memory_store.memory` dynamically; do not import the object by value. Startup retries initialization because Qdrant may not yet be ready in Docker.
 - A source may be completed only after every approved fact is confirmed by Mem0 and atomically written to the SQLite approval registry. Immediately compensate a partial Mem0 source-transaction; before any retried source can extract or store again, reconcile all Mem0 records tagged with that source ID against the authoritative SQLite registry. Technical failures return the source to the durable SQLite queue in FIFO order; after exactly five failed attempts, terminal sources are dead-lettered without approved or retrievable memory.
+- A turn that never reaches confirmed delivery must abandon its sources, not release them: no memory may come from an undelivered turn, and a source left in `waiting` blocks its queue. The FIFO gate is scope-local — a `waiting` source blocks only newer sources of the same memory scope, because overwrite conflicts are only possible within a scope. A global gate would let one failed turn in any chat stop memory formation everywhere.
 - Do not commit `.env`, API keys, bot tokens, `bot_data/`, Qdrant storage, databases, logs, or generated virtual environments.
 
 ## Configuration and deployment

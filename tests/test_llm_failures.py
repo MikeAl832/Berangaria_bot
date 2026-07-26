@@ -164,6 +164,130 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["mid"] == 99
 
 
+def test_terminal_reply_failure_does_not_resend_unanswered_tool_calls(
+    monkeypatch, tmp_path
+):
+    """reply_to_message терминальный: payload уже содержит tool_calls без ответов.
+
+    Сбой при подготовке текста не должен уйти в общий retry — иначе такой payload
+    переотправляется, DeepSeek отвечает 400, и ветка очистки стирает историю чата.
+    """
+    posts = []
+
+    class CountingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs.get("json"))
+            return _Response(200, {
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "reply_to_message",
+                                "arguments": '{"id": 1, "text": "ответ"}',
+                            },
+                        }],
+                    },
+                }],
+                "usage": {},
+            })
+
+    def exploding_clean_reply(text):
+        raise TypeError("expected string or bytes-like object")
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", CountingClient)
+    monkeypatch.setattr(llm_client, "_clean_reply", exploding_clean_reply)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    # Ровно один запрос: ход завершён на месте, а не отправлен в retry-цикл.
+    assert len(posts) == 1
+    # История цела — ни призрачного assistant, ни очистки.
+    assert [entry["role"] for entry in history] == ["user"]
+    assert state.histories[key] == history
+
+
+def test_non_string_tool_reply_text_keeps_history(monkeypatch, tmp_path):
+    """Сквозная проверка: нестроковый `text` от модели не роняет ход."""
+    posts = []
+
+    class CountingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs.get("json"))
+            return _Response(200, {
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "reply_to_message",
+                                "arguments": '{"id": 1, "text": 42}',
+                            },
+                        }],
+                    },
+                }],
+                "usage": {},
+            })
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", CountingClient)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+    bot = _SuccessfulBot()
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, True,
+    ))
+
+    assert len(posts) == 1
+    # Пустой текст — отправлять нечего, «42» в чат не уходит.
+    assert bot.messages == []
+    assert [entry["role"] for entry in history] == ["user"]
+
+
 def test_group_streaming_does_not_leave_partial_message_after_ambiguous_timeout(
     monkeypatch, tmp_path
 ):

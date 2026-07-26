@@ -26,7 +26,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Token usage tracking** and cost estimation with cache hit rates
 - **Persistent rotated logs** in Docker (`bot_data/bot.log`) with helper commands
 - **Media description caching** to avoid re-processing repeated content
-- **Emoji-free text responses** with strict filtering (reactions via function only)
+- **Emoji-sparse text responses** — the system prompt discourages emoji in prose; reactions go through the reaction tool. Emoji are deliberately NOT stripped from the text: when an emoji IS the whole answer, it must survive.
 
 ## Prerequisites
 
@@ -257,8 +257,9 @@ Set `debug: true` in config.yaml for detailed logging:
 - Monitor token usage with `/stats` command
 
 **Bot uses emojis in text**:
-- Emojis are automatically filtered from responses
-- Check logs for `_clean_reply` function output
+- This is prompt-driven, not filtered in code. `_clean_reply()` deliberately leaves emoji
+  intact so that an emoji-only reply is not turned into silence by the silence-placeholder
+  rule. Adjust the system prompt in `config.yaml` if the model overuses them.
 - Ensure bot restarted after recent updates
 
 **Random replies too frequent/rare**:
@@ -272,13 +273,11 @@ Set `debug: true` in config.yaml for detailed logging:
 - Increase `MAX_DESC_CHARS` in handlers.py if needed
 - Check logs for truncation warnings
 
-For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md) and [PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md).
+For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md).
 
 ## Documentation
 
 - **[CONFIG_README.md](CONFIG_README.md)**: Complete configuration reference
-- **[PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md)**: Deep analysis of system prompts and quality improvements
-- **[VISION_QUALITY_GUIDE.md](VISION_QUALITY_GUIDE.md)**: Vision prompt optimization guide
 - **[LOGGING_GUIDE.md](LOGGING_GUIDE.md)**: Logging system documentation
 - **[LOGGING_CHEATSHEET.md](LOGGING_CHEATSHEET.md)**: Quick logging reference
 
@@ -288,7 +287,7 @@ For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md) and [PROM
 - Clearer separation: "read tags vs don't write tags" to prevent confusion
 - New `EMOJIS AND REACTIONS` section with explicit examples
 - Removed duplicate CRITICAL RULE statements
-- Added emoji auto-filtering in `_clean_reply()` function
+- `_clean_reply()` strips internal service tags (`<think>`, `[#N]`, `[Context from memory: ...]`) — emoji are intentionally preserved
 
 **Vision prompt redesign**:
 - Natural conversational style instead of structured reports
@@ -311,7 +310,7 @@ For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md) and [PROM
 - Cross-reference between SYSTEM_PROMPT and tool definitions
 - Emphasis on reaction frequency and silent-reaction option
 
-See [PROMPT_QUALITY_ANALYSIS.md](PROMPT_QUALITY_ANALYSIS.md) for detailed analysis.
+See [docs/adr/](docs/adr/) for the decisions behind the current design.
 
 ## License
 

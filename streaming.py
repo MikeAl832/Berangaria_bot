@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from utils import strip_internal_tags
+
 logger = logging.getLogger(__name__)
 
 ContentCallback = Callable[[str], Awaitable[None]]
@@ -178,7 +180,13 @@ class TelegramStreamPreview:
     async def publish(self, full_text: str) -> None:
         if self.disabled or not full_text:
             return
-        preview = self._bounded(full_text)
+        # Служебные теги вычищаются только из финального ответа, поэтому в
+        # превью пользователь наблюдал, как «печатаются» [#26] и
+        # [Context from memory: ...]. Полную очистку финала здесь применять
+        # нельзя — срез точки и правило молчания относятся к готовому ответу.
+        preview = self._bounded(strip_internal_tags(full_text))
+        if not preview:
+            return
         if not self.last_text and len(preview) < self.min_chars:
             return
         now = time.monotonic()
@@ -187,10 +195,14 @@ class TelegramStreamPreview:
         if preview == self.last_text:
             return
 
+        is_private = self.update.effective_chat.type == "private"
         try:
-            if self.status_message is not None:
+            # status_message в группе — обычное сообщение чата: переписывать его
+            # кусками ответа значит завести ровно то персистентное превью,
+            # которое запрещено для групп (см. ветку else ниже).
+            if self.status_message is not None and is_private:
                 await self.status_message.edit_text(preview)
-            elif self.update.effective_chat.type == "private":
+            elif is_private:
                 kwargs = {
                     "chat_id": self.update.effective_chat.id,
                     "draft_id": self.draft_id,

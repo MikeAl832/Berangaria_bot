@@ -6,6 +6,8 @@ Telegram/сеть подменяются лёгкими фейками, async г
 """
 import asyncio
 
+import pytest
+
 import tool_handlers
 from tool_handlers import (
     ToolTurn,
@@ -93,6 +95,21 @@ def test_handle_reply_unknown_sid_falls_back_to_current_message():
     turn = ToolTurn()
     handle_reply(turn, FakeUpdate(mid=7), {"id": 99, "text": "x"}, {2: 42})
     assert turn.pending_reply == (7, "x", 99)
+
+
+@pytest.mark.parametrize("bad_text", [42, 3.5, None, ["а", "б"], {"t": "x"}, True])
+def test_handle_reply_coerces_non_string_text_to_empty(bad_text):
+    # Аргументы инструмента — недоверенный JSON от модели. Нестроковый `text`
+    # должен дать пустой ответ, а не улететь дальше и уронить _clean_reply.
+    turn = ToolTurn()
+    handle_reply(turn, FakeUpdate(mid=7), {"id": 2, "text": bad_text}, {2: 42})
+    assert turn.pending_reply == (42, "", 2)
+
+
+def test_handle_reply_missing_text_key():
+    turn = ToolTurn()
+    handle_reply(turn, FakeUpdate(mid=7), {"id": 2}, {2: 42})
+    assert turn.pending_reply == (42, "", 2)
 
 
 # ---------- handle_react ----------

@@ -1,7 +1,7 @@
 import time
 import ipaddress
 import socket
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 from ddgs import DDGS
@@ -225,10 +225,17 @@ def web_search(query: str, max_results: int = 5, timelimit: str = None, region: 
 
 READ_URL_MAX_CHARS = 4000  # сколько символов текста страницы отдавать модели
 MAX_URL_REDIRECTS = 5
+READ_URL_MAX_BYTES = 4 * 1024 * 1024   # потолок тела ответа
+READ_URL_TOTAL_TIMEOUT = 30.0          # дедлайн на всю цепочку редиректов
 
 
-def _validate_public_url(url: str) -> None:
-    """Отклоняет URL, способные обратиться к локальной/внутренней сети."""
+def _validate_public_url(url: str) -> str:
+    """Отклоняет URL, способные обратиться к локальной/внутренней сети.
+
+    Возвращает провалидированный IP-адрес. Возврат обязателен: если подключаться
+    по имени, httpx сделает собственный resolve, и хост с чередующимися
+    A-записями (DNS rebinding) подставит внутренний адрес уже после проверки.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Разрешены только HTTP и HTTPS URL.")
@@ -246,13 +253,15 @@ def _validate_public_url(url: str) -> None:
         # IP-литерал проверяем напрямую: это заодно не даёт тестовым/системным
         # DNS-резолверам подменить смысл 127.0.0.1 или ::1.
         literal = ipaddress.ip_address(parsed.hostname.split("%", 1)[0])
-        addresses = {str(literal)}
+        addresses = [str(literal)]
     except ValueError:
         try:
             addr_info = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
             raise ValueError("Не удалось определить адрес сайта.") from exc
-        addresses = {item[4][0].split("%", 1)[0] for item in addr_info}
+        # dict.fromkeys вместо set: порядок резолвера сохраняется, и мы
+        # подключаемся именно к тому адресу, который проверили первым.
+        addresses = list(dict.fromkeys(item[4][0].split("%", 1)[0] for item in addr_info))
     if not addresses:
         raise ValueError("Сайт не имеет доступных IP-адресов.")
 
@@ -260,6 +269,39 @@ def _validate_public_url(url: str) -> None:
         ip = ipaddress.ip_address(raw_ip)
         if not ip.is_global:
             raise ValueError("Доступ к локальным и служебным сетевым адресам запрещён.")
+
+    return addresses[0]
+
+
+def _pinned_request_args(url: str, validated_ip: str) -> tuple[str, dict[str, str]]:
+    """Возвращает URL с закреплённым адресом и заголовок Host для него.
+
+    Подключаемся к уже проверенному IP, а имя хоста передаём в Host/SNI —
+    между проверкой и соединением не остаётся второго DNS-запроса.
+    """
+    parsed = urlparse(url)
+    host_header = parsed.netloc.split("@", 1)[-1]
+    ip = ipaddress.ip_address(validated_ip)
+    literal = f"[{validated_ip}]" if ip.version == 6 else validated_ip
+    netloc = f"{literal}:{parsed.port}" if parsed.port else literal
+    return urlunparse(parsed._replace(netloc=netloc)), {"Host": host_header}
+
+
+def _read_body_within_limit(response, max_bytes: int) -> bytes:
+    """Читает тело потоком, обрывая передачу на достижении потолка."""
+    declared = response.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes:
+        raise ValueError(
+            f"Страница слишком большая ({int(declared) // 1024} КБ)."
+        )
+    body = bytearray()
+    for piece in response.iter_bytes():
+        body.extend(piece)
+        if len(body) > max_bytes:
+            raise ValueError(
+                f"Страница слишком большая (> {max_bytes // 1024} КБ)."
+            )
+    return bytes(body)
 
 def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
     """Скачивает страницу и возвращает её текст (заголовок + основной контент)."""
@@ -275,30 +317,43 @@ def read_url(url: str, max_chars: int = READ_URL_MAX_CHARS) -> str:
             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         )
     }
+    timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+    deadline = time.monotonic() + READ_URL_TOTAL_TIMEOUT
     try:
-        with httpx.Client(timeout=15.0, follow_redirects=False, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             for _ in range(MAX_URL_REDIRECTS + 1):
-                _validate_public_url(url)
-                r = client.get(url)
-                status_code = getattr(r, "status_code", 200)
-                location = r.headers.get("location")
-                if status_code in {301, 302, 303, 307, 308} and location:
-                    url = urljoin(url, location)
-                    continue
+                if time.monotonic() > deadline:
+                    return "Превышено общее время чтения страницы."
+                validated_ip = _validate_public_url(url)
+                request_url, host_header = _pinned_request_args(url, validated_ip)
+                # stream: content-type и размер проверяем ДО чтения тела, иначе
+                # ссылка на многогигабайтный файл выкачивается целиком впустую.
+                with client.stream(
+                    "GET",
+                    request_url,
+                    headers=host_header,
+                    extensions={"sni_hostname": urlparse(url).hostname},
+                ) as r:
+                    status_code = getattr(r, "status_code", 200)
+                    location = r.headers.get("location")
+                    if status_code in {301, 302, 303, 307, 308} and location:
+                        url = urljoin(url, location)
+                        continue
+
+                    r.raise_for_status()
+                    content_type = r.headers.get("content-type", "").lower()
+                    if "html" not in content_type and "text" not in content_type:
+                        return (
+                            "Это не текстовая страница "
+                            f"(тип: {content_type or 'неизвестен'})."
+                        )
+                    raw_body = _read_body_within_limit(r, READ_URL_MAX_BYTES)
+                    encoding = getattr(r, "encoding", None) or "utf-8"
                 break
             else:
                 return f"Слишком много перенаправлений (>{MAX_URL_REDIRECTS})."
 
-            # Защита от клиента/прокси, который мог последовать редиректу сам.
-            final_url = str(getattr(r, "url", url))
-            _validate_public_url(final_url)
-            r.raise_for_status()
-
-            content_type = r.headers.get("content-type", "").lower()
-            if "html" not in content_type and "text" not in content_type:
-                return f"Это не текстовая страница (тип: {content_type or 'неизвестен'})."
-
-            soup = BeautifulSoup(r.text, "html.parser")
+            soup = BeautifulSoup(raw_body.decode(encoding, errors="replace"), "html.parser")
 
             # Выкидываем неинформативные блоки
             for tag in soup(["script", "style", "noscript", "header", "footer",

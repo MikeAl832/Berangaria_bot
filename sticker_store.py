@@ -78,6 +78,10 @@ def _post_embed(url, headers, body, timeout=60.0, max_retries=8):
             return r.json()
         last = r
         if r.status_code in (429, 503):
+            # Перед сдачей ждать бессмысленно: попыток больше не осталось.
+            # Важно для интерактивного пути, где max_retries=1.
+            if attempt + 1 >= max_retries:
+                break
             wait = _parse_retry_delay(r) or delay
             wait = min(wait, 65.0)
             logger.warning(
@@ -93,7 +97,7 @@ def _post_embed(url, headers, body, timeout=60.0, max_retries=8):
     raise _RateLimited(f"rate limit не отпустил после {max_retries} попыток (last={last.status_code if last else '?'})")
 
 
-def _embed_batch_request(texts, task_type, timeout=60.0):
+def _embed_batch_request(texts, task_type, timeout=60.0, max_retries=8):
     """Один вызов :batchEmbedContents (с ретраями на лимит). Возвращает list[list[float]] или бросает."""
     url = f"{GEMINI_API_BASE}/models/{EMBEDDING_MODEL}:batchEmbedContents"
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
@@ -108,11 +112,11 @@ def _embed_batch_request(texts, task_type, timeout=60.0):
             for t in texts
         ]
     }
-    data = _post_embed(url, headers, body, timeout=timeout)
+    data = _post_embed(url, headers, body, timeout=timeout, max_retries=max_retries)
     return [_l2_normalize(e["values"]) for e in data["embeddings"]]
 
 
-def _embed_single_request(text, task_type, timeout=60.0):
+def _embed_single_request(text, task_type, timeout=60.0, max_retries=8):
     """Фолбэк: один текст через :embedContent (с ретраями на лимит)."""
     url = f"{GEMINI_API_BASE}/models/{EMBEDDING_MODEL}:embedContent"
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
@@ -122,17 +126,28 @@ def _embed_single_request(text, task_type, timeout=60.0):
         "taskType": task_type,
         "outputDimensionality": STICKER_DIMS,
     }
-    data = _post_embed(url, headers, body, timeout=timeout)
+    data = _post_embed(url, headers, body, timeout=timeout, max_retries=max_retries)
     return _l2_normalize(data["embedding"]["values"])
 
 
-def embed_texts(texts, task_type="RETRIEVAL_DOCUMENT", batch_size=50, sleep_between=0.0):
+def embed_texts(
+    texts,
+    task_type="RETRIEVAL_DOCUMENT",
+    batch_size=50,
+    sleep_between=0.0,
+    timeout=60.0,
+    max_retries=8,
+):
     """
     Считает эмбеддинги для списка текстов. Пытается батчить (1 HTTP-запрос на
     batch_size текстов — экономит дневной лимит запросов). Если батч-эндпоинт
     отказывает, откатывается на поштучные запросы.
 
     sleep_between — пауза (сек) между HTTP-запросами (троттлинг под RPM/TPM).
+    max_retries — сколько раз ждать на 429/503. Дефолт 8 рассчитан на массовую
+    индексацию, где прогон обязан дойти до конца. Интерактивным вызовам столько
+    нельзя: 8 попыток дают до ~395 с time.sleep в потоке, пока чат держит
+    turn-lock, — поэтому search_stickers передаёт своё маленькое значение.
     Возвращает list[list[float]] той же длины и порядка, что texts.
     """
     if not GEMINI_API_KEY:
@@ -142,14 +157,20 @@ def embed_texts(texts, task_type="RETRIEVAL_DOCUMENT", batch_size=50, sleep_betw
     for i in range(0, len(texts), batch_size):
         chunk = texts[i:i + batch_size]
         try:
-            vecs = _embed_batch_request(chunk, task_type)
+            vecs = _embed_batch_request(
+                chunk, task_type, timeout=timeout, max_retries=max_retries
+            )
         except _RateLimited:
             raise  # лимит, а не «батч не поддерживается» — поштучно не спасёт, чистим наверх
         except Exception as e:
             logger.warning(f"⚠️ batchEmbedContents не сработал ({e}); откат на поштучный режим")
             vecs = []
             for t in chunk:
-                vecs.append(_embed_single_request(t, task_type))
+                vecs.append(
+                    _embed_single_request(
+                        t, task_type, timeout=timeout, max_retries=max_retries
+                    )
+                )
                 if sleep_between:
                     time.sleep(sleep_between)
         out.extend(vecs)
@@ -375,7 +396,11 @@ def search_stickers(query: str, top_k: int = None, min_score: float = None):
         if not client.collection_exists(STICKER_COLLECTION):
             logger.warning(f"⚠️ Коллекция '{STICKER_COLLECTION}' не найдена — стикеры не проиндексированы")
             return []
-        vec = embed_texts([query], task_type="RETRIEVAL_QUERY")[0]
+        # Интерактивный путь: ход чата держит turn-lock, ждать лимит Gemini
+        # минутами здесь нельзя. Не нашли за один заход — отвечаем без стикера.
+        vec = embed_texts(
+            [query], task_type="RETRIEVAL_QUERY", timeout=10.0, max_retries=1
+        )[0]
         res = client.query_points(
             collection_name=STICKER_COLLECTION,
             query=vec,

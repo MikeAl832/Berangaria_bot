@@ -16,32 +16,18 @@ def test_memory_prompt_forbids_inferences_during_general_recall():
     assert "A question about a place does not prove that the user lives there" in SYSTEM_PROMPT
 
 
-def test_memory_text_keeps_only_user_text_when_media_is_present():
-    text = _build_memory_text(
-        "Я использую Fedora",
-        [("video", "на видео виден компьютер с Ubuntu")],
-    )
-
-    assert text == "Я использую Fedora"
+def test_memory_text_keeps_only_user_text():
+    assert _build_memory_text("Я использую Fedora") == "Я использую Fedora"
 
 
 def test_media_only_message_has_no_long_term_memory_source():
-    text = _build_memory_text(
-        "",
-        [("image", "на изображении человек с видеокартой RTX 5090")],
-    )
-
-    assert text == ""
+    # Медиа не является источником фактов: описание vision-модели сюда не
+    # попадает даже параметром, поэтому сообщение без текста даёт пустой источник.
+    assert _build_memory_text("") == ""
 
 
 def test_forwarded_text_has_no_long_term_memory_source():
-    text = _build_memory_text(
-        "Я живу в Москве",
-        [],
-        is_forwarded=True,
-    )
-
-    assert text == ""
+    assert _build_memory_text("Я живу в Москве", is_forwarded=True) == ""
 
 
 def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
@@ -105,6 +91,11 @@ def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
         "release_memory_sources",
         lambda source_ids: events.append(("release", source_ids)),
     )
+    monkeypatch.setattr(
+        handlers,
+        "abandon_memory_sources",
+        lambda source_ids: events.append(("abandon", source_ids)),
+    )
 
     async def fail_turn(*args, **kwargs):
         raise RuntimeError("reply delivery failed")
@@ -132,7 +123,9 @@ def test_failed_buffered_turn_does_not_release_memory_source(monkeypatch):
     asyncio.run(run())
     state.message_buffer.clear()
 
-    assert events == []
+    # Недоставленный ход не порождает память (release не вызван), но источник
+    # обязан быть похоронен: иначе он блокирует очередь своей области памяти.
+    assert events == [("abandon", [17])]
 
 
 def test_tiktok_only_message_keeps_provenance_without_creating_llm_turn(monkeypatch):

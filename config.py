@@ -138,6 +138,28 @@ MEMORY_QUEUE_BATCH_SIZE = max(
     1,
     min(_as_int(config_yaml.get("memory_queue_batch_size", 20), 20), 100),
 )
+# Через сколько секунд источник в статусе 'waiting' считается следом оборванного
+# хода и хоронится. Должно быть заведомо больше debounce + полного retry-бюджета
+# LLM-хода, иначе живой ход потеряет свою память.
+MEMORY_WAITING_MAX_AGE_SECONDS = max(
+    60,
+    _as_int(config_yaml.get("memory_waiting_max_age_seconds", 1800), 1800),
+)
+# Через сколько секунд удалять завершённые строки очереди источников. `dead`
+# не удаляется никогда — это форензик-след.
+MEMORY_SOURCE_RETENTION_SECONDS = max(
+    3600,
+    _as_int(config_yaml.get("memory_source_retention_seconds", 30 * 24 * 3600), 30 * 24 * 3600),
+)
+
+# Потолок склейки debounce-буфера. Без него непрерывный поток сообщений
+# собирается в одну запись истории неограниченного размера.
+MAX_BUFFERED_MESSAGES = max(
+    2, _as_int(config_yaml.get("max_buffered_messages", 30), 30)
+)
+MAX_BUFFERED_CHARS = max(
+    1000, _as_int(config_yaml.get("max_buffered_chars", 20000), 20000)
+)
 
 # ========================================
 # 🗄️ QDRANT (общий для mem0 и стикеров)

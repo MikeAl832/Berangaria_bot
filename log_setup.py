@@ -16,6 +16,9 @@ COLOR_MAP = {
     "white": Fore.WHITE,
     "bright_red": Fore.RED + Style.BRIGHT,
     "bright_green": Fore.GREEN + Style.BRIGHT,
+    # [dim] используется по всему коду и документирован в LOGGING_GUIDE, но
+    # без записи здесь сырая разметка утекала в вывод как есть.
+    "dim": Style.DIM,
 }
 
 LEVEL_COLORS = {

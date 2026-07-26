@@ -4,6 +4,13 @@ on:
   push:
     branches: [ main ]
 
+# Два push подряд иначе запускают docker compose одновременно в одном каталоге
+# на VPS. Очередь, а не отмена: незавершённый деплой оставил бы прод в
+# промежуточном состоянии.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,10 +30,15 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest ruff
+          pip install pytest ruff bandit
 
       - name: Lint (ruff)
         run: ruff check .
+
+      # AGENTS.md makes bandit part of the mandatory gate; any medium/high
+      # finding must be resolved before hand-off, so CI has to enforce it.
+      - name: Security scan (bandit)
+        run: bandit -q -ll -r . -x ./.venv,./tests
 
       - name: Run tests
         run: |
@@ -72,3 +84,24 @@ jobs:
             test "$(git rev-parse HEAD)" = "${{ github.sha }}"
             
             docker compose up -d --build --remove-orphans --force-recreate
+
+            # `up -d` returns as soon as containers are created. Under
+            # `restart: always` a crash-looping bot still produced a green
+            # workflow, so wait for the startup banner from main.py.
+            echo "Waiting for the bot to report a successful start..."
+            for attempt in $(seq 1 30); do
+              if docker compose logs bot --since 120s 2>/dev/null | grep -q 'Бот запущен'; then
+                echo "Bot started."
+                exit 0
+              fi
+              if [ "$(docker compose ps -q bot | xargs -r docker inspect -f '{{.State.Restarting}}')" = "true" ]; then
+                echo "Bot container is restarting — deployment failed."
+                docker compose logs bot --tail 100
+                exit 1
+              fi
+              sleep 4
+            done
+
+            echo "Bot did not report a successful start within the timeout."
+            docker compose logs bot --tail 100
+            exit 1

@@ -32,7 +32,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, MessageRea
 from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
-    MEMORY_FLUSH_INTERVAL_SECONDS, SUMMARY_HOURS, TIMEZONE_NAME,
+    MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
+    MEMORY_SOURCE_RETENTION_SECONDS,
+    SUMMARY_HOURS, TIMEZONE_NAME,
     STREAMING_ENABLED,
     TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
     TELEGRAM_BOT_API_LOCAL_MODE,
@@ -167,6 +169,18 @@ async def periodic_memory_flush():
     while True:
         await asyncio.sleep(MEMORY_FLUSH_INTERVAL_SECONDS)
         try:
+            # Подстраховка к компенсации в handlers.wait_and_process: ход не
+            # живёт дольше debounce + retry-бюджета, поэтому зависшее заметно
+            # дольше 'waiting' — след оборванного процесса. Такой источник
+            # блокирует очередь своей области памяти, пока его не похоронить.
+            reaped = state.reap_stale_waiting_sources(MEMORY_WAITING_MAX_AGE_SECONDS)
+            if reaped:
+                logger.warning(
+                    "🧠 [yellow]Память: похоронено зависших источников: %s[/]", reaped
+                )
+            pruned = state.prune_memory_sources(MEMORY_SOURCE_RETENTION_SECONDS)
+            if pruned:
+                logger.info("🧠 [dim]Память: удалено старых строк очереди: %s[/]", pruned)
             if memory_store.memory is None:
                 await asyncio.to_thread(
                     memory_store.initialize_memory,
@@ -202,27 +216,12 @@ def build_telegram_application() -> Application:
     return builder.build()
 
 
-def main():
-    logger.info("🤖 [cyan]Бот запускается...[/]")
+def register_handlers(app: Application) -> None:
+    """Регистрирует хендлеры на приложении.
 
-    # Инициализируем БД, runtime-настройки и сохранённые истории диалогов
-    state.init_db()
-    # Compose запускает контейнеры по порядку, но Qdrant может ещё не принимать
-    # соединения. Повторяем инициализацию, не оставляя память выключенной навсегда.
-    memory_store.initialize_memory(attempts=10, delay_seconds=2.0)
-    runtime_settings = state.load_runtime_settings(default_random_reply_chance=RANDOM_REPLY_CHANCE)
-    loaded_chats = state.load_all_histories()
-    logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")
-    logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
-
-    if TELEGRAM_BOT_API_BASE_URL:
-        logger.info(
-            "📡 Telegram Bot API: локальный сервер %s (local_mode=%s)",
-            TELEGRAM_BOT_API_BASE_URL,
-            TELEGRAM_BOT_API_LOCAL_MODE,
-        )
-    app = build_telegram_application()
-
+    Вынесено из main() отдельной функцией, чтобы инвариант «пассивные хендлеры
+    не держат слот обновлений» можно было проверить тестом.
+    """
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("stats", stats))
@@ -245,17 +244,52 @@ def main():
     app.add_handler(MessageHandler(filters.Sticker.ALL, handle_sticker))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
 
-    # Служебные события группы: смена названия / фото / удаление фото
+    # Служебные события группы: смена названия / фото / удаление фото.
+    # block=False — см. комментарий к реакциям ниже.
     app.add_handler(MessageHandler(
         filters.StatusUpdate.NEW_CHAT_TITLE | filters.StatusUpdate.NEW_CHAT_PHOTO | filters.StatusUpdate.DELETE_CHAT_PHOTO,
-        handle_chat_event
+        handle_chat_event,
+        block=False,
     ))
 
     # Реакции на сообщения бота (пассивно фиксируем, чтобы он о них знал).
     # Требует allowed_updates с message_reaction (ниже) и админства бота в группах.
-    app.add_handler(MessageReactionHandler(handle_message_reaction))
+    #
+    # block=False обязателен: приложение работает с дефолтным
+    # SimpleUpdateProcessor(1), то есть апдейты обрабатываются по одному инлайн.
+    # Оба хендлера берут turn-lock чата, и пока в этом чате идёт LLM-ход
+    # (клиент живёт до 600 с плюс tool-раунды), блокирующий хендлер держал бы
+    # единственный слот и морозил весь бот: другие группы, все личные чаты и все
+    # команды. Оба хендлера пассивные, порядок их выполнения ни на что не влияет.
+    #
+    # Глобальный concurrent_updates(True) здесь НЕ подходит: он распараллелит и
+    # приём сообщений, а debounce-буфер собирает combined_text в порядке прихода.
+    app.add_handler(MessageReactionHandler(handle_message_reaction, block=False))
 
     app.add_error_handler(error_handler)
+
+
+def main():
+    logger.info("🤖 [cyan]Бот запускается...[/]")
+
+    # Инициализируем БД, runtime-настройки и сохранённые истории диалогов
+    state.init_db()
+    # Compose запускает контейнеры по порядку, но Qdrant может ещё не принимать
+    # соединения. Повторяем инициализацию, не оставляя память выключенной навсегда.
+    memory_store.initialize_memory(attempts=10, delay_seconds=2.0)
+    runtime_settings = state.load_runtime_settings(default_random_reply_chance=RANDOM_REPLY_CHANCE)
+    loaded_chats = state.load_all_histories()
+    logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")
+    logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
+
+    if TELEGRAM_BOT_API_BASE_URL:
+        logger.info(
+            "📡 Telegram Bot API: локальный сервер %s (local_mode=%s)",
+            TELEGRAM_BOT_API_BASE_URL,
+            TELEGRAM_BOT_API_LOCAL_MODE,
+        )
+    app = build_telegram_application()
+    register_handlers(app)
 
     logger.info(f"🎲 Шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]")
     logger.info(f"📝 Максимальный контекст: [yellow]{MAX_CONTEXT_TOKENS}[/] токенов")
@@ -305,14 +339,27 @@ def main():
         try:
             from memory_pipeline import process_pending_memory, wait_for_memory_worker
             if not loop.is_closed():
-                loop.run_until_complete(wait_for_memory_worker())
-                report = loop.run_until_complete(process_pending_memory())
+                # Проход по очереди делает сетевые вызовы (DeepSeek, Mem0) и без
+                # ограничения может не уложиться в stop_grace_period. SIGKILL
+                # посреди прохода сжигает попытку источника впустую, поэтому
+                # укладываемся сами и с запасом.
+                loop.run_until_complete(
+                    asyncio.wait_for(wait_for_memory_worker(), timeout=30)
+                )
+                report = loop.run_until_complete(
+                    asyncio.wait_for(process_pending_memory(), timeout=60)
+                )
                 logger.info(
                     "🧠 [green]Остатки памяти обработаны[/] "
                     f"(источников={report.processed}, одобрено={report.approved})"
                 )
             else:
                 logger.info("🧠 [green]Очередь памяти сохранена в SQLite[/]")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "🧠 [yellow]Финальный проход памяти не уложился в отведённое время — "
+                "очередь осталась в SQLite и будет продолжена после старта[/]"
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")

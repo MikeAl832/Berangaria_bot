@@ -61,16 +61,20 @@ Additional supported parameters: `top_k`, `min_p`, `presence_penalty`, `repetiti
 
 ```yaml
 vision_mode: true
-vision_provider: "gemini"
 gemini_model: "gemini-3.1-flash-lite"
-video_max_duration_sec: 60
+video_max_duration_sec: 300
 ```
 
 **Parameters:**
 - `vision_mode`: Enable/disable image and video understanding
-- `vision_provider`: Must be "gemini" (LM Studio removed)
 - `gemini_model`: Gemini model for vision tasks
-- `video_max_duration_sec`: Maximum video length in seconds
+- `video_max_duration_sec`: Maximum video length in seconds (shipped: 300)
+- `video_max_file_size_bytes`: Weight ceiling for a downloaded video. Defaults to 20 MB on
+  the cloud Bot API and to 2 GiB when `TELEGRAM_BOT_API_LOCAL_MODE=true`, which is what the
+  production Compose file runs. Override with `BOT_VIDEO_MAX_FILE_SIZE_BYTES`.
+- `audio_max_duration_sec`: Maximum voice/audio length in seconds (shipped: 300)
+- `gemini_upload_max_wait_sec` / `gemini_upload_backoff_initial` / `gemini_upload_backoff_max`:
+  Files API upload polling budget and backoff
 
 **Available Gemini models:**
 - `gemini-2.0-flash` (free tier)
@@ -81,7 +85,7 @@ video_max_duration_sec: 60
 
 ```yaml
 mem0_llm_model: "deepseek-v4-flash"
-embedding_model: "models/text-embedding-004"
+embedding_model: "gemini-embedding-2"
 embedding_dims: 768
 memory_search_limit: 10
 memory_min_score: 0.3
@@ -90,12 +94,14 @@ memory_flush_interval_seconds: 300
 memory_query_min_chars: 12
 memory_query_recent_messages: 3
 memory_queue_batch_size: 20
+memory_waiting_max_age_seconds: 1800
+memory_source_retention_seconds: 2592000
 ```
 
 **Parameters:**
 - `mem0_llm_model`: DeepSeek model used by the strict extractor and independent verifier
-- `embedding_model`: Gemini embedding model (must include "models/" prefix)
-- `embedding_dims`: Vector dimensions (fixed at 768 for text-embedding-004)
+- `embedding_model`: Gemini embedding model (name as shipped, without a "models/" prefix)
+- `embedding_dims`: Vector dimensions (768 for gemini-embedding-2). Changing the model or the dimension invalidates every existing vector: both the `mem0` and `stickers` collections must be re-embedded, otherwise recall silently degrades because old and new vectors share a space they were not trained in.
 - `memory_search_limit`: Number of facts retrieved per query
 - `memory_min_score`: Vector-score floor (0.0-1.0); SQLite approval and current-topic matching remain mandatory
 - `memory_max_chars`: Maximum total length of memory context
@@ -103,13 +109,22 @@ memory_queue_batch_size: 20
 - `memory_query_min_chars`: Minimum meaningful query length before memory search runs
 - `memory_query_recent_messages`: Recent meaningful user messages combined for memory search
 - `memory_queue_batch_size`: Maximum source messages processed per worker pass
+- `memory_waiting_max_age_seconds`: Age at which a source still in `waiting` is treated as
+  the remains of an interrupted turn and abandoned (raw text erased). A turn cannot outlive
+  debounce plus the full LLM retry budget, so keep this comfortably above that; the floor is
+  60 s. This is a safety net behind the compensation in `handlers.wait_and_process` — a
+  `waiting` source blocks the FIFO queue of its own memory scope until it is resolved.
+- `memory_source_retention_seconds`: How long finished (`completed`/`abandoned`) queue rows are
+  kept before pruning. `dead` rows are never pruned — they are the only forensic trace of why a
+  source did not become memory. Keep this comfortably above the window in which
+  `INSERT OR IGNORE` still protects against re-queueing the same message.
 
 **Relevance threshold guide:**
 - `0.1`: Very permissive (includes many facts)
 - `0.2`: Soft filtering
 - `0.27`: Permissive legacy value
-- `0.3`: Balanced
-- `0.5`: Current strict default
+- `0.3`: Balanced — **current default**
+- `0.5`: Stricter than shipped — drops approved facts scoring 0.3–0.5
 
 ### Bot Behavior
 
@@ -120,6 +135,8 @@ summary_interval: 10
 timezone: "Europe/Moscow"
 summary_hours: [5, 14]
 message_debounce_seconds: 4.0
+max_buffered_messages: 30
+max_buffered_chars: 20000
 random_reply_cooldown: 10
 admin_mode: false
 streaming_enabled: true
@@ -140,6 +157,9 @@ log_backup_count: 5
 - `timezone`: Bot timezone for `[Time:]` tags, CURRENT TIME in the system prompt, and scheduled summarization (default `Europe/Moscow`)
 - `summary_hours`: Local hours when automatic history compression runs (default `[5, 14]` → 05:00 and 14:00)
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
+- `max_buffered_messages` / `max_buffered_chars`: Budget for one debounce buffer. Every message
+  restarts the debounce window, so without a budget a continuous stream merges into a single
+  unbounded history entry. On reaching either limit the buffer is flushed instead of extended.
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins
 - `streaming_enabled`: Enable DeepSeek SSE and private-chat Telegram draft previews; group chats receive one final message
@@ -172,9 +192,9 @@ Access is checked before photos, stickers, videos, or audio are downloaded or se
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 0.14
-price_prompt_cache_hit: 0.0028
-price_completion: 0.28
+price_prompt_cache_miss: 0.435
+price_prompt_cache_hit: 0.003625
+price_completion: 0.87
 ```
 
 **Parameters (per 1M tokens):**
@@ -223,7 +243,7 @@ Mem0 configuration:
   "llm_provider": "deepseek",
   "llm_model": "deepseek-v4-flash",
   "embedder_provider": "gemini",
-  "embedder_model": "models/text-embedding-004",
+  "embedder_model": "gemini-embedding-2",
   "vector_store": "qdrant"
 }
 Mem0 initialized
@@ -249,7 +269,7 @@ Request cost: $0.000285
 ### Automatic Summarization
 
 **How it works:**
-- Runs daily at 5:00 AM (local time)
+- Runs at every hour listed in `summary_hours` (shipped: 05:00 and 14:00) AM (local time)
 - Summarizes all active chats with 10+ messages
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
@@ -258,7 +278,7 @@ Request cost: $0.000285
 Use `/summarize` command to compress chat history immediately.
 
 **Configuration:**
-- Schedule time is hardcoded in `main.py` (change `hour=5` in `periodic_summarization()`)
+- Schedule is set by `summary_hours` in config.yaml (shipped: `[5, 14]`)
 - Minimum messages required: `summary_interval` parameter in `config.yaml`
 
 **Logs:**
@@ -287,7 +307,7 @@ Use `/summarize` command to compress chat history immediately.
 1. Verify Qdrant running: `docker ps`
 2. Check `GEMINI_API_KEY` in .env
 3. Install dependencies: `pip install google-generativeai langchain-google-genai langchain-core`
-4. Verify embedding model name: `models/text-embedding-004`
+4. Verify embedding model name: `gemini-embedding-2`
 
 **Common error:** "Unsupported embedding provider: googleai"
 - Fix: In config.py, provider should be "gemini" (not "googleai" or "google")
@@ -337,7 +357,6 @@ Added parameters:
 
 All LM Studio references removed from:
 - config.py
-- vision_provider.py
 - llm_client.py
 - handlers.py
 
@@ -434,7 +453,6 @@ Berangaria_bot/
 ├── main.py              # Entry point
 ├── handlers.py          # Telegram event handlers
 ├── llm_client.py        # DeepSeek client
-├── vision_provider.py   # Gemini vision client
 ├── memory_pipeline.py   # Strict memory verification pipeline
 ├── memory_store.py      # Mem0 initialization
 ├── state.py             # In-memory and SQLite state

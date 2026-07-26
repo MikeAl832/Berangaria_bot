@@ -235,33 +235,49 @@ async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_T
 def escape_user_text(text: str) -> str:
     """
     Экранирует текст пользователя для безопасной вставки в промпт.
-    Заменяет служебные скобки, которые могут быть восприняты как системные теги.
+
+    Квадратная скобка — единственный разделитель структуры промпта
+    (`[Message: ...]`, `[Context from memory: ...]`, `[#N]`), поэтому в тексте
+    пользователя не может остаться ни одной. Совпадение по шаблону `[Тег: ...]`
+    здесь недостаточно: вызывающий код сам дописывает закрывающую скобку
+    (`handlers.py`), так что одиночная `]` внутри текста закрывает наш тег и
+    делает следующий за ней блок пользователя неотличимым от служебного.
     """
     if not text:
         return ''
-    
-    # Список служебных тегов, которые могут конфликтовать с форматом промпта
-    service_tags = [
-        'User', 'Time', 'Message', 'Event', 'Reply to', 'Quoted message',
-        'Image description', 'Video description', 'Audio description',
-        'Context from memory', 'Forwarded from'
-    ]
-    
-    # Экранируем только потенциально опасные паттерны
-    for tag in service_tags:
-        # Заменяем [Тег: значение] на (Тег: значение)
-        text = re.sub(
-            rf'\[{re.escape(tag)}:\s*(.*?)\]',
-            r'(\1)',
-            text,
-            flags=re.DOTALL | re.IGNORECASE
-        )
 
-    # Нейтрализуем поддельные reply-хэндлы [#5] в тексте пользователя, чтобы их
-    # нельзя было выдать за наш служебный тег. Наш настоящий [#N] добавляется отдельно.
-    text = re.sub(r'\[#(\d+)\]', r'(#\1)', text)
+    return text.replace('[', '(').replace(']', ')')
 
-    return text
+
+def strip_internal_tags(text: str) -> str:
+    """Убирает служебные токены модели из текста, предназначенного пользователю.
+
+    Живёт здесь, а не в llm_client, чтобы streaming мог применять то же правило
+    к превью: llm_client импортирует streaming, и обратный импорт дал бы цикл.
+    Содержит только вычистку тегов — срез финальной точки и правило молчания
+    относятся к готовому ответу и остаются в llm_client._clean_reply.
+    """
+    if not text:
+        return ''
+
+    text = re.sub(r'<\|channel\>.*?<channel\|>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<\|.*?\|>', '', text).strip()
+
+    text = re.sub(
+        r'\[Context from memory(?:\s*:[^\]]*)?\]',
+        'долгосрочной памяти',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # [#N] — внутренние reply-хэндлы для инструментов. Модель иногда всё же
+    # цитирует их вопреки системному промпту, поэтому не выпускаем их в Telegram.
+    text = re.sub(r'\[#\d+\](?:\s*(?:,|и|или)\s*\[#\d+\])*', '', text)
+    text = re.sub(r'\s+([,.;:!?])', r'\1', text)
+    text = re.sub(r'[,;:]+([.!?])', r'\1', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    return text.strip()
 
 
 def get_video_duration(video_obj) -> float:

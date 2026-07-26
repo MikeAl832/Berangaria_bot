@@ -22,7 +22,7 @@
 # ========================================
 "vision_mode": true                      # Включить распознавание изображений и видео
 "gemini_model": "gemini-3.1-flash-lite"  # Модель Gemini (бесплатные: gemini-2.0-flash, gemini-2.5-flash, gemini-3.1-flash-lite)
-"video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — 20 МБ (лимит Telegram getFile)
+"video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — video_max_file_size_bytes: 20 МБ в облачном Bot API, 2 ГиБ в local mode
 "audio_max_duration_sec": 300            # Максимальная длительность голосовых/аудио (секунды)
 
 # Настройки загрузки видео в Gemini Files API
@@ -43,6 +43,10 @@
 "memory_query_min_chars": 12             # Минимальная содержательная длина query для поиска по памяти
 "memory_query_recent_messages": 3        # Сколько последних содержательных сообщений объединять для memory search
 "memory_queue_batch_size": 20             # Сколько сообщений-источников проверять за один проход
+"memory_waiting_max_age_seconds": 1800   # Через сколько секунд зависший в waiting источник хоронится
+"memory_source_retention_seconds": 2592000  # Сколько хранить завершённые строки очереди источников (30 дней)
+"max_buffered_messages": 30              # Потолок склейки debounce-буфера по числу сообщений
+"max_buffered_chars": 20000              # Потолок склейки debounce-буфера по символам
 
 # ========================================
 # 🎨 СТИКЕРЫ (векторный поиск в Qdrant)
