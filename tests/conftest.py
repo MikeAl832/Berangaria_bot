@@ -38,7 +38,7 @@ def isolate_module_state():
     привязывается к event loop при первой конкуренции, поэтому переживший тест
     лок ломает следующий `asyncio.run` с тем же ключом чата.
     """
-    import state
+    from berangaria.core import state
 
     yield
 
@@ -47,7 +47,7 @@ def isolate_module_state():
         if container is not None:
             container.clear()
 
-    memory_pipeline = sys.modules.get("memory_pipeline")
+    memory_pipeline = sys.modules.get("berangaria.memory.pipeline")
     if memory_pipeline is not None:
         task = getattr(memory_pipeline, "_worker_task", None)
         if task is not None and not task.done():
@@ -58,7 +58,7 @@ def isolate_module_state():
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """Отдельная SQLite-база на тест, инициализированная схемой."""
-    import state
+    from berangaria.core import state
 
     monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
     state.init_db()

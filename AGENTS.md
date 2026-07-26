@@ -6,18 +6,26 @@ This file applies to the entire repository.
 
 Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. DeepSeek handles chat and summarization, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
+All runtime code lives in the `berangaria` package; the entry point is `python -m berangaria`.
+Tests under `tests/` mirror the package layout. One-off CLI tools live in `scripts/`.
+
 Key modules:
 
-- `main.py`: application startup, handler registration, scheduled jobs, and graceful shutdown.
-- `handlers.py`: Telegram commands, message buffering, media handling, access control, and chat-event handling.
-- `llm_client.py`: history rendering, approved-memory retrieval, summarization, LLM retries, tool rounds, reply delivery, and persistence.
-- `memory_pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
-- `streaming.py`: DeepSeek SSE reconstruction and throttled private Telegram drafts.
-- `state.py`: shared in-memory state, per-chat locks, and SQLite persistence.
-- `tool_handlers.py` / `tools.py`: LLM tool dispatch, web search, URL reading, reactions, replies, and stickers.
-- `vision_provider.py`: Gemini image, video, and audio requests.
-- `memory_store.py`: retryable Mem0 initialization.
-- `sticker_store.py`: Gemini embeddings and Qdrant-backed sticker search/indexing.
+- `berangaria/app.py`: application startup, handler registration, scheduled jobs, and graceful shutdown.
+- `berangaria/config.py`: `config.yaml` + environment loader and the Mem0 config.
+- `berangaria/prompts.py`: `SYSTEM_PROMPT`, the vision suffix, and the Mem0 instructions. The tool
+  `description` fields in `berangaria/tools/schemas.py` are prompt surface too — change them as deliberately.
+- `berangaria/core/paths.py`: resolves relative config/db/log paths against the repository root.
+- `berangaria/core/state.py`: shared in-memory state, per-chat locks, and SQLite persistence.
+- `berangaria/core/utils.py`, `berangaria/core/logging_setup.py`: helpers and logging configuration.
+- `berangaria/chat/handlers.py`: Telegram commands, message buffering, media handling, access control, and chat-event handling.
+- `berangaria/chat/llm_client.py`: history rendering, approved-memory retrieval, summarization, LLM retries, tool rounds, reply delivery, and persistence.
+- `berangaria/chat/streaming.py`: DeepSeek SSE reconstruction and throttled private Telegram drafts.
+- `berangaria/memory/pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
+- `berangaria/memory/store.py`: retryable Mem0 initialization.
+- `berangaria/tools/schemas.py` / `web.py` / `dispatch.py`: tool definitions handed to the LLM, web search and URL reading, and the dispatcher for reactions, replies, and stickers.
+- `berangaria/media/vision.py`: Gemini image, video, and audio requests.
+- `berangaria/stickers/store.py`: Gemini embeddings and Qdrant-backed sticker search/indexing.
 
 ## Setup and validation
 
@@ -70,7 +78,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 ## Persistence and memory rules
 
 - SQLite writes are write-through for history changes. A reported reset or clear must be durable before confirming it to the user.
-- Use `memory_store.memory` dynamically; do not import the object by value. Startup retries initialization because Qdrant may not yet be ready in Docker.
+- Use `berangaria.memory.store.memory` dynamically (import the module, e.g. `from berangaria.memory import store as memory_store`); do not import the object by value. Startup retries initialization because Qdrant may not yet be ready in Docker.
 - A source may be completed only after every approved fact is confirmed by Mem0 and atomically written to the SQLite approval registry. Immediately compensate a partial Mem0 source-transaction; before any retried source can extract or store again, reconcile all Mem0 records tagged with that source ID against the authoritative SQLite registry. Technical failures return the source to the durable SQLite queue in FIFO order; after exactly five failed attempts, terminal sources are dead-lettered without approved or retrievable memory.
 - A turn that never reaches confirmed delivery must abandon its sources, not release them: no memory may come from an undelivered turn, and a source left in `waiting` blocks its queue. The FIFO gate is scope-local — a `waiting` source blocks only newer sources of the same memory scope, because overwrite conflicts are only possible within a scope. A global gate would let one failed turn in any chat stop memory formation everywhere.
 - Do not commit `.env`, API keys, bot tokens, `bot_data/`, Qdrant storage, databases, logs, or generated virtual environments.
@@ -86,8 +94,8 @@ Bandit may report intentional low-severity best-effort exception handling and no
 
 - Preserve unrelated user changes in a dirty worktree.
 - Add regression tests for bug fixes, especially races, failure ordering, security boundaries, and persistence behavior.
-- Prefer focused patches over broad rewrites of `handlers.py` or `llm_client.py` unless the behavior is protected by tests.
-- Update `README.md` or `CONFIG_README.md` when configuration, startup, commands, deployment, or externally visible behavior changes.
+- Prefer focused patches over broad rewrites of `berangaria/chat/handlers.py` or `berangaria/chat/llm_client.py` unless the behavior is protected by tests.
+- Update `README.md` or `docs/configuration.md` when configuration, startup, commands, deployment, or externally visible behavior changes.
 
 ## Agent skills
 

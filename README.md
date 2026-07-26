@@ -7,7 +7,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Main LLM**: DeepSeek v4 Flash (chat, summarization, strict memory extraction/verification)
   - Alternative: DeepSeek v4 Pro for better instruction following
   - Alternative: Grok-4.3 for superior humor and character consistency
-- **Vision**: Google Gemini 3.1 Flash Lite (image/video/audio understanding)
+- **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
 - **Vector Store**: Qdrant (local Docker container)
 - **Memory**: SQLite durable verification queue + Mem0/Qdrant approved-fact index
@@ -80,7 +80,7 @@ API keys:
 
 ### 4. Configure bot settings
 
-Edit `config.yaml` - see [CONFIG_README.md](CONFIG_README.md) for detailed options.
+Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
 - `model`: DeepSeek model name
@@ -93,10 +93,11 @@ Key settings:
 ### 5. Run
 
 ```bash
-python main.py
+python -m berangaria
 ```
 
-Windows users can use `start.bat`, Linux users `start.sh`.
+Windows users can use `scripts\start.bat`, Linux users `scripts/start.sh`.
+Both resolve the project root themselves, so they work from any directory.
 
 ## How It Works
 
@@ -162,17 +163,17 @@ Docker writes full DEBUG logs to `/data/bot.log`, mounted on the host as `./bot_
 The production compose stack also runs Dozzle on `127.0.0.1:9999`; host Nginx exposes it at `logs.titlo10.fun` with Basic Auth.
 
 ```bash
-./logs.sh          # live Docker logs for the bot
-./logs.sh file     # last lines from bot_data/bot.log
-./logs.sh tail     # follow bot_data/bot.log
-./logs.sh errors   # recent warnings/errors from bot_data/bot.log
+./scripts/logs.sh          # live Docker logs for the bot
+./scripts/logs.sh file     # last lines from bot_data/bot.log
+./scripts/logs.sh tail     # follow bot_data/bot.log
+./scripts/logs.sh errors   # recent warnings/errors from bot_data/bot.log
 ```
 
-See [LOG_VIEWER.md](LOG_VIEWER.md) for the self-hosted browser log viewer setup.
+See [docs/log-viewer.md](docs/log-viewer.md) for the self-hosted browser log viewer setup.
 
 ## Configuration
 
-See [CONFIG_README.md](CONFIG_README.md) for complete configuration reference including:
+See [docs/configuration.md](docs/configuration.md) for complete configuration reference including:
 - All config.yaml parameters
 - Memory tuning options
 - Debug mode details
@@ -183,22 +184,26 @@ See [CONFIG_README.md](CONFIG_README.md) for complete configuration reference in
 
 ```
 Berangaria_bot/
-├── main.py              # Entry point
-├── handlers.py          # Telegram handlers
-├── llm_client.py        # DeepSeek API client
-├── vision_provider.py   # Gemini vision
-├── memory_pipeline.py   # Strict extraction, verification, and indexing
-├── memory_store.py      # Mem0 initialization
-├── state.py             # In-memory and SQLite state
-├── utils.py             # Utilities
-├── tools.py             # Tool definitions
-├── config.py            # Configuration loader
-├── config.yaml          # Main configuration
-├── LOG_VIEWER.md        # Self-hosted Dozzle/Nginx log viewer setup
-├── logs.sh              # Log viewer helper
-├── .env                 # Secrets (not committed)
-├── docker-compose.yml   # Qdrant container
-└── requirements.txt     # Python dependencies
+├── berangaria/                  # The bot package (python -m berangaria)
+│   ├── __main__.py              # Entry point
+│   ├── app.py                   # Startup, handler registration, jobs, shutdown
+│   ├── config.py                # config.yaml + env loader, Mem0 config
+│   ├── prompts.py               # SYSTEM_PROMPT, vision suffix, Mem0 instructions
+│   ├── core/                    # state.py, utils.py, paths.py, logging_setup.py
+│   ├── chat/                    # handlers.py, llm_client.py, streaming.py
+│   ├── memory/                  # pipeline.py (durable queue), store.py (Mem0)
+│   ├── media/                   # vision.py (Gemini image/video/audio)
+│   ├── stickers/                # store.py (embeddings + Qdrant search)
+│   └── tools/                   # schemas.py, web.py, dispatch.py
+├── tests/                       # Mirrors the package layout
+├── scripts/                     # start.sh, start.bat, logs.sh, sticker CLI tools
+├── docs/                        # Configuration, logging, ADRs, agent docs
+├── data/stickers_clean.jsonl    # Sticker source for the Qdrant index
+├── deploy/                      # Nginx config for the log viewer
+├── config.yaml                  # Main configuration
+├── .env                         # Secrets (not committed)
+├── docker-compose.yml           # Bot, Qdrant, local Bot API, log viewer
+└── requirements.txt             # Python dependencies
 ```
 
 ## Cost Estimation
@@ -259,7 +264,7 @@ Set `debug: true` in config.yaml for detailed logging:
 **Bot uses emojis in text**:
 - This is prompt-driven, not filtered in code. `_clean_reply()` deliberately leaves emoji
   intact so that an emoji-only reply is not turned into silence by the silence-placeholder
-  rule. Adjust the system prompt in `config.yaml` if the model overuses them.
+  rule. Adjust `SYSTEM_PROMPT` in `berangaria/prompts.py` if the model overuses them.
 - Ensure bot restarted after recent updates
 
 **Random replies too frequent/rare**:
@@ -270,16 +275,17 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **Media descriptions cut off**:
 - Descriptions auto-truncate at sentence boundaries (800 chars)
-- Increase `MAX_DESC_CHARS` in handlers.py if needed
+- Increase `MAX_DESC_CHARS` in `berangaria/chat/handlers.py` if needed
 - Check logs for truncation warnings
 
-For detailed troubleshooting, see [CONFIG_README.md](CONFIG_README.md).
+For detailed troubleshooting, see [docs/configuration.md](docs/configuration.md).
 
 ## Documentation
 
-- **[CONFIG_README.md](CONFIG_README.md)**: Complete configuration reference
-- **[LOGGING_GUIDE.md](LOGGING_GUIDE.md)**: Logging system documentation
-- **[LOGGING_CHEATSHEET.md](LOGGING_CHEATSHEET.md)**: Quick logging reference
+- **[docs/configuration.md](docs/configuration.md)**: Complete configuration reference
+- **[docs/logging.md](docs/logging.md)**: Logging system documentation
+- **[docs/logging-cheatsheet.md](docs/logging-cheatsheet.md)**: Quick logging reference
+- **[docs/log-viewer.md](docs/log-viewer.md)**: Self-hosted Dozzle/Nginx log viewer
 
 ## Recent Improvements (January 2026)
 

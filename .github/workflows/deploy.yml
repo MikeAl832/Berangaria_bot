@@ -89,7 +89,7 @@ jobs:
 
             # `up -d` returns as soon as containers are created. Under
             # `restart: always` a crash-looping bot still produced a green
-            # workflow, so wait for the startup banner from main.py.
+            # workflow, so wait for the startup banner from berangaria/app.py.
             echo "Waiting for the bot to report a successful start..."
             for attempt in $(seq 1 30); do
               if docker compose logs bot --since 120s 2>/dev/null | grep -q 'Бот запущен'; then
