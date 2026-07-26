@@ -143,7 +143,15 @@ async def handle_find_stickers(turn, payload_messages, update, tool_call, args):
         except Exception:
             pass
         # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток.
-        cands = await asyncio.to_thread(search_stickers, fquery, fcount)
+        # Дедлайн на весь поиск: чат держит turn-lock, и зависший HTTP к
+        # Gemini/Qdrant не должен превращаться в молчание на минуты.
+        try:
+            cands = await asyncio.wait_for(
+                asyncio.to_thread(search_stickers, fquery, fcount), timeout=15
+            )
+        except asyncio.TimeoutError:
+            logger.warning("⏳ [yellow]Поиск стикеров не уложился в 15 с — пропускаю[/]")
+            cands = []
         remaining = STICKER_FIND_MAX_PER_TURN - turn.find_stickers_calls
         if not cands:
             logger.info(f"🎨 [dim]find_stickers '{fquery}' — ничего выше порога[/]")
@@ -212,7 +220,13 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
         # Совместимость: если вместо id передали query — разовый подбор лучшего.
         if chosen is None and (args.get('query') or '').strip():
             q = args['query'].strip()
-            cands = await asyncio.to_thread(search_stickers, q)
+            try:
+                cands = await asyncio.wait_for(
+                    asyncio.to_thread(search_stickers, q), timeout=15
+                )
+            except asyncio.TimeoutError:
+                logger.warning("⏳ [yellow]Поиск стикера не уложился в 15 с — пропускаю[/]")
+                cands = []
             if cands:
                 chosen = {"file_id": cands[0].get("file_id"),
                           "desc": cands[0].get("description") or q,
@@ -272,7 +286,7 @@ def _find_existing_bot_reaction(history, turn, react_mid):
     return None
 
 
-def _quote_for_mid(history, react_mid, current_mid) -> str | None:
+def _quote_for_mid(history, react_mid) -> str | None:
     """Короткая цитата user-сообщения (для подсказки модели)."""
     if react_mid is None:
         return None
@@ -331,7 +345,7 @@ async def handle_react(turn, payload_messages, update, context, tool_call, args,
                 turn.reacted = True
                 # Стабильный якорь — telegram mid (не меняется). [#sid] при рендере
                 # резолвим из живой истории, чтобы после renumber не врать модели.
-                on_quote = _quote_for_mid(history, react_mid, update.message.message_id)
+                on_quote = _quote_for_mid(history, react_mid)
                 turn.reactions_made.append({
                     "emoji": emoji,
                     "on_mid": react_mid,

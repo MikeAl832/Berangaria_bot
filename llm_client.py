@@ -22,7 +22,9 @@ import state
 from tools import TOOLS
 from tool_handlers import ToolTurn, dispatch_tool_call
 from streaming import TelegramStreamPreview, stream_chat_completion
-from utils import now_local, is_low_signal_user_text, strip_tiktok_urls
+from utils import (
+    now_local, is_low_signal_user_text, strip_tiktok_urls, strip_internal_tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,25 +316,8 @@ def _clean_reply(reply: str) -> str:
     Эмодзи намеренно НЕ вырезаются: промпт отговаривает модель от их использования,
     но когда эмодзи — сам ответ (огрызок, ответная реакция), он должен пройти.
     """
-    reply = re.sub(r'<\|channel\>.*?<channel\|>', '', reply, flags=re.DOTALL).strip()
-    reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
-    reply = re.sub(r'<\|.*?\|>', '', reply).strip()
-
-    reply = re.sub(
-        r'\[Context from memory(?:\s*:[^\]]*)?\]',
-        'долгосрочной памяти',
-        reply,
-        flags=re.IGNORECASE,
-    )
-
-    # [#N] — внутренние reply-хэндлы для инструментов. Модель иногда всё же
-    # цитирует их вопреки системному промпту, поэтому не выпускаем их в Telegram.
-    reply = re.sub(r'\[#\d+\](?:\s*(?:,|и|или)\s*\[#\d+\])*', '', reply)
-    reply = re.sub(r'\s+([,.;:!?])', r'\1', reply)
-    reply = re.sub(r'[,;:]+([.!?])', r'\1', reply)
-    reply = re.sub(r'[ \t]{2,}', ' ', reply)
-
-    reply = reply.strip()
+    # Срез служебных тегов общий с streaming-превью (см. utils).
+    reply = strip_internal_tags(reply)
     if reply.endswith('.') and not reply.endswith('...'):
         reply = reply[:-1]
     # Модель иногда «проговаривает» молчание (… / — / «промолчу» / «(молчит)») вместо

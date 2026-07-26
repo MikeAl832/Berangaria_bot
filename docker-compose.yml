@@ -1,3 +1,11 @@
+# Единый лимит json-file логов: без него драйвер пишет без ограничения и
+# заполняет диск VPS. Раньше лимит стоял только на log-tail.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   telegram-bot-api:
     image: aiogram/telegram-bot-api@sha256:39eb1b74c367e9a2fa7e7185a8e403a29f5c5d7bece8c0b9da441525ac8561c4
@@ -9,9 +17,15 @@ services:
       - "127.0.0.1:8081:8081"
     volumes:
       - /var/lib/telegram-bot-api:/var/lib/telegram-bot-api
+    logging: *default-logging
     restart: always
 
   qdrant:
+    # ВНИМАНИЕ: тег не закреплён, а деплой делает --force-recreate на каждый
+    # push. При первой же потере кеша образов (новый VPS, docker image prune -a)
+    # это мажорный апгрейд единственного сервиса с невосстановимым состоянием.
+    # Закрепить нужно ту версию, что сейчас на проде:
+    #   curl -s 127.0.0.1:6333 | grep -o '"version":"[^"]*"'
     image: qdrant/qdrant
     labels:
       - dev.berangaria.logs=visible
@@ -19,6 +33,7 @@ services:
       - "127.0.0.1:6333:6333"
     volumes:
       - ./qdrant_storage:/qdrant/storage
+    logging: *default-logging
     restart: always
 
   bot:
@@ -42,6 +57,11 @@ services:
     volumes:
       - ./bot_data:/data
       - /var/lib/telegram-bot-api:/var/lib/telegram-bot-api:ro
+    # Штатная остановка досушивает очередь памяти (сетевые вызовы к DeepSeek и
+    # Mem0). Дефолтные 10 с гарантированно приводили к SIGKILL посреди прохода,
+    # а потраченная попытка источника не возвращается.
+    stop_grace_period: 120s
+    logging: *default-logging
     restart: always
 
   log-tail:
@@ -62,11 +82,7 @@ services:
     volumes:
       - ./bot_data:/logs:ro
     network_mode: none
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
+    logging: *default-logging
     restart: always
 
   dozzle:
@@ -79,4 +95,5 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - log-tail
+    logging: *default-logging
     restart: always

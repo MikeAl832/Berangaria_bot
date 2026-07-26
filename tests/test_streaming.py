@@ -228,3 +228,62 @@ def test_ambient_group_turn_does_not_create_preview_message():
 
     assert update.message.replies == []
     assert context.bot.drafts == []
+
+
+def test_group_status_message_is_not_turned_into_a_preview():
+    """Статусная плашка в группе — обычное сообщение чата.
+
+    Переписывать её кусками ответа значит завести персистентное превью,
+    запрещённое для групп: неоднозначный таймаут теряет message_id, и в чате
+    остаётся неудаляемый обрывок рядом с финальным ответом.
+    """
+    update, context = _Update("supergroup"), _Context()
+    status = _StatusMessage()
+    preview = TelegramStreamPreview(
+        update, context, mentioned=True, status_message=status,
+        interval_seconds=0, min_chars=1,
+    )
+
+    asyncio.run(preview.publish("Первый кусок"))
+    asyncio.run(preview.publish("Первый кусок ответа"))
+
+    assert status.edits == []
+    assert context.bot.drafts == []
+
+
+def test_private_status_message_still_receives_preview():
+    update, context = _Update("private"), _Context()
+    status = _StatusMessage()
+    preview = TelegramStreamPreview(
+        update, context, mentioned=True, status_message=status,
+        interval_seconds=0, min_chars=1,
+    )
+
+    asyncio.run(preview.publish("Ответ по ходу"))
+
+    assert status.edits == ["Ответ по ходу"]
+
+
+def test_preview_strips_internal_handles_and_memory_tag():
+    """Пользователь не должен видеть, как «печатаются» служебные теги."""
+    update, context = _Update("private"), _Context()
+    preview = TelegramStreamPreview(
+        update, context, mentioned=True, interval_seconds=0, min_chars=1,
+    )
+
+    asyncio.run(preview.publish("Как ты писал в [#26], я помню [Context from memory: X]"))
+
+    text = context.bot.drafts[-1]["text"]
+    assert "[#26]" not in text
+    assert "[Context from memory:" not in text
+
+
+def test_preview_skips_update_that_is_only_internal_tags():
+    update, context = _Update("private"), _Context()
+    preview = TelegramStreamPreview(
+        update, context, mentioned=True, interval_seconds=0, min_chars=1,
+    )
+
+    asyncio.run(preview.publish("[#26]"))
+
+    assert context.bot.drafts == []

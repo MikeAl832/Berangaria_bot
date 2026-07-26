@@ -33,6 +33,7 @@ from config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
     MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
+    MEMORY_SOURCE_RETENTION_SECONDS,
     SUMMARY_HOURS, TIMEZONE_NAME,
     STREAMING_ENABLED,
     TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
@@ -177,6 +178,9 @@ async def periodic_memory_flush():
                 logger.warning(
                     "🧠 [yellow]Память: похоронено зависших источников: %s[/]", reaped
                 )
+            pruned = state.prune_memory_sources(MEMORY_SOURCE_RETENTION_SECONDS)
+            if pruned:
+                logger.info("🧠 [dim]Память: удалено старых строк очереди: %s[/]", pruned)
             if memory_store.memory is None:
                 await asyncio.to_thread(
                     memory_store.initialize_memory,
@@ -335,14 +339,27 @@ def main():
         try:
             from memory_pipeline import process_pending_memory, wait_for_memory_worker
             if not loop.is_closed():
-                loop.run_until_complete(wait_for_memory_worker())
-                report = loop.run_until_complete(process_pending_memory())
+                # Проход по очереди делает сетевые вызовы (DeepSeek, Mem0) и без
+                # ограничения может не уложиться в stop_grace_period. SIGKILL
+                # посреди прохода сжигает попытку источника впустую, поэтому
+                # укладываемся сами и с запасом.
+                loop.run_until_complete(
+                    asyncio.wait_for(wait_for_memory_worker(), timeout=30)
+                )
+                report = loop.run_until_complete(
+                    asyncio.wait_for(process_pending_memory(), timeout=60)
+                )
                 logger.info(
                     "🧠 [green]Остатки памяти обработаны[/] "
                     f"(источников={report.processed}, одобрено={report.approved})"
                 )
             else:
                 logger.info("🧠 [green]Очередь памяти сохранена в SQLite[/]")
+        except asyncio.TimeoutError:
+            logger.warning(
+                "🧠 [yellow]Финальный проход памяти не уложился в отведённое время — "
+                "очередь осталась в SQLite и будет продолжена после старта[/]"
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка финального сохранения памяти: {e}")
         logger.info("👋 [green]Бот остановлен[/]")

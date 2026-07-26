@@ -358,6 +358,33 @@ def abandon_memory_sources(source_ids: list[int]) -> int:
         conn.close()
 
 
+def prune_memory_sources(max_age_seconds: float) -> int:
+    """Удаляет давно завершённые строки очереди источников.
+
+    Строка живёт на каждое непустое сообщение и не удаляется никогда: у
+    терминальных статусов только обнуляется текст. На смонтированном /data это
+    неограниченный рост. `dead` не трогаем — это единственный форензик-след
+    того, почему источник не стал памятью.
+
+    Окно должно быть заведомо больше срока, в течение которого INSERT OR IGNORE
+    ещё защищает от повторной постановки того же message_id.
+    """
+    if max_age_seconds <= 0:
+        return 0
+    cutoff = time.time() - max_age_seconds
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "DELETE FROM memory_sources "
+            "WHERE status IN ('completed', 'abandoned') AND updated_at < ?",
+            (cutoff,),
+        )
+        conn.commit()
+        return max(cur.rowcount, 0)
+    finally:
+        conn.close()
+
+
 def reap_stale_waiting_sources(max_age_seconds: float) -> int:
     """Подстраховка: хоронит 'waiting', зависшие дольше любого разумного хода.
 

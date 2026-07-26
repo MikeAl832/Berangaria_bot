@@ -145,6 +145,12 @@ MEMORY_WAITING_MAX_AGE_SECONDS = max(
     60,
     _as_int(config_yaml.get("memory_waiting_max_age_seconds", 1800), 1800),
 )
+# Через сколько секунд удалять завершённые строки очереди источников. `dead`
+# не удаляется никогда — это форензик-след.
+MEMORY_SOURCE_RETENTION_SECONDS = max(
+    3600,
+    _as_int(config_yaml.get("memory_source_retention_seconds", 30 * 24 * 3600), 30 * 24 * 3600),
+)
 
 # Потолок склейки debounce-буфера. Без него непрерывный поток сообщений
 # собирается в одну запись истории неограниченного размера.

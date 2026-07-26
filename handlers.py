@@ -56,17 +56,12 @@ def truncate_at_sentence(text: str, max_chars: int) -> str:
     return truncated + "..."
 
 
-def _build_memory_text(
-    combined_text: str,
-    media_items: list[tuple[str, str]],
-    *,
-    is_forwarded: bool = False,
-) -> str:
+def _build_memory_text(combined_text: str, *, is_forwarded: bool = False) -> str:
     """
     Возвращает только пользовательский текст для долговременной памяти.
-    Описания vision-модели намеренно не являются источниками фактов.
+    Описания vision-модели намеренно не являются источниками фактов, поэтому
+    медиа сюда нельзя передать даже параметром.
     """
-    del media_items
     if is_forwarded:
         return ""
     return (combined_text or "").strip()
@@ -538,7 +533,6 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # не должна менять уже поставленный источник памяти.
     memory_text = _build_memory_text(
         original_text,
-        [],
         is_forwarded=forward_info is not None,
     )
     memory_source_id = None

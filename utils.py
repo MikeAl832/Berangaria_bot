@@ -249,6 +249,37 @@ def escape_user_text(text: str) -> str:
     return text.replace('[', '(').replace(']', ')')
 
 
+def strip_internal_tags(text: str) -> str:
+    """Убирает служебные токены модели из текста, предназначенного пользователю.
+
+    Живёт здесь, а не в llm_client, чтобы streaming мог применять то же правило
+    к превью: llm_client импортирует streaming, и обратный импорт дал бы цикл.
+    Содержит только вычистку тегов — срез финальной точки и правило молчания
+    относятся к готовому ответу и остаются в llm_client._clean_reply.
+    """
+    if not text:
+        return ''
+
+    text = re.sub(r'<\|channel\>.*?<channel\|>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<\|.*?\|>', '', text).strip()
+
+    text = re.sub(
+        r'\[Context from memory(?:\s*:[^\]]*)?\]',
+        'долгосрочной памяти',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # [#N] — внутренние reply-хэндлы для инструментов. Модель иногда всё же
+    # цитирует их вопреки системному промпту, поэтому не выпускаем их в Telegram.
+    text = re.sub(r'\[#\d+\](?:\s*(?:,|и|или)\s*\[#\d+\])*', '', text)
+    text = re.sub(r'\s+([,.;:!?])', r'\1', text)
+    text = re.sub(r'[,;:]+([.!?])', r'\1', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    return text.strip()
+
+
 def get_video_duration(video_obj) -> float:
     """
     Извлекает длительность видео из Telegram объекта.
