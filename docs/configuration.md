@@ -181,6 +181,38 @@ log_backup_count: 5
 - `log_max_bytes`: One log file size before rotation. Set `0` to disable rotation.
 - `log_backup_count`: Number of rotated log files to keep.
 
+### Tools: Search and Stickers
+
+```yaml
+factual_temperature: 0.4
+web_search_max_per_turn: 2
+sticker_enabled: true
+sticker_min_score: 0.28
+sticker_top_k: 8
+sticker_find_max_per_turn: 3
+```
+
+**Parameters:**
+- `factual_temperature`: Sampling temperature used for the rest of a turn once `web_search` or
+  `read_url` ran — lower means fewer invented numbers. It is applied *only* for those two tools:
+  reactions and sticker searches no longer cool the turn down, because that silently flattened the
+  persona every time the bot merely looked for a sticker.
+- `web_search_max_per_turn`: Ceiling on `web_search` calls in one reply (one query plus one refined
+  retry). The prompt asks the bot to verify facts aggressively, and the DuckDuckGo rate limiter
+  (10/min in `berangaria/tools/web.py`) is process-global, so one runaway turn would otherwise
+  break search for every chat. On overflow the tool returns a refusal telling the model to answer
+  with what it already has.
+- `sticker_min_score`: Vector-score floor for sticker search. Below it a sticker is not offered.
+  Lowering it widens the menu but risks off-vibe stickers; raise it back if that happens.
+- `sticker_top_k`: Default number of candidates `find_stickers` returns when the model does not ask
+  for a specific `count`.
+- `sticker_find_max_per_turn`: How many times `find_stickers` may run in one reply. After the cap the
+  tool tells the model to pick from the candidates it already has or answer in words.
+
+`MAX_TOOL_ROUNDS` in `berangaria/config.py` (12) bounds consecutive tool-call rounds. A turn that
+verifies a fact *and* looks for a sticker can legitimately use eight of them; the ceiling has to stay
+comfortably above that, because overflow aborts the turn with a visible error message.
+
 ### Access Control
 
 ```yaml

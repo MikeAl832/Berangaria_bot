@@ -334,3 +334,101 @@ def test_group_streaming_does_not_leave_partial_message_after_ambiguous_timeout(
     assert update.message.replies == []
     assert [message["text"] for message in bot.messages] == ["полный ответ"]
     assert history[-1]["content"] == "полный ответ"
+
+
+def _sequenced_client(posts, responses):
+    """Клиент, отдающий заготовленные ответы по порядку и пишущий payload'ы."""
+
+    class SequencedClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs.get("json"))
+            return responses[min(len(posts) - 1, len(responses) - 1)]
+
+    return SequencedClient
+
+
+def _tool_call_response(name, arguments):
+    return _Response(200, {
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }],
+            },
+        }],
+        "usage": {},
+    })
+
+
+class _ReactingBot(_SuccessfulBot):
+    def __init__(self):
+        super().__init__()
+        self.reactions = []
+
+    async def set_message_reaction(self, **kwargs):
+        self.reactions.append(kwargs)
+
+
+def _run_turn_with_tool(monkeypatch, tmp_path, name, arguments):
+    posts = []
+    responses = [
+        _tool_call_response(name, arguments),
+        _Response(200, {
+            "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
+            "usage": {},
+        }),
+    ]
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _sequenced_client(posts, responses))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_ReactingBot()), key, history, "Миша", 1, True,
+    ))
+    assert len(posts) == 2, posts
+    return posts
+
+
+def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
+    """Холодная температура — цена за пересказ найденных фактов, а не за любой
+    инструмент. Реакции и стикеры не должны делать остаток хода пресным."""
+    posts = _run_turn_with_tool(
+        monkeypatch, tmp_path, "react_to_message", '{"emoji": "\\ud83d\\udd25"}'
+    )
+    assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
+    assert posts[1]["temperature"] != llm_client.FACTUAL_TEMPERATURE
+
+
+def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path):
+    """А после web_search — наоборот: ответ пересказывает источники и должен быть холодным."""
+    from berangaria.tools import dispatch as tool_handlers
+
+    monkeypatch.setattr(
+        tool_handlers, "web_search",
+        lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт\nтекст\nhttps://e.com",
+    )
+    posts = _run_turn_with_tool(
+        monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
+    )
+    assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE

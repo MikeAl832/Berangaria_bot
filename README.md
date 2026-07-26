@@ -16,7 +16,8 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 - **Long-term memory** scoped per chat (shared in groups, private in DMs)
 - **Multi-modal understanding**: images, videos, stickers, voice messages, and audio
-- **Web search tool** for current information with URL reading capability
+- **Fact-checking by default**: the system prompt treats built-in knowledge as undated gossip. Any reply resting on a number, date, name or a checkable claim someone else made goes through `web_search` first — including before the bot corrects or mocks anyone. Opinions, jokes and anything about the chat itself are explicitly excluded, the search is capped per turn, and the mechanics stay invisible in the reply.
+- **Stickers as first-class replies**: when the answer is mostly emotion, the bot sends a sticker instead of typing it. Reactions acknowledge, stickers reply — the prompt now states that tiebreaker instead of leaving the two tools competing for the same situations.
 - **Telegram reactions** via function calling for natural emoji responses
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
@@ -128,7 +129,7 @@ When media is received:
 - Resumable upload for larger files via Gemini Files API
 - Automatic cleanup of temporary files
 - Media description caching (keyed by `file_unique_id`)
-- Duration limits: 60s for video, 300s for audio (configurable)
+- Duration limits: 300s for video, 300s for audio (`video_max_duration_sec` / `audio_max_duration_sec`)
 
 **Natural language prompts:**
 Vision prompts redesigned for conversational output instead of structured reports. Gemini describes media as if explaining to a friend, making integration with chat LLM seamless.

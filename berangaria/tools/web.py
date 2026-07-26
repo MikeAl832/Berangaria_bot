@@ -7,9 +7,14 @@ import httpx
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 
-# Простой rate limiter для web_search
+# Простой rate limiter для web_search. Общий на процесс: один разошедшийся чат
+# тратит лимит всех остальных, поэтому у хода есть ещё и свой потолок (dispatch).
 _search_timestamps = []
 MAX_SEARCHES_PER_MINUTE = 10
+
+# По этому префиксу диспетчер отличает отказ лимитера от честного «не нашлось»:
+# для модели это разные ситуации, а текст один и тот же.
+RATE_LIMIT_PREFIX = "⚠️ Превышен лимит поисковых запросов"
 
 def _check_rate_limit() -> bool:
     """Проверяет, не превышен ли лимит запросов. Возвращает True если можно делать запрос."""
@@ -27,7 +32,7 @@ def _check_rate_limit() -> bool:
 def web_search(query: str, max_results: int = 5, timelimit: str = None, region: str = "ru-ru") -> str:
     # Проверка rate limit
     if not _check_rate_limit():
-        return f"⚠️ Превышен лимит поисковых запросов ({MAX_SEARCHES_PER_MINUTE}/мин). Попробуйте позже."
+        return f"{RATE_LIMIT_PREFIX} ({MAX_SEARCHES_PER_MINUTE}/мин). Попробуйте позже."
     
     try:
         with DDGS() as ddgs:

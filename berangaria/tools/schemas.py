@@ -9,22 +9,26 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Mandatory search for prices, specs, news, dates after 2023. Then give an answer with numbers — don't say 'rumored' or 'no data'.",
+            "description": "Verify a checkable fact against the live web BEFORE you state it. Mandatory for numbers, prices, rates, dates, specs, versions, releases, statistics, real people/companies/products, current status, and anything whose answer would differ today from a year ago — and ALWAYS before confirming, denying or mocking a factual claim someone else made. If you were about to hedge ('вроде', 'кажется', 'если не ошибаюсь'), search instead of hedging. NOT for opinions, jokes, hyperbole, arithmetic, or facts about this chat and its people. Then answer with the specific number or date; 'rumored' / 'no exact data' are banned while sources exist. Never mention that you searched.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query in the most relevant language"
+                        "description": "Search query: keywords plus the entity, not a full sentence. Use the language of the best source — Russian for local/RU topics, English for tech, global news and foreign products."
                     },
                     "max_results": {
                         "type": "integer",
                         "description": "Number of results, 3-8",
                         "default": 5
                     },
+                    "region": {
+                        "type": "string",
+                        "description": "'ru-ru' for local and Russian-language topics (default), 'wt-wt' for global, tech and English-language topics. Match it to the query language."
+                    },
                     "timelimit": {
                         "type": "string",
-                        "description": "Time filter: 'd'=day, 'w'=week, 'm'=month, 'y'=year",
+                        "description": "Time filter for fast-moving facts (news, prices, rates, standings, live scores): 'd'=day, 'w'=week, 'm'=month, 'y'=year. Omit it for stable facts.",
                         "enum": ["d", "w", "m", "y"]
                     }
                 },
@@ -39,9 +43,11 @@ TOOLS = [
             "description": (
                 "Put an emoji reaction badge on a message (NOT in your text). "
                 "This is a real Telegram action — the emoji appears next to that message. "
-                "Use it freely and often to show emotions: agreement 👍, laughter 😂, shock 😱, "
-                "trolling 🤡, approval 🔥. PREFER reaction-only (no text) for simple acknowledgment. "
+                "Use it freely and often to acknowledge emotion: agreement 👍, laughter 😂, shock 😱, "
+                "trolling 🤡, approval 🔥. PREFER reaction-only (no text) when a message needs nothing beyond 'seen, noted'. "
                 "Add text only if you have something specific to say. "
+                "If your whole answer IS the emotion — you were about to type 'ржу' / 'жесть' / 'топ' — send a sticker "
+                "instead: a reaction acknowledges, a sticker replies. "
                 "By default it reacts to the latest message; pass the [#N] handle as 'id' to react to a specific earlier one. "
                 "Do NOT react again to a message you already reacted to (history notes look like "
                 "'Ты поставила реакцию 🤡 на [#N] …') — pick another [#N], write text, send a sticker, or stay silent. "
@@ -96,11 +102,13 @@ TOOLS = [
         "function": {
             "name": "find_stickers",
             "description": (
-                "Search your sticker collection by vibe. You LOVE using stickers and should do it proactively when the vibe fits. Returns a NUMBERED list of matching stickers"
-                "with descriptions and tags — it does NOT send anything. Use it when you feel like reacting "
-                "with a sticker: browse the options, then send the one that best fits via send_sticker(id). "
-                "You may refine the search up to 3 times per turn with different wording; after that pick "
-                "from already found numbers or answer without a sticker. If none fit, don't send. Don't overuse stickers."
+                "Search your sticker collection by vibe. Returns a NUMBERED list of candidates "
+                "(emotion tag, what the sticker shows, keywords) — it sends nothing yet. "
+                "Use it whenever your reply is mostly emotion: laughter, mockery, approval, shock, fatigue, absurdity — "
+                "or whenever you were about to type a short line like 'ржу' / 'жесть' / 'топ'. That line IS a sticker. "
+                "Then call send_sticker(id) with the number you liked; one search is normally enough (max 3 per turn). "
+                "The one hard limit: a sticker must not stand in for an answer — if the message asks a direct question "
+                "or asks for help, answer that in words. Everywhere else the sticker is the better reply."
             ),
             "parameters": {
                 "type": "object",
@@ -108,13 +116,15 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "Vivid description of the sticker's mood/content, in Russian, e.g. "
-                            "'недоумение, кто-то сморозил глупость' or 'ржу в голос' or 'одобряю, огонь'."
+                            "A Russian emotion word plus 2-3 concrete words — NOT a retelling of the situation. "
+                            "GOOD: 'ирония, ухмылка', 'шок, глаза по пять копеек', 'раздражение, достали'. "
+                            "BAD: 'стикер про то как человек купил машину и хвастается'."
                         )
                     },
                     "count": {
                         "type": "integer",
-                        "description": "How many candidates to return, 3-10 (default 6)."
+                        "description": "How many candidates to return, 3-10. Ask for 8 — more options, more chance one fits.",
+                        "default": 8
                     }
                 },
                 "required": ["query"]
@@ -126,10 +136,12 @@ TOOLS = [
         "function": {
             "name": "send_sticker",
             "description": (
-                "Send the sticker that best matches the current emotion/vibe. Sticker-only replies are highly encouraged."
-                "Send ONE specific sticker to the chat, chosen from the latest find_stickers results by its number. "
+                "Send ONE sticker to the chat, chosen from the latest find_stickers results by its number. "
+                "A sticker-only reply is the normal case, not an exception — but never in place of an actual "
+                "answer: a direct question or a request for help needs words. "
                 "Call this only AFTER find_stickers, passing the id of the option you liked best. "
-                "After a successful send the turn ends — the sticker IS the full reply (no extra text round). "
+                "After a successful send the turn ends, and plain text written alongside it is discarded — "
+                "the sticker is the whole reply. "
                 "NEVER describe a sticker in text ('*кидает стикер*') — send it."
             ),
             "parameters": {
@@ -150,8 +162,10 @@ TOOLS = [
             "name": "read_url",
             "description": (
                 "Download a web page by URL and read its text content. "
-                "Use when the user sends a link or asks to analyze/comment on a specific URL. "
-                "Don't use for general questions — use web_search for those."
+                "Use when the user sends a link or asks about a specific page, AND as the follow-up to "
+                "web_search when a result snippet is truncated, vague, or missing the number you need — "
+                "open the most credible result URL and read the real page. "
+                "Don't use it for a general question with no URL in hand — that is web_search."
             ),
             "parameters": {
                 "type": "object",

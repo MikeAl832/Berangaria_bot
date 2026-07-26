@@ -927,7 +927,16 @@ async def send_llm_request(
                         )
                         return
                     payload_messages.append(message)
-                    used_tool = True  # дальше отвечаем на холодной температуре
+                    # Холодная температура нужна только там, где ответ пересказывает
+                    # найденные факты. Раньше её включал ЛЮБОЙ инструмент, поэтому
+                    # поиск стикера или реакция молча делали остаток хода пресным —
+                    # то есть модель наказывалась ровно за то поведение, которого мы
+                    # добиваемся промптом.
+                    if any(
+                        (tc.get("function") or {}).get("name") in ("web_search", "read_url")
+                        for tc in message["tool_calls"]
+                    ):
+                        used_tool = True
                     turn.pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
 
                     for tool_call in message['tool_calls']:

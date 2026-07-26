@@ -15,8 +15,10 @@ from berangaria.tools.dispatch import (
     handle_react,
     handle_find_stickers,
     handle_send_sticker,
+    handle_web_search,
     dispatch_tool_call,
 )
+from berangaria.tools.web import RATE_LIMIT_PREFIX
 
 
 # ---------- фейки ----------
@@ -30,12 +32,24 @@ class FakeChat:
 
 
 class FakeStatusMsg:
+    """Плашка статуса, ведущая себя как Telegram: правка тем же текстом — ошибка.
+
+    Без этого фейк молча проглатывал бы «message is not modified» и тесты не
+    видели бы ни лишнего вызова API, ни ложного WARNING в логах.
+    """
+
     def __init__(self, mid=999):
         self.message_id = mid
         self.edits = []
+        self.rejected_edits = []
         self.deleted = False
+        self._text = None
 
     async def edit_text(self, text, **kw):
+        if text == self._text:
+            self.rejected_edits.append(text)
+            raise RuntimeError("Message is not modified")
+        self._text = text
         self.edits.append(text)
 
     async def delete(self):
@@ -241,6 +255,117 @@ def test_handle_send_sticker_bad_id(monkeypatch):
     assert turn.sticker_sent is False
     assert ctx.bot.stickers == []
     assert "Не поняла, какой стикер" in payload[-1]["content"]
+
+
+# ---------- handle_web_search ----------
+
+def _stub_search(monkeypatch, result="1. что-то\nописание\nhttps://example.com"):
+    """Подменяет сетевой поиск и считает реальные вызовы."""
+    calls = {"n": 0}
+
+    def fake_search(query, max_results=5, timelimit=None, region="ru-ru"):
+        calls["n"] += 1
+        return result
+
+    monkeypatch.setattr(tool_handlers, "web_search", fake_search)
+    return calls
+
+
+def test_handle_web_search_respects_per_turn_limit(monkeypatch):
+    """Промпт обещает не больше двух поисков за ход; лимитер DDG общий на процесс,
+    поэтому потолок обязан быть в коде, а не только в тексте промпта."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    calls = _stub_search(monkeypatch)
+    turn = ToolTurn()
+    payload = []
+
+    for i in range(2):
+        asyncio.run(handle_web_search(turn, payload, FakeUpdate(), TC, {"query": f"q{i}"}))
+    assert calls["n"] == 2
+    assert turn.web_search_calls == 2
+
+    # третий вызов — отказ без похода в сеть
+    asyncio.run(handle_web_search(turn, payload, FakeUpdate(), TC, {"query": "ещё"}))
+    assert calls["n"] == 2
+    assert turn.web_search_calls == 2
+    assert "Лимит поисков" in payload[-1]["content"]
+    assert payload[-1]["tool_call_id"] == TC["id"]
+
+
+def test_handle_web_search_rate_limit_is_not_a_miss(monkeypatch):
+    """Отказ лимитера модель не должна принимать за «ничего не нашлось» и уточнять запрос."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    _stub_search(monkeypatch, result=f"{RATE_LIMIT_PREFIX} (10/мин). Попробуйте позже.")
+    turn = ToolTurn()
+    payload = []
+    asyncio.run(handle_web_search(turn, payload, FakeUpdate(), TC, {"query": "курс евро"}))
+    content = payload[-1]["content"]
+    assert "Не повторяй поиск в этом ходе" in content
+    assert RATE_LIMIT_PREFIX not in content
+
+
+def test_handle_web_search_status_message_hides_the_query(monkeypatch):
+    """Плашка висит в чате рядом с ответом: показывать в ней запрос — значит
+    выдать механику там, где промпт требует её прятать."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    _stub_search(monkeypatch)
+    turn = ToolTurn()
+    update = FakeUpdate()
+    asyncio.run(handle_web_search(turn, [], update, TC, {"query": "сколько лет Илону Маску"}))
+    shown = [turn.status_message.message_id] and update.message.reply_msg.edits
+    assert all("Илону" not in text for text in shown)
+    assert turn.status_message is update.message.reply_msg
+
+
+def test_two_searches_never_rewrite_the_banner_with_the_same_text(monkeypatch):
+    """Текст плашки больше не содержит запрос, поэтому два поиска подряд просят
+    один и тот же текст. Telegram такую правку отвергает — не надо её слать."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    _stub_search(monkeypatch)
+    turn = ToolTurn()
+    update = FakeUpdate()
+    payload = []
+
+    asyncio.run(handle_web_search(turn, payload, update, TC, {"query": "первый"}))
+    asyncio.run(handle_web_search(turn, payload, update, TC, {"query": "второй"}))
+
+    banner = update.message.reply_msg
+    assert banner.rejected_edits == []
+    assert banner.edits == []  # плашка создана один раз и больше не трогалась
+
+
+def test_read_url_after_search_does_update_the_banner(monkeypatch):
+    """Проверка «не переписывать тем же» не должна залипать: другой текст — правим."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    _stub_search(monkeypatch)
+    monkeypatch.setattr(tool_handlers, "read_url", lambda url: "текст страницы")
+    turn = ToolTurn()
+    update = FakeUpdate()
+    payload = []
+
+    asyncio.run(handle_web_search(turn, payload, update, TC, {"query": "первый"}))
+    asyncio.run(tool_handlers.handle_read_url(turn, payload, update, TC, {"url": "https://e.com"}))
+
+    banner = update.message.reply_msg
+    assert banner.rejected_edits == []
+    assert banner.edits == ["🔗 Читаю ссылку..."]
+
+
+def test_handle_web_search_passes_region_through(monkeypatch):
+    """Схема инструмента объявляет region — обработчик обязан его прокидывать."""
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    seen = {}
+
+    def fake_search(query, max_results=5, timelimit=None, region="ru-ru"):
+        seen.update(query=query, region=region, timelimit=timelimit)
+        return "ok"
+
+    monkeypatch.setattr(tool_handlers, "web_search", fake_search)
+    asyncio.run(handle_web_search(
+        ToolTurn(), [], FakeUpdate(), TC,
+        {"query": "python release", "region": "wt-wt", "timelimit": "w"},
+    ))
+    assert seen == {"query": "python release", "region": "wt-wt", "timelimit": "w"}
 
 
 # ---------- dispatch_tool_call ----------
