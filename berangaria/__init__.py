@@ -1,1 +1,1 @@
-"""Berangaria — Telegram-бот с долговременной памятью, зрением и веб-поиском."""
+"""Berangaria — a Telegram bot with long-term memory, vision, and web search."""

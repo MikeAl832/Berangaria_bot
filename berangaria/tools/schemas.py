@@ -1,7 +1,7 @@
-"""Описания инструментов, которые видит LLM, и белый список Telegram-реакций.
+"""The tool descriptions the LLM sees, plus the Telegram reaction whitelist.
 
-Тексты описаний — это часть промпта: модель решает, вызывать ли инструмент,
-именно по ним. Правь их так же осознанно, как SYSTEM_PROMPT.
+These descriptions are part of the prompt: they are what the model reads when it
+decides whether to call a tool. Edit them as deliberately as SYSTEM_PROMPT.
 """
 
 TOOLS = [

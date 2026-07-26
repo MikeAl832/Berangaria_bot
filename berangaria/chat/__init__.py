@@ -1,1 +1,1 @@
-"""Разговорный слой: Telegram-хендлеры, LLM-ход, потоковая доставка."""
+"""The conversation layer: Telegram handlers, the LLM turn, streamed delivery."""

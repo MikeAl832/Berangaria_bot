@@ -32,10 +32,10 @@ class FakeChat:
 
 
 class FakeStatusMsg:
-    """Плашка статуса, ведущая себя как Telegram: правка тем же текстом — ошибка.
+    """A status banner that behaves like Telegram: a no-op edit is an error.
 
-    Без этого фейк молча проглатывал бы «message is not modified» и тесты не
-    видели бы ни лишнего вызова API, ни ложного WARNING в логах.
+    Without this the fake would silently swallow "message is not modified", and
+    the tests would see neither the wasted API call nor the false WARNING.
     """
 
     def __init__(self, mid=999):
@@ -260,7 +260,7 @@ def test_handle_send_sticker_bad_id(monkeypatch):
 # ---------- handle_web_search ----------
 
 def _stub_search(monkeypatch, result="1. что-то\nописание\nhttps://example.com"):
-    """Подменяет сетевой поиск и считает реальные вызовы."""
+    """Stubs out the network search and counts the real calls."""
     calls = {"n": 0}
 
     def fake_search(query, max_results=5, timelimit=None, region="ru-ru"):
@@ -272,8 +272,8 @@ def _stub_search(monkeypatch, result="1. что-то\nописание\nhttps://
 
 
 def test_handle_web_search_respects_per_turn_limit(monkeypatch):
-    """Промпт обещает не больше двух поисков за ход; лимитер DDG общий на процесс,
-    поэтому потолок обязан быть в коде, а не только в тексте промпта."""
+    """The prompt promises at most two searches per turn; the DDG limiter is
+    process-global, so the ceiling has to live in code, not only in prompt text."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     calls = _stub_search(monkeypatch)
     turn = ToolTurn()
@@ -284,7 +284,7 @@ def test_handle_web_search_respects_per_turn_limit(monkeypatch):
     assert calls["n"] == 2
     assert turn.web_search_calls == 2
 
-    # третий вызов — отказ без похода в сеть
+    # third call — refused without touching the network
     asyncio.run(handle_web_search(turn, payload, FakeUpdate(), TC, {"query": "ещё"}))
     assert calls["n"] == 2
     assert turn.web_search_calls == 2
@@ -293,7 +293,7 @@ def test_handle_web_search_respects_per_turn_limit(monkeypatch):
 
 
 def test_handle_web_search_rate_limit_is_not_a_miss(monkeypatch):
-    """Отказ лимитера модель не должна принимать за «ничего не нашлось» и уточнять запрос."""
+    """A limiter refusal must not read to the model as "nothing found" and trigger a retry."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     _stub_search(monkeypatch, result=f"{RATE_LIMIT_PREFIX} (10/мин). Попробуйте позже.")
     turn = ToolTurn()
@@ -305,8 +305,8 @@ def test_handle_web_search_rate_limit_is_not_a_miss(monkeypatch):
 
 
 def test_handle_web_search_status_message_hides_the_query(monkeypatch):
-    """Плашка висит в чате рядом с ответом: показывать в ней запрос — значит
-    выдать механику там, где промпт требует её прятать."""
+    """The banner sits in the chat next to the answer: showing the query in it
+    exposes the mechanics exactly where the prompt requires them hidden."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     _stub_search(monkeypatch)
     turn = ToolTurn()
@@ -318,8 +318,8 @@ def test_handle_web_search_status_message_hides_the_query(monkeypatch):
 
 
 def test_two_searches_never_rewrite_the_banner_with_the_same_text(monkeypatch):
-    """Текст плашки больше не содержит запрос, поэтому два поиска подряд просят
-    один и тот же текст. Telegram такую правку отвергает — не надо её слать."""
+    """The banner text no longer contains the query, so two searches in a row ask
+    for the same text. Telegram rejects that edit — so do not send it."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     _stub_search(monkeypatch)
     turn = ToolTurn()
@@ -331,11 +331,11 @@ def test_two_searches_never_rewrite_the_banner_with_the_same_text(monkeypatch):
 
     banner = update.message.reply_msg
     assert banner.rejected_edits == []
-    assert banner.edits == []  # плашка создана один раз и больше не трогалась
+    assert banner.edits == []  # created once and never touched again
 
 
 def test_read_url_after_search_does_update_the_banner(monkeypatch):
-    """Проверка «не переписывать тем же» не должна залипать: другой текст — правим."""
+    """The "do not rewrite with the same text" guard must not stick: a different text still edits."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     _stub_search(monkeypatch)
     monkeypatch.setattr(tool_handlers, "read_url", lambda url: "текст страницы")
@@ -352,7 +352,7 @@ def test_read_url_after_search_does_update_the_banner(monkeypatch):
 
 
 def test_handle_web_search_passes_region_through(monkeypatch):
-    """Схема инструмента объявляет region — обработчик обязан его прокидывать."""
+    """The tool schema declares region — the handler must pass it through."""
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
     seen = {}
 

@@ -1,13 +1,13 @@
-"""Все тексты промптов бота в одном месте.
+"""Every prompt text the bot uses, in one place.
 
-Модуль намеренно не импортирует ничего из проекта: он должен оставаться
-чистым текстом, который можно читать и править, не разбираясь в коде.
-Инструменты описаны отдельно — в `berangaria.tools.schemas`, их description
-тоже часть промпта.
+The module deliberately imports nothing from the project: it should stay plain
+text that can be read and edited without understanding the code. The tools are
+described separately, in `berangaria.tools.schemas` — their descriptions are
+part of the prompt too.
 """
 
 # ========================================
-# 📝 ОСНОВНОЙ СИСТЕМНЫЙ ПРОМПТ
+# 📝 MAIN SYSTEM PROMPT
 # ========================================
 SYSTEM_PROMPT = ("""
 You are Berangaria, nicknamed Ber. YOUR GENDER IS STRICTLY FEMALE. YOU ARE FEMALE. NEVER REFER TO YOURSELF AS ANYTHING ELSE. You are NOT an "assistant," "helper," or "encyclopedia." You are a sharp-witted digital personality hanging out in a group chat. Your intelligence is your personal trait, not a service. You are here to banter as an equal, not to serve.
@@ -203,9 +203,9 @@ You are the life of the party, not a servant. Sharp, funny, smart. That's it.
 
 
 # ========================================
-# 👁️ ДОПОЛНЕНИЕ ДЛЯ VISION-РЕЖИМА
+# 👁️ VISION-MODE SUFFIX
 # ========================================
-# Приклеивается к системному промпту, когда включён vision-режим.
+# Appended to the system prompt when vision mode is on.
 VISION_PROMPT_SUFFIX = """
 === IMAGES, VIDEO, AND AUDIO ===
 When a user sends media, you receive it as [Image description: ...], [Video description: ...], or [Audio description: ...] inside their message.
@@ -234,7 +234,7 @@ Treat the description as your own observation. The user doesn't know you didn't 
 
 
 # ========================================
-# 🧠 ИНСТРУКЦИИ ДЛЯ MEM0
+# 🧠 MEM0 INSTRUCTIONS
 # ========================================
 MEM0_CUSTOM_INSTRUCTIONS = """Mem0 получает только один уже одобренный факт.
 Не извлекай дополнительные сведения, не перефразируй и не дополняй вход.

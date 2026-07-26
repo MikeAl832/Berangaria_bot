@@ -1,4 +1,4 @@
-"""Точка входа пакета: `python -m berangaria`."""
+"""Package entry point: `python -m berangaria`."""
 from berangaria.app import main
 
 if __name__ == "__main__":

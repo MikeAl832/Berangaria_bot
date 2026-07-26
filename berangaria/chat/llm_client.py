@@ -927,11 +927,11 @@ async def send_llm_request(
                         )
                         return
                     payload_messages.append(message)
-                    # Холодная температура нужна только там, где ответ пересказывает
-                    # найденные факты. Раньше её включал ЛЮБОЙ инструмент, поэтому
-                    # поиск стикера или реакция молча делали остаток хода пресным —
-                    # то есть модель наказывалась ровно за то поведение, которого мы
-                    # добиваемся промптом.
+                    # The cold temperature is only right where the reply retells
+                    # facts that were looked up. It used to be switched on by ANY
+                    # tool, so a sticker search or a reaction silently flattened the
+                    # rest of the turn — punishing the model for exactly the
+                    # behaviour the prompt is trying to encourage.
                     if any(
                         (tc.get("function") or {}).get("name") in ("web_search", "read_url")
                         for tc in message["tool_calls"]

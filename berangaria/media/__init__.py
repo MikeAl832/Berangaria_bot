@@ -1,1 +1,1 @@
-"""Понимание медиа: Gemini для картинок, видео и аудио."""
+"""Media understanding: Gemini for images, video, and audio."""

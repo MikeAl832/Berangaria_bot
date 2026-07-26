@@ -1,7 +1,7 @@
-﻿"""Загрузка настроек: config.yaml как источник несекретных дефолтов, env — поверх.
+﻿"""Settings loading: config.yaml holds the non-secret defaults, env overrides them.
 
-Секреты приходят только из окружения (.env или docker compose env_file);
-всё остальное задаётся в config.yaml в корне репозитория.
+Secrets come only from the environment (.env or docker compose env_file);
+everything else is set in config.yaml at the repository root.
 """
 import os
 
@@ -197,11 +197,11 @@ STICKER_FIND_MAX_PER_TURN = _as_int(config_yaml.get("sticker_find_max_per_turn",
 STICKER_FIND_MAX_PER_TURN = max(1, min(STICKER_FIND_MAX_PER_TURN, 10))
 
 # ========================================
-# 🔍 ПОИСК
+# 🔍 SEARCH
 # ========================================
-# Сколько раз за один ход можно вызывать web_search. Промпт требует проверять
-# факты гораздо чаще, и без потолка один разошедшийся ход выедает общий на
-# процесс rate limit (10/мин), то есть ломает поиск во всех остальных чатах.
+# How many times web_search may run in one turn. The prompt asks for far more
+# fact-checking, and without a ceiling a single runaway turn eats the
+# process-global rate limit (10/min), i.e. breaks search for every other chat.
 WEB_SEARCH_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("web_search_max_per_turn", 2), 2), 10))
 
 # ========================================
@@ -244,10 +244,11 @@ LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)
 # 📊 ТЕХНИЧЕСКИЕ КОНСТАНТЫ
 # ========================================
 MAX_API_RETRIES = 5  # Максимальное количество попыток обращения к API
-# Потолок последовательных LLM tool-call раундов. Ход, который проверяет факт и
-# при этом ищет стикер, съедает до восьми раундов сам по себе (поиск + уточнение
-# + read_url + три find_stickers + send_sticker + реакция), а на переполнении код
-# обрывает ход ошибкой в чат. Запас нужен, чтобы штатное поведение в него влезало.
+# Ceiling on consecutive LLM tool-call rounds. A turn that verifies a fact AND
+# looks for a sticker uses up to eight rounds on its own (search + refined retry
+# + read_url + three find_stickers + send_sticker + a reaction), and on overflow
+# the code aborts the turn with an error posted to the chat. The headroom is what
+# keeps ordinary behaviour from hitting that wall.
 MAX_TOOL_ROUNDS = 12
 MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементов в одном сообщении для экономии токенов
 

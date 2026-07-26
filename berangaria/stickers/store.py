@@ -2,11 +2,11 @@
 Векторное хранилище стикеров в Qdrant.
 
 Общий модуль для:
-  - scripts/build_sticker_index.py (разовая индексация jsonl -> Qdrant)
-  - berangaria/chat/llm_client.py (рантайм-поиск стикера по описанию через tool send_sticker)
+  - scripts/build_sticker_index.py (one-off jsonl -> Qdrant indexing)
+  - berangaria/chat/llm_client.py (runtime lookup by description via the send_sticker tool)
 
 Эмбеддинги считаем той же моделью, что и mem0 (Gemini `EMBEDDING_MODEL`),
-но напрямую по REST (как berangaria/media/vision.py) — ради контроля над батчингом,
+but straight over REST (like berangaria/media/vision.py) — for control over batching,
 outputDimensionality и taskType. Индекс и запрос идут в ОДНОМ пространстве:
   - индексация: taskType=RETRIEVAL_DOCUMENT
   - поиск:      taskType=RETRIEVAL_QUERY

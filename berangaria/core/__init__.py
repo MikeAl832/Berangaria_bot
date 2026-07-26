@@ -1,1 +1,1 @@
-"""Общая инфраструктура: разделяемое состояние, утилиты, настройка логов."""
+"""Shared infrastructure: process state, helpers, logging setup."""

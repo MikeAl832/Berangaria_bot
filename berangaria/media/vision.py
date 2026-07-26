@@ -120,9 +120,9 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
                 {"inline_data": {"mime_type": mime, "data": b64}},
             ]
         }],
-        # temperature/topP намеренно не передаём: Gemini 3.x рассчитан на дефолтную
-        # температуру 1.0, а значения ниже документированно приводят к зацикливанию
-        # и деградации ответа. Сдержанность описаний задаётся текстом промпта.
+        # temperature/topP are deliberately omitted: Gemini 3.x is tuned for the
+        # default temperature of 1.0, and lower values are documented to cause
+        # looping and degraded output. Restraint comes from the prompt text.
         "generationConfig": {
             "maxOutputTokens": 2048,
         },
@@ -304,8 +304,8 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
 
     payload = {
         "contents": [{"role": "user", "parts": parts}],
-        # См. комментарий в describe_image_bytes: Gemini 3.x не принимает
-        # заниженную температуру без риска зацикливания.
+        # See the comment in describe_image_bytes: on Gemini 3.x a lowered
+        # temperature risks looping.
         "generationConfig": {
             "maxOutputTokens": 4096,
         },
@@ -390,8 +390,8 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
 
     payload = {
         "contents": [{"role": "user", "parts": parts}],
-        # См. комментарий в describe_image_bytes: Gemini 3.x не принимает
-        # заниженную температуру без риска зацикливания.
+        # See the comment in describe_image_bytes: on Gemini 3.x a lowered
+        # temperature risks looping.
         "generationConfig": {
             "maxOutputTokens": 2048,
         },

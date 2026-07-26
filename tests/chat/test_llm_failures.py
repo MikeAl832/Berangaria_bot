@@ -337,7 +337,7 @@ def test_group_streaming_does_not_leave_partial_message_after_ambiguous_timeout(
 
 
 def _sequenced_client(posts, responses):
-    """Клиент, отдающий заготовленные ответы по порядку и пишущий payload'ы."""
+    """A client that returns canned responses in order and records the payloads."""
 
     class SequencedClient:
         def __init__(self, *args, **kwargs):
@@ -411,8 +411,8 @@ def _run_turn_with_tool(monkeypatch, tmp_path, name, arguments):
 
 
 def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
-    """Холодная температура — цена за пересказ найденных фактов, а не за любой
-    инструмент. Реакции и стикеры не должны делать остаток хода пресным."""
+    """The cold temperature is the price of retelling looked-up facts, not of any
+    tool at all. Reactions and stickers must not flatten the rest of the turn."""
     posts = _run_turn_with_tool(
         monkeypatch, tmp_path, "react_to_message", '{"emoji": "\\ud83d\\udd25"}'
     )
@@ -421,7 +421,7 @@ def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
 
 
 def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path):
-    """А после web_search — наоборот: ответ пересказывает источники и должен быть холодным."""
+    """After web_search it is the opposite: the reply retells sources and must be cold."""
     from berangaria.tools import dispatch as tool_handlers
 
     monkeypatch.setattr(

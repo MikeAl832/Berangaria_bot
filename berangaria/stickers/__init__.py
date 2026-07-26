@@ -1,1 +1,1 @@
-"""Стикеры: эмбеддинги и векторный поиск в Qdrant."""
+"""Stickers: embeddings and Qdrant-backed vector search."""

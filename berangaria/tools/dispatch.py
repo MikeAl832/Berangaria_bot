@@ -33,7 +33,7 @@ class ToolTurn:
 
     def __init__(self):
         self.status_message = None   # статусная плашка поиска/чтения ссылки (переиспользуется)
-        self.status_text = None      # что на ней сейчас написано (None = неизвестно)
+        self.status_text = None      # what it currently reads (None = unknown)
         self.reacted = False         # бот поставил реакцию — допускаем ответ без текста
         self.reactions_made = []     # [{"emoji", "on"}] — реакции этого хода (пишутся в историю)
         self.sticker_sent = False    # бот отправил стикер — тоже допускаем ответ без текста
@@ -41,17 +41,17 @@ class ToolTurn:
         self.sticker_candidates = {}  # {номер: {"file_id", "desc", "emotion"}} — из find_stickers
         self.sticker_seq = 0          # сквозная нумерация кандидатов (не сбрасывается между поисками хода)
         self.find_stickers_calls = 0  # сколько раз find_stickers вызвали в этом ходе
-        self.web_search_calls = 0     # сколько раз web_search вызвали в этом ходе
+        self.web_search_calls = 0     # how many times web_search ran in this turn
         self.pending_reply = None     # (target_mid, text, sid) если модель выбрала reply_to_message
 
 
 async def _show_status(turn, update, text):
-    """Показывает плашку статуса, не переписывая её тем же текстом.
+    """Shows the status banner without rewriting it with the same text.
 
-    Telegram отвечает 400 «message is not modified» на правку без изменений.
-    Раз тексты плашки перестали содержать сам запрос, два поиска подряд просят
-    один и тот же текст — и без этой проверки каждый второй поиск писал бы в лог
-    ложный WARNING, за которым перестают замечать настоящие сбои плашки.
+    Telegram answers 400 "message is not modified" to a no-op edit. Now that the
+    banner no longer carries the query itself, two searches in a row ask for the
+    same text — and without this guard every second search would log a false
+    WARNING, the kind that trains you to ignore real banner failures.
     """
     if turn.status_message is None:
         turn.status_message = await update.message.reply_text(text)
@@ -69,10 +69,11 @@ async def _show_status(turn, update, text):
 async def handle_web_search(turn, payload_messages, update, tool_call, args):
     query = str(args.get("query") or "").strip()
 
-    # Промпт разрешает не больше двух поисков за ход (запрос плюс уточнение).
-    # Одного текста промпта мало: rate limiter в tools.web общий на процесс, то
-    # есть разошедшийся ход тратит лимит всех чатов сразу. Потолок повторяет уже
-    # работающий приём find_stickers — отказ с подсказкой, а не молчаливый обрыв.
+    # The prompt allows at most two searches per turn (a query plus one retry).
+    # Prompt text alone is not enough: the rate limiter in tools.web is
+    # process-global, so a runaway turn spends every chat's budget at once. The
+    # ceiling copies the pattern find_stickers already uses — a refusal that says
+    # what to do instead, not a silent cut-off.
     if turn.web_search_calls >= WEB_SEARCH_MAX_PER_TURN:
         logger.info(f"🔍 [dim]web_search лимит {WEB_SEARCH_MAX_PER_TURN}/ход — отказ[/] ('{query[:60]}')")
         payload_messages.append({
@@ -87,9 +88,10 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
     turn.web_search_calls += 1
 
     await update.message.chat.send_action(action="typing")
-    # В плашку намеренно не попадает сам запрос: она висит в чате рядом с ответом,
-    # и «🔍 Выполняю поиск: правда ли что...» выдаёт механику ровно там, где промпт
-    # требует её не показывать (и заранее сливает панчлайн). Запрос остаётся в логах.
+    # The query deliberately stays out of the banner: the banner sits in the chat
+    # right next to the answer, and "🔍 Searching: is it true that..." exposes the
+    # mechanics exactly where the prompt requires them hidden — and spoils the
+    # punchline in advance. The query is still logged.
     await _show_status(turn, update, "🔍 Секунду...")
 
     logger.info(f"🔍 [blue]Поиск:[/] {query}")
@@ -106,16 +108,16 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
         region=args.get('region', 'ru-ru'),
     )
 
-    # Плашку после поиска не трогаем: на ней уже нужный текст, а «обновление» тем
-    # же содержимым Telegram отвергает. Дальше её либо перепишет ответом, либо
-    # удалит llm_client — на каждом выходе из хода.
+    # Leave the banner alone after the search: it already reads what it should, and
+    # Telegram rejects an "update" with identical content. From here llm_client
+    # either rewrites it with the reply or deletes it, on every exit path.
     logger.debug(f"📄 Результат: {repr(search_result[:200])}")
 
     if not search_result:
         search_result = "Поиск не дал результатов."
     elif search_result.startswith(RATE_LIMIT_PREFIX):
-        # Модель не отличает отказ лимитера от честного «ничего не нашлось» и по
-        # правилу «промахнулся — уточни запрос» сожгла бы на этом второй раунд.
+        # The model cannot tell a limiter refusal from a genuine "nothing found",
+        # and its "missed? refine the query" rule would burn the second round on it.
         search_result = (
             "Поиск временно недоступен (лимит запросов). "
             "Не повторяй поиск в этом ходе — отвечай без него."

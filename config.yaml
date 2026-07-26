@@ -11,8 +11,8 @@
   "top_p": 0.91
   "repetition_penalty": 1.08
 
-# Температура для фактических ответов после поиска/чтения ссылок (ниже = меньше галлюцинаций).
-# Применяется только после web_search/read_url — стикеры и реакции её больше не включают.
+# Temperature for factual answers after a search / link read (lower = fewer hallucinations).
+# Applied only after web_search/read_url — stickers and reactions no longer trigger it.
 "factual_temperature": 0.4
 "streaming_enabled": true                  # Потоковые ответы DeepSeek и Telegram preview
 "stream_update_interval_seconds": 0.8      # Не чаще одного обновления preview за этот интервал
@@ -22,9 +22,9 @@
 # 👁️ VISION (Распознавание картинок/видео)
 # ========================================
 "vision_mode": true                      # Включить распознавание изображений и видео
-"gemini_model": "gemini-3.5-flash-lite"  # Модель Gemini (GA с 21.07.2026, есть free tier).
-                                         # gemini-3.1-flash-lite объявлена устаревшей, выключение 07.05.2027 — это её штатная замена.
-                                         # gemini-2.0-flash уже выключена, gemini-2.5-flash выключается 16.10.2026.
+"gemini_model": "gemini-3.5-flash-lite"  # Gemini model (GA since 2026-07-21, free tier available).
+                                         # gemini-3.1-flash-lite is deprecated, shutdown 2027-05-07 — this is its official replacement.
+                                         # gemini-2.0-flash is already shut down; gemini-2.5-flash shuts down 2026-10-16.
 "video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — video_max_file_size_bytes: 20 МБ в облачном Bot API, 2 ГиБ в local mode
 "audio_max_duration_sec": 300            # Максимальная длительность голосовых/аудио (секунды)
 
@@ -60,15 +60,15 @@
 "sticker_min_score": 0.28                # Порог релевантности; ниже — стикер не отправляется
 "sticker_top_k": 8                       # Сколько кандидатов брать из поиска (из топа берётся случайный)
 "sticker_auto_sync": true                # Синхронизировать стикеры при старте бота (доливать новые из файла)
-"sticker_sync_file": "data/stickers_clean.jsonl"  # Откуда синкать (путь от корня репозитория)
+"sticker_sync_file": "data/stickers_clean.jsonl"  # Source to sync from (path relative to the repository root)
 "sticker_sync_max_per_start": 0          # 0 = залить всех недостающих; иначе не больше N за один старт (беречь квоту)
 "sticker_index_version": 2               # Версия формата эмбеддинга. Бампни +1 при смене формулы текста → бот один раз сам переэмбеддит всё при старте
 "sticker_find_max_per_turn": 3           # Макс. вызовов find_stickers за один ответ (потом — выбирай из уже найденных)
 
 # ========================================
-# 🔍 ПОИСК
+# 🔍 SEARCH
 # ========================================
-"web_search_max_per_turn": 2             # Макс. вызовов web_search за один ответ (запрос + уточнение). Лимит DDG общий на процесс
+"web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The DDG limit is process-global
 
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА

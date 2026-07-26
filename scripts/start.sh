@@ -2,7 +2,7 @@
 # Запуск Berangaria_bot под Linux
 set -euo pipefail
 
-# Скрипт лежит в scripts/, а docker-compose.yml, .env и config.yaml — в корне
+# The script lives in scripts/; docker-compose.yml, .env and config.yaml are at the root
 cd "$(dirname "$(readlink -f "$0")")/.."
 
 VENV_DIR="venv"

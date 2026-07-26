@@ -2,7 +2,7 @@
 # Удобный просмотр логов Berangaria_bot на сервере и локально.
 set -euo pipefail
 
-# Скрипт лежит в scripts/, а docker-compose.yml и bot_data/ — в корне
+# The script lives in scripts/; docker-compose.yml and bot_data/ are at the root
 cd "$(dirname "$(readlink -f "$0")")/.."
 
 LINES="${LINES:-200}"

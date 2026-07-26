@@ -7,13 +7,14 @@ import httpx
 from ddgs import DDGS
 from bs4 import BeautifulSoup
 
-# Простой rate limiter для web_search. Общий на процесс: один разошедшийся чат
-# тратит лимит всех остальных, поэтому у хода есть ещё и свой потолок (dispatch).
+# A simple rate limiter for web_search. It is process-global: one runaway chat
+# spends everyone else's budget, which is why a turn also has its own cap
+# (see dispatch).
 _search_timestamps = []
 MAX_SEARCHES_PER_MINUTE = 10
 
-# По этому префиксу диспетчер отличает отказ лимитера от честного «не нашлось»:
-# для модели это разные ситуации, а текст один и тот же.
+# The dispatcher tells a limiter refusal apart from a genuine "nothing found" by
+# this prefix: to the model these are different situations with the same text.
 RATE_LIMIT_PREFIX = "⚠️ Превышен лимит поисковых запросов"
 
 def _check_rate_limit() -> bool:

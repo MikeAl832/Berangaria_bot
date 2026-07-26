@@ -1,20 +1,20 @@
-"""Единая точка разрешения путей проекта.
+"""The single place where project paths are resolved.
 
-Модуль ничего не импортирует из проекта, поэтому его может использовать и
-`berangaria.config`, и `berangaria.core.state`, не создавая цикла.
+This module imports nothing from the project, so both `berangaria.config` and
+`berangaria.core.state` can use it without creating a cycle.
 
-Относительные пути в конфиге и переменных окружения считаются от корня
-репозитория, а не от текущей рабочей директории: бот запускается как
-`python -m berangaria`, из контейнера и из скриптов в `scripts/`, и все три
-должны попадать в один и тот же config.yaml, bot_state.db и bot.log.
+Relative paths in the config and in environment variables are resolved against
+the repository root rather than the current working directory: the bot starts as
+`python -m berangaria`, from the container, and from scripts in `scripts/`, and
+all three have to reach the same config.yaml, bot_state.db, and bot.log.
 """
 from pathlib import Path
 
-# berangaria/core/paths.py -> berangaria/core -> berangaria -> корень репозитория
+# berangaria/core/paths.py -> berangaria/core -> berangaria -> repository root
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def project_path(value: str) -> str:
-    """Абсолютный путь: относительное значение считается от корня репозитория."""
+    """Absolute path: a relative value is resolved against the repository root."""
     path = Path(value).expanduser()
     return str(path if path.is_absolute() else PROJECT_ROOT / path)

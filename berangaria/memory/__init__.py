@@ -1,1 +1,1 @@
-"""Долговременная память: durable-очередь источников и клиент Mem0."""
+"""Long-term memory: the durable source queue and the Mem0 client."""
