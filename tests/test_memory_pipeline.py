@@ -844,6 +844,78 @@ def test_policy_still_rejects_real_sensitive_categories(text, fact, quote):
         ))
 
 
+@pytest.mark.parametrize(
+    "text, fact, quote",
+    [
+        # Регресс: кавычки считались модальностью и в одиночку убивали факт.
+        # Восемь дней подряд ни один факт не доходил до Mem0 именно из-за этого.
+        (
+            "Мой любимый напиток — грушевый лимонад «Тархун-77»",
+            "Миша любит грушевый лимонад «Тархун-77»",
+            "любимый напиток — грушевый лимонад «Тархун-77»",
+        ),
+        ('Я работаю в "Яндексе"', 'Миша работает в "Яндексе"', 'работаю в "Яндексе"'),
+        ("У меня кот по кличке «Пельмень»", "У Миши кот «Пельмень»", "кот по кличке «Пельмень»"),
+        # Модальность в соседнем предложении не относится к утверждению.
+        (
+            "Бер, как дела? Кстати, я живу в Санкт-Петербурге.",
+            "Миша живёт в Санкт-Петербурге",
+            "я живу в Санкт-Петербурге",
+        ),
+        (
+            "Завтра еду к маме. Я работаю бэкенд-разработчиком на Python.",
+            "Миша работает бэкенд-разработчиком на Python",
+            "работаю бэкенд-разработчиком на Python",
+        ),
+    ],
+)
+def test_policy_allows_quotes_and_unrelated_modality(text, fact, quote):
+    """Модальность — свойство утверждения, а не всего сообщения."""
+    _validate_verified_fact(_policy_source(text), VerifiedMemoryFact(
+        fact, quote, "profile.fact", "ok"
+    ))
+
+
+@pytest.mark.parametrize(
+    "text, fact, quote",
+    [
+        # Сужение до предложения не должно открывать обход через короткую цитату.
+        (
+            "Сегодня отличная погода. Надеюсь переехать в Казань.",
+            "Миша переедет в Казань",
+            "переехать в Казань",
+        ),
+        (
+            "Я живу в Питере. Может, куплю дом.",
+            "Миша купит дом",
+            "куплю дом",
+        ),
+        # Вопрос остаётся вопросом: знак конца входит в предложение.
+        (
+            "Я правда живу в Казани?",
+            "Миша живёт в Казани",
+            "живу в Казани",
+        ),
+    ],
+)
+def test_policy_still_rejects_modality_around_the_quote(text, fact, quote):
+    """Соседнее предложение больше не вето, своё — по-прежнему вето."""
+    with pytest.raises(MemoryCandidateRejected):
+        _validate_verified_fact(_policy_source(text), VerifiedMemoryFact(
+            fact, quote, "profile.fact", "ошибочный KEEP"
+        ))
+
+
+def test_sensitive_policy_still_spans_the_whole_source():
+    """Приватность шире модальности: пароль рядом делает опасным всё сообщение."""
+    with pytest.raises(MemoryCandidateRejected) as excinfo:
+        _validate_verified_fact(
+            _policy_source("Мой пароль qwerty123. Я люблю картошку."),
+            VerifiedMemoryFact("Миша любит картошку", "люблю картошку", "profile.fact", "x"),
+        )
+    assert "парол" in str(excinfo.value).lower()
+
+
 def test_policy_rejection_names_the_matched_token():
     """Причина отказа должна называть сработавший токен.
 

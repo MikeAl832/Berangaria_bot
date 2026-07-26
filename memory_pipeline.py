@@ -50,12 +50,20 @@ _SENSITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _UNCERTAIN_RE = re.compile(
+    # Кавычки убраны: это пунктуация, а не модальность. Голые `"«»` отклоняли
+    # ровно те факты, ради которых память и нужна — «любимый напиток
+    # „Тархун-77“», «работаю в „Яндексе“», — потому что название в кавычках
+    # ничего не говорит о неуверенности автора. Чужую речь отсекают промпты
+    # extractor'а и verifier'а («не сохраняй цитаты и сведения о других людях»).
     r"(?:\b(?:кажется|наверно|наверное|возможно|хочу|хотел\w*|планир\w*|"
     r"собира\w*ся|думаю|если|попробую|наде\w*|мечта\w*|когда-нибудь|"
     r"может|сейчас|завтра|вчера|сегодня|было бы|хотелось бы|"
-    r"не уверен\w*)\b|\?|\"|«|»)",
+    r"не уверен\w*)\b|\?)",
     re.IGNORECASE,
 )
+# `(?<=[.!?…])\s+` оставляет знак конца внутри предложения: вопрос обязан
+# по-прежнему ловиться как вопрос.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
 class MemoryTransientError(RuntimeError):
@@ -131,6 +139,40 @@ class ApprovedFactStore(Protocol):
 
 def _normalise_text(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _sentence_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for boundary in _SENTENCE_BOUNDARY_RE.finditer(text):
+        spans.append((start, boundary.start()))
+        start = boundary.end()
+    spans.append((start, len(text)))
+    return [(begin, end) for begin, end in spans if end > begin]
+
+
+def _claim_context(source_text: str, quote: str) -> str:
+    """Предложения источника, из которых взята доказательная цитата.
+
+    Модальный маркер отменяет факт, только когда стоит рядом с самим
+    утверждением. По всему сообщению эта проверка ловила соседние фразы:
+    «бер, как дела? кстати я живу в Питере» теряло полностью пригодный факт
+    из-за вопроса, адресованного боту. Цитату при этом всё равно нельзя
+    сузить до безопасного куска — предложение вокруг неё берётся целиком,
+    поэтому «Надеюсь переехать в Казань» с цитатой «переехать в Казань»
+    по-прежнему отклоняется.
+    """
+    needle = quote.strip()
+    start = source_text.find(needle)
+    if not needle or start < 0:
+        return source_text
+    end = start + len(needle)
+    picked = [
+        source_text[begin:stop]
+        for begin, stop in _sentence_spans(source_text)
+        if begin < end and stop > start
+    ]
+    return " ".join(picked) if picked else source_text
 
 
 def _parse_json_response(data: object) -> dict:
@@ -472,7 +514,11 @@ def _validate_verified_fact(
         raise MemoryCandidateRejected(
             f"чувствительная категория ({sensitive.group()!r})"
         )
-    uncertain = _UNCERTAIN_RE.search(evidence_text)
+    # Приватность остаётся на всём источнике: пароль в соседней фразе делает
+    # опасным всё сообщение. Модальность — свойство самого утверждения, поэтому
+    # сужена до предложений вокруг цитаты.
+    claim_text = _normalise_text(_claim_context(source.text, raw_quote))
+    uncertain = _UNCERTAIN_RE.search(f"{claim_text} {normalized_fact}")
     if uncertain:
         raise MemoryCandidateRejected(
             f"неясная или временная формулировка ({uncertain.group()!r})"
