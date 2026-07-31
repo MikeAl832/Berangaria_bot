@@ -192,9 +192,13 @@ STICKER_AUTO_SYNC = config_yaml.get("sticker_auto_sync", True)
 STICKER_SYNC_FILE = project_path(config_yaml.get("sticker_sync_file", "data/stickers_clean.jsonl"))
 STICKER_SYNC_MAX_PER_START = config_yaml.get("sticker_sync_max_per_start", 0)
 STICKER_INDEX_VERSION = config_yaml.get("sticker_index_version", 1)
-# Сколько раз за один ход можно вызывать find_stickers (дальше — отказ, бери из уже найденных)
-STICKER_FIND_MAX_PER_TURN = _as_int(config_yaml.get("sticker_find_max_per_turn", 3), 3)
-STICKER_FIND_MAX_PER_TURN = max(1, min(STICKER_FIND_MAX_PER_TURN, 10))
+# One-shot send_sticker(query) attempts per turn (search+send). Default 2 = one
+# refined retry if the first query misses; success ends the turn immediately.
+_sticker_send_cap = config_yaml.get(
+    "sticker_send_max_per_turn",
+    config_yaml.get("sticker_find_max_per_turn", 2),
+)
+STICKER_SEND_MAX_PER_TURN = max(1, min(_as_int(_sticker_send_cap, 2), 5))
 
 # ========================================
 # 🔍 SEARCH
@@ -203,6 +207,34 @@ STICKER_FIND_MAX_PER_TURN = max(1, min(STICKER_FIND_MAX_PER_TURN, 10))
 # fact-checking, and without a ceiling a single runaway turn eats the
 # process-global rate limit (10/min), i.e. breaks search for every other chat.
 WEB_SEARCH_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("web_search_max_per_turn", 2), 2), 10))
+
+# ========================================
+# 💬 MULTI-MESSAGE REPLIES (send_messages)
+# ========================================
+# Caps for the terminal send_messages tool: natural short bursts, not spam.
+MULTI_MESSAGE_MAX = max(2, min(_as_int(config_yaml.get("multi_message_max", 3), 3), 5))
+MULTI_MESSAGE_MAX_CHARS = max(
+    40, min(_as_int(config_yaml.get("multi_message_max_chars", 280), 280), 1000)
+)
+MULTI_MESSAGE_MAX_TOTAL_CHARS = max(
+    80,
+    min(_as_int(config_yaml.get("multi_message_max_total_chars", 600), 600), 3000),
+)
+MULTI_MESSAGE_DELAY_MIN = max(
+    0.1, min(_as_float(config_yaml.get("multi_message_delay_min", 0.4), 0.4), 5.0)
+)
+MULTI_MESSAGE_DELAY_MAX = max(
+    MULTI_MESSAGE_DELAY_MIN,
+    min(_as_float(config_yaml.get("multi_message_delay_max", 2.0), 2.0), 10.0),
+)
+MULTI_MESSAGE_DELAY_TOTAL_CAP = max(
+    MULTI_MESSAGE_DELAY_MAX,
+    min(_as_float(config_yaml.get("multi_message_delay_total_cap", 5.0), 5.0), 30.0),
+)
+# Approximate typing speed used only to scale inter-bubble pause by length.
+MULTI_MESSAGE_CHARS_PER_SEC = max(
+    8.0, min(_as_float(config_yaml.get("multi_message_chars_per_sec", 28.0), 28.0), 80.0)
+)
 
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА
@@ -246,9 +278,9 @@ LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)
 MAX_API_RETRIES = 5  # Максимальное количество попыток обращения к API
 # Ceiling on consecutive LLM tool-call rounds. A turn that verifies a fact AND
 # looks for a sticker uses up to eight rounds on its own (search + refined retry
-# + read_url + three find_stickers + send_sticker + a reaction), and on overflow
-# the code aborts the turn with an error posted to the chat. The headroom is what
-# keeps ordinary behaviour from hitting that wall.
+# + read_url + send_sticker + a reaction), and on overflow the code aborts the
+# turn with an error posted to the chat. The headroom is what keeps ordinary
+# behaviour from hitting that wall.
 MAX_TOOL_ROUNDS = 12
 MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементов в одном сообщении для экономии токенов
 

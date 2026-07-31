@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import httpx
@@ -237,16 +237,25 @@ async def _deepseek_json(*, system: str, user: str, max_tokens: int) -> dict:
 
 
 class DeepSeekMemoryExtractor:
-    _PROMPT = """Ты извлекаешь кандидатов для строгой долговременной памяти Berangaria.
-Источник — одно обычное текстовое сообщение пользователя. Верни JSON-объект ровно
-формата {\"candidates\":[{\"fact\":\"...\",\"source_quote\":\"...\",\"fact_key\":\"...\"}]}.
+    _PROMPT = """Ты — offline-модуль долговременной памяти для Telegram-бота Бер
+(Berangaria): острый участник беседы в личке или группе. Ты не Бер и не чат-бот:
+ты не отвечаешь людям. По одному исходному сообщению ты предлагаешь кандидатов
+фактов, которые Бер сможет потом уместно вспомнить про автора этого сообщения
+в том же чате.
+
+Верни JSON-объект ровно формата
+{\"candidates\":[{\"fact\":\"...\",\"source_quote\":\"...\",\"fact_key\":\"...\"}]}.
 
 Правила:
 - Сохраняй только ясные устойчивые самоутверждения автора о себе.
+- Автор — поле author_name во входе; не путай его с именами внутри текста сообщения.
+- `fact` обязан содержать author_name дословно (как во входе), от третьего лица:
+  «Миша использует RTX 5070 Ti». Нельзя: «пользователь…», «автор…», «я…».
 - Не сохраняй планы, временные состояния, вопросы, желания, догадки, цитаты, иронию,
   сведения о других людях, групповые «мы», секреты, адреса, документы, финансовые и
   медицинские данные, а также медиа или мета про бота.
-- `source_quote` должен быть точным фрагментом исходного сообщения.
+- `source_quote` должен быть точным фрагментом исходного сообщения (ник в quote не
+  обязателен).
 - `fact_key` — стабильный ASCII-ключ свойства, например `hardware.gpu` или
   `preferences.music`; одинаковое свойство должно получать одинаковый ключ.
 - Если подходящих фактов нет, верни пустой список. Ничего не додумывай.
@@ -283,13 +292,18 @@ class DeepSeekMemoryExtractor:
 
 
 class DeepSeekMemoryVerifier:
-    _PROMPT = """Ты — независимый verifier строгой долговременной памяти.
-Проверь кандидата только по одному исходному сообщению и верни JSON:
+    _PROMPT = """Ты — независимый verifier offline-памяти для Telegram-бота Бер.
+Ты не отвечаешь в чат: по одному исходному сообщению решаешь, можно ли сохранить
+кандидат как долговременный факт об авторе этого сообщения.
+
+Верни JSON:
 {\"decision\":\"KEEP\",\"fact\":\"...\",\"source_quote\":\"...\",\"fact_key\":\"...\",\"reason\":\"...\"}
 или {\"decision\":\"DISCARD\",\"reason\":\"...\"}.
 
 KEEP разрешён только когда одновременно верно всё:
-- автор сообщения прямо утверждает факт о себе;
+- автор сообщения (source.author_name) прямо утверждает факт о себе;
+- `fact` атрибутирован этому автору: содержит author_name дословно, от третьего лица
+  (не «пользователь…», не «я…», не про другого человека);
 - факт устойчивый и полезный, а не временный статус или план;
 - точная цитата прямо и полностью подтверждает формулировку;
 - нет догадок, модальных слов, иронии, вопросов, цитат, медиа и чувствительных данных;
@@ -491,9 +505,26 @@ class Mem0ApprovedFactStore:
                 + "; ".join(failures)[:300]
             )
 
+def _ensure_author_attribution(author_name: str, fact: str) -> str:
+    """Гарантирует, что display name автора присутствует в тексте факта.
+
+    Промпт extractor/verifier просит писать ник, но модели это не гарантируют.
+    Без ника в group-scope Бер не отличает, чей это факт. Префикс
+    «{name}: {fact}» — детерминированный fallback, не меняющий source_quote.
+    """
+    name = (author_name or "").strip()
+    text = (fact or "").strip()
+    if not name or not text:
+        return text
+    if name.casefold() in text.casefold():
+        return text
+    return f"{name}: {text}"
+
+
 def _validate_verified_fact(
     source: state.MemorySourceRecord, fact: VerifiedMemoryFact
-) -> None:
+) -> VerifiedMemoryFact:
+    """Policy checks, then attribute the fact to source.author_name if needed."""
     raw_quote = fact.source_quote.strip()
     normalized_source = _normalise_text(source.text)
     normalized_quote = _normalise_text(fact.source_quote)
@@ -525,6 +556,13 @@ def _validate_verified_fact(
         )
     if "[image description:" in normalized_source.lower() or "[video description:" in normalized_source.lower():
         raise MemoryCandidateRejected("медиа не является источником памяти")
+
+    attributed = _ensure_author_attribution(source.author_name, fact.fact)
+    if len(_normalise_text(attributed)) > 500:
+        raise MemoryCandidateRejected("пустой или слишком длинный факт")
+    if attributed == fact.fact:
+        return fact
+    return replace(fact, fact=attributed)
 
 
 async def _rollback_staged_writes(
@@ -610,7 +648,7 @@ async def _process_pending_memory(
                         continue
                     if not isinstance(verified, VerifiedMemoryFact):
                         raise MemoryTransientError("verifier вернул неизвестное решение")
-                    _validate_verified_fact(source, verified)
+                    verified = _validate_verified_fact(source, verified)
                     if verified.fact_key in seen_verified_keys:
                         discarded += 1
                         logger.info(

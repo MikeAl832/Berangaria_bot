@@ -2,6 +2,7 @@ import re
 import logging
 import asyncio
 import copy
+import random
 import httpx
 from telegram import Update
 from telegram.error import BadRequest
@@ -15,6 +16,8 @@ from berangaria.config import (
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
+    MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
+    MULTI_MESSAGE_CHARS_PER_SEC,
 )
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
 from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
@@ -272,6 +275,17 @@ def _split_for_telegram(text: str, limit: int = 4096) -> list[str]:
         chunks.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip()
     return [chunk for chunk in chunks if chunk]
+
+
+def _multi_message_delay_seconds(text: str, *, slept_total: float = 0.0) -> float:
+    """Пауза перед следующим bubble: длина + jitter, с общим потолком на ход."""
+    remaining = MULTI_MESSAGE_DELAY_TOTAL_CAP - slept_total
+    if remaining <= 0:
+        return 0.0
+    base = len(text or "") / MULTI_MESSAGE_CHARS_PER_SEC
+    delay = max(MULTI_MESSAGE_DELAY_MIN, min(MULTI_MESSAGE_DELAY_MAX, base))
+    delay *= random.uniform(0.85, 1.15)
+    return max(0.0, min(delay, remaining))
 
 
 def _is_parse_error(error: BaseException) -> bool:
@@ -765,6 +779,98 @@ async def send_llm_request(
                     first_mid = sent.message_id
             return first_mid
 
+    async def _deliver_multi(messages: list[str], target_mid, status_msg):
+        """
+        Шлёт 2+ коротких сообщений с typing и sleep между ними.
+        Reply (если есть) — только на первый bubble; mid для истории — первый.
+        Возвращает (first_mid, delivered_texts) — delivered может быть короче
+        при partial fail после первого send.
+        """
+        cleaned: list[str] = []
+        for raw in messages or []:
+            try:
+                piece = _clean_reply(raw)
+            except Exception:
+                piece = (raw or "").strip()
+            if piece:
+                cleaned.append(piece)
+        if not cleaned:
+            if status_msg is not None:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            return None, []
+
+        if len(cleaned) == 1:
+            mid = await _deliver(cleaned[0], target_mid, status_msg)
+            return mid, cleaned
+
+        # Multi: status banner cannot become "the" reply for a whole series.
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+        chat_id = update.effective_chat.id
+        thread_id = getattr(update.message, "message_thread_id", None)
+        first_mid = None
+        delivered: list[str] = []
+        slept_total = 0.0
+
+        for index, text in enumerate(cleaned):
+            if index > 0:
+                delay = _multi_message_delay_seconds(text, slept_total=slept_total)
+                if delay > 0:
+                    try:
+                        await update.message.chat.send_action(action="typing")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(delay)
+                    slept_total += delay
+
+            reply_html = markdown_to_html(text)
+            reply_plain = strip_markdown(text)
+            use_html = len(reply_html) <= 4096
+            body = reply_html if use_html else reply_plain
+
+            async def _send(body: str, html: bool):
+                kw = {"chat_id": chat_id, "text": body}
+                if thread_id is not None:
+                    kw["message_thread_id"] = thread_id
+                if first_mid is None and target_mid is not None:
+                    kw["reply_to_message_id"] = target_mid
+                    kw["allow_sending_without_reply"] = True
+                if html:
+                    kw["parse_mode"] = "HTML"
+                return await context.bot.send_message(**kw)
+
+            try:
+                try:
+                    sent = await _send(body, use_html)
+                except BadRequest as e:
+                    if use_html and _is_parse_error(e):
+                        logger.warning(
+                            f"⚠️ [yellow]HTML multi-bubble не распарсился, plain:[/] {e}"
+                        )
+                        sent = await _send(reply_plain, False)
+                    else:
+                        raise
+            except Exception as e:
+                if first_mid is None:
+                    raise
+                logger.error(
+                    f"❌ [red]Серия сообщений оборвалась после {len(delivered)}:[/] {e}"
+                )
+                return first_mid, delivered
+
+            if first_mid is None:
+                first_mid = sent.message_id
+            delivered.append(text)
+
+        return first_mid, delivered
+
     async def _save_assistant(text: str):
         """
         Пишет ход бота в историю. Если за ход были реакции — прикрепляет их
@@ -938,6 +1044,7 @@ async def send_llm_request(
                     ):
                         used_tool = True
                     turn.pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
+                    turn.pending_messages = None  # list[str] если send_messages
 
                     for tool_call in message['tool_calls']:
                         try:
@@ -1001,6 +1108,38 @@ async def send_llm_request(
                                     await turn.status_message.delete()
                                 except Exception:
                                     pass
+                        return
+
+                    # send_messages — terminal burst (2–3 short bubbles + typing pauses).
+                    if turn.pending_messages:
+                        messages = list(turn.pending_messages)
+                        turn.pending_messages = None
+                        api_call_count[key] = api_call_count.get(key, 0) + 1
+                        target_mid = update.message.message_id if mentioned else None
+                        logger.info(
+                            f"💬 [magenta]Серия из {len(messages)} сообщений[/]"
+                        )
+                        try:
+                            sent_mid, delivered = await _deliver_multi(
+                                messages, target_mid, turn.status_message
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                f"❌ Не удалось доставить серию сообщений: {exc}",
+                                exc_info=True,
+                            )
+                            if turn.reactions_made or turn.stickers_made:
+                                await _save_assistant("")
+                            raise ReplyDeliveryError(
+                                "Telegram не подтвердил доставку серии сообщений"
+                            ) from exc
+                        if delivered:
+                            # One history row: joined bubbles (prefix cache / summarizer).
+                            history_text = "\n".join(delivered)
+                            saved = await _save_assistant(history_text)
+                            await _remember_bot_mid(saved, sent_mid)
+                        elif turn.reactions_made or turn.stickers_made:
+                            await _save_assistant("")
                         return
 
                     # Стикер уже в чате — это полный ответ, лишний round-trip к API не нужен.

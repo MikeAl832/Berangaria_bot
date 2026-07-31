@@ -186,10 +186,16 @@ log_backup_count: 5
 ```yaml
 factual_temperature: 0.4
 web_search_max_per_turn: 2
+multi_message_max: 3
+multi_message_max_chars: 280
+multi_message_max_total_chars: 600
+multi_message_delay_min: 0.4
+multi_message_delay_max: 2.0
+multi_message_delay_total_cap: 5.0
 sticker_enabled: true
 sticker_min_score: 0.28
 sticker_top_k: 8
-sticker_find_max_per_turn: 3
+sticker_send_max_per_turn: 2
 ```
 
 **Parameters:**
@@ -202,16 +208,20 @@ sticker_find_max_per_turn: 3
   (10/min in `berangaria/tools/web.py`) is process-global, so one runaway turn would otherwise
   break search for every chat. On overflow the tool returns a refusal telling the model to answer
   with what it already has.
+- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–3 short
+  Telegram bubbles with `typing` between them). Delays scale with bubble length and are capped by
+  `multi_message_delay_total_cap`. Mutex with `reply_to_message` and `send_sticker`.
 - `sticker_min_score`: Vector-score floor for sticker search. Below it a sticker is not offered.
   Lowering it widens the menu but risks off-vibe stickers; raise it back if that happens.
-- `sticker_top_k`: Default number of candidates `find_stickers` returns when the model does not ask
-  for a specific `count`.
-- `sticker_find_max_per_turn`: How many times `find_stickers` may run in one reply. After the cap the
-  tool tells the model to pick from the candidates it already has or answer in words.
+- `sticker_top_k`: How many vector hits `send_sticker` considers before picking one at random
+  (all above `sticker_min_score`).
+- `sticker_send_max_per_turn`: Max one-shot `send_sticker(query)` attempts per reply (search+send).
+  Default 2 — one refined query if the first misses. Success ends the turn; no separate find step.
+  Legacy key `sticker_find_max_per_turn` is still read as a fallback.
 
 `MAX_TOOL_ROUNDS` in `berangaria/config.py` (12) bounds consecutive tool-call rounds. A turn that
-verifies a fact *and* looks for a sticker can legitimately use eight of them; the ceiling has to stay
-comfortably above that, because overflow aborts the turn with a visible error message.
+verifies a fact and sends a sticker uses far fewer rounds than the old find→pick→send flow; the
+ceiling still has headroom so overflow does not abort ordinary turns.
 
 ### Access Control
 

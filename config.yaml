@@ -63,12 +63,23 @@
 "sticker_sync_file": "data/stickers_clean.jsonl"  # Source to sync from (path relative to the repository root)
 "sticker_sync_max_per_start": 0          # 0 = залить всех недостающих; иначе не больше N за один старт (беречь квоту)
 "sticker_index_version": 2               # Версия формата эмбеддинга. Бампни +1 при смене формулы текста → бот один раз сам переэмбеддит всё при старте
-"sticker_find_max_per_turn": 3           # Макс. вызовов find_stickers за один ответ (потом — выбирай из уже найденных)
+"sticker_send_max_per_turn": 2           # Max one-shot send_sticker(query) tries per turn (1 retry if miss)
 
 # ========================================
 # 🔍 SEARCH
 # ========================================
 "web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The DDG limit is process-global
+
+# ========================================
+# 💬 MULTI-MESSAGE (send_messages tool)
+# ========================================
+"multi_message_max": 3                   # Max bubbles per burst (min 2 enforced in code)
+"multi_message_max_chars": 280           # Max characters per bubble
+"multi_message_max_total_chars": 600     # Max total characters across the burst
+"multi_message_delay_min": 0.4           # Min pause between bubbles (seconds)
+"multi_message_delay_max": 2.0           # Max pause between bubbles (seconds)
+"multi_message_delay_total_cap": 5.0     # Cap on sum of all inter-bubble pauses
+"multi_message_chars_per_sec": 28.0      # Scales pause by message length (typing feel)
 
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА

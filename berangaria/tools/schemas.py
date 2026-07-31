@@ -46,11 +46,11 @@ TOOLS = [
                 "Use it freely and often to acknowledge emotion: agreement 👍, laughter 😂, shock 😱, "
                 "trolling 🤡, approval 🔥. PREFER reaction-only (no text) when a message needs nothing beyond 'seen, noted'. "
                 "Add text only if you have something specific to say. "
-                "If your whole answer IS the emotion — you were about to type 'ржу' / 'жесть' / 'топ' — send a sticker "
-                "instead: a reaction acknowledges, a sticker replies. "
+                "If your whole answer IS the emotion — you were about to type 'ржу' / 'жесть' / 'топ' — "
+                "call send_sticker(query) instead: a reaction acknowledges, a sticker replies. "
                 "By default it reacts to the latest message; pass the [#N] handle as 'id' to react to a specific earlier one. "
                 "Do NOT react again to a message you already reacted to (history notes look like "
-                "'Ты поставила реакцию 🤡 на [#N] …') — pick another [#N], write text, send a sticker, or stay silent. "
+                "'Ты поставила реакцию 🤡 на [#N] …') — pick another [#N], write text, send_sticker, or stay silent. "
                 "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
             ),
             "parameters": {
@@ -100,15 +100,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "find_stickers",
+            "name": "send_sticker",
             "description": (
-                "Search your sticker collection by vibe. Returns a NUMBERED list of candidates "
-                "(emotion tag, what the sticker shows, keywords) — it sends nothing yet. "
-                "Use it whenever your reply is mostly emotion: laughter, mockery, approval, shock, fatigue, absurdity — "
-                "or whenever you were about to type a short line like 'ржу' / 'жесть' / 'топ'. That line IS a sticker. "
-                "Then call send_sticker(id) with the number you liked; one search is normally enough (max 3 per turn). "
-                "The one hard limit: a sticker must not stand in for an answer — if the message asks a direct question "
-                "or asks for help, answer that in words. Everywhere else the sticker is the better reply."
+                "ONE call: search your sticker pack by vibe and send a matching sticker. "
+                "No second tool — the pack is searched and one sticker is posted immediately. "
+                "Use when your whole reply is emotion (laughter, mockery, approval, shock, fatigue, absurdity) "
+                "or you were about to type a short line like 'ржу' / 'жесть' / 'топ' / 'ну ты дал' — that line IS a sticker. "
+                "Prefer this over a reaction when you would have typed something; prefer a reaction only when you would say nothing. "
+                "After a successful send the turn ENDS and plain text alongside is discarded. "
+                "Do NOT use for direct questions, help, or after web_search (answer in words). "
+                "If nothing matches, answer in words — do not invent a text description of a sticker. "
+                "NEVER fake it in text ('*кидает стикер*')."
             ),
             "parameters": {
                 "type": "object",
@@ -116,43 +118,14 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "A Russian emotion word plus 2-3 concrete words — NOT a retelling of the situation. "
-                            "GOOD: 'ирония, ухмылка', 'шок, глаза по пять копеек', 'раздражение, достали'. "
+                            "Russian emotion word plus 2–3 short tags — NOT a retelling of the chat. "
+                            "Index language: emotion + keywords + what the frame shows. "
+                            "GOOD: 'ирония, ухмылка', 'шок, глаза по пять копеек', 'раздражение, достали', 'веселье, ржу'. "
                             "BAD: 'стикер про то как человек купил машину и хвастается'."
                         )
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "How many candidates to return, 3-10. Ask for 8 — more options, more chance one fits.",
-                        "default": 8
                     }
                 },
                 "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "send_sticker",
-            "description": (
-                "Send ONE sticker to the chat, chosen from the latest find_stickers results by its number. "
-                "A sticker-only reply is the normal case, not an exception — but never in place of an actual "
-                "answer: a direct question or a request for help needs words. "
-                "Call this only AFTER find_stickers, passing the id of the option you liked best. "
-                "After a successful send the turn ends, and plain text written alongside it is discarded — "
-                "the sticker is the whole reply. "
-                "NEVER describe a sticker in text ('*кидает стикер*') — send it."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "The number of the sticker from find_stickers results (e.g. 3)."
-                    }
-                },
-                "required": ["id"]
             }
         }
     },
@@ -178,7 +151,38 @@ TOOLS = [
                 "required": ["url"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_messages",
+            "description": (
+                "Send 2–3 short Telegram messages in a natural burst (typing pauses between them). "
+                "Use RARELY when the reply is naturally two beats — a reaction then a thought, a joke then a question — "
+                "not to pad length. Most turns are still ONE plain-text reply or a sticker. "
+                "After a successful call the turn ENDS: plain text written alongside is discarded; "
+                "do not combine with reply_to_message or send_sticker. "
+                "Each string is one bubble: short, no service tags, no emoji. "
+                "Not for facts after web_search, lists, instructions, or ambient one-liners."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "2 or 3 short message texts, in order. "
+                            "Example: [\"ну ты дал\", \"и это серьёзно?\"]"
+                        ),
+                        "minItems": 2,
+                        "maxItems": 3,
+                    }
+                },
+                "required": ["messages"],
+            },
+        },
+    },
 ]
 
 # Разрешённые Telegram эмодзи для реакций (для валидации перед вызовом API)

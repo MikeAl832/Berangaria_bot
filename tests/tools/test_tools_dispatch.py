@@ -5,6 +5,7 @@
 Telegram/сеть подменяются лёгкими фейками, async гоняем через asyncio.run.
 """
 import asyncio
+import json
 
 import pytest
 
@@ -13,10 +14,11 @@ from berangaria.tools.dispatch import (
     ToolTurn,
     handle_reply,
     handle_react,
-    handle_find_stickers,
     handle_send_sticker,
+    handle_send_messages,
     handle_web_search,
     dispatch_tool_call,
+    sanitize_multi_messages,
 )
 from berangaria.tools.web import RATE_LIMIT_PREFIX
 
@@ -174,87 +176,187 @@ def test_handle_react_rejects_duplicate_on_same_mid():
     assert turn.reacted is True  # прошлый факт — молчать текстом можно
 
 
-# ---------- handle_find_stickers ----------
+# ---------- handle_send_sticker (one-shot) ----------
 
-def test_handle_find_stickers_numbers_candidates(monkeypatch):
+def test_handle_send_sticker_searches_and_sends(monkeypatch):
     monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
-    monkeypatch.setattr(tool_handlers, "search_stickers", lambda q, c=6: [
-        {"file_id": "f1", "description": "ржу", "emotion": "joy", "keywords": ["смех"]},
-        {"file_id": "f2", "description": "грусть", "emotion": "sad", "keywords": []},
-    ])
+    monkeypatch.setattr(tool_handlers, "STICKER_TOP_K", 8)
+    monkeypatch.setattr(tool_handlers, "STICKER_SEND_MAX_PER_TURN", 2)
+    monkeypatch.setattr(
+        tool_handlers,
+        "search_stickers",
+        lambda q, n=None: [
+            {"file_id": "f1", "description": "uhmy", "emotion": "irony", "score": 0.5},
+            {"file_id": "f2", "description": "other", "emotion": "irony", "score": 0.4},
+        ],
+    )
+    monkeypatch.setattr(tool_handlers.random, "choice", lambda seq: seq[0])
     turn = ToolTurn()
-    payload = []
-    asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "ржу"}))
-    assert turn.sticker_seq == 2
-    assert turn.sticker_candidates[1]["file_id"] == "f1"
-    assert turn.sticker_candidates[2]["file_id"] == "f2"
-    content = payload[-1]["content"]
-    assert "#1" in content and "#2" in content
-    assert "теги: смех" in content
-
-
-def test_handle_find_stickers_empty_query(monkeypatch):
-    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
-    turn = ToolTurn()
-    payload = []
-    asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "   "}))
-    assert "Пустой запрос" in payload[-1]["content"]
-    assert turn.sticker_seq == 0
-
-
-def test_handle_find_stickers_disabled(monkeypatch):
-    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", False)
-    turn = ToolTurn()
-    payload = []
-    asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "ржу"}))
-    assert payload[-1]["content"] == "Стикеры отключены."
-
-
-def test_handle_find_stickers_respects_per_turn_limit(monkeypatch):
-    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
-    monkeypatch.setattr(tool_handlers, "STICKER_FIND_MAX_PER_TURN", 3)
-    calls = {"n": 0}
-
-    def fake_search(q, c=6):
-        calls["n"] += 1
-        return [{"file_id": f"f{calls['n']}", "description": q, "emotion": "x", "keywords": []}]
-
-    monkeypatch.setattr(tool_handlers, "search_stickers", fake_search)
-    turn = ToolTurn()
-    payload = []
-    for i in range(3):
-        asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": f"q{i}"}))
-    assert calls["n"] == 3
-    assert turn.find_stickers_calls == 3
-    # 4-й вызов — отказ без реального поиска
-    asyncio.run(handle_find_stickers(turn, payload, FakeUpdate(), TC, {"query": "ещё"}))
-    assert calls["n"] == 3
-    assert "Лимит поиска" in payload[-1]["content"]
-    assert turn.find_stickers_calls == 3
-
-
-# ---------- handle_send_sticker ----------
-
-def test_handle_send_sticker_by_id(monkeypatch):
-    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
-    turn = ToolTurn()
-    turn.sticker_candidates[3] = {"file_id": "fX", "desc": "d", "emotion": "e"}
     ctx, payload = FakeContext(), []
-    asyncio.run(handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"id": 3}))
+    asyncio.run(
+        handle_send_sticker(
+            turn, payload, FakeUpdate(), ctx, TC, {"query": "irony smile"}
+        )
+    )
     assert turn.sticker_sent is True
-    assert turn.stickers_made == [{"desc": "d", "emotion": "e"}]
-    assert ctx.bot.stickers[0]["sticker"] == "fX"
-    assert "Стикер отправлен" in payload[-1]["content"]
+    assert turn.send_sticker_calls == 1
+    assert turn.stickers_made == [{"desc": "uhmy", "emotion": "irony"}]
+    assert ctx.bot.stickers[0]["sticker"] == "f1"
+    assert "завершён" in payload[-1]["content"]
 
 
-def test_handle_send_sticker_bad_id(monkeypatch):
+def test_handle_send_sticker_empty_query(monkeypatch):
     monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
-    turn = ToolTurn()  # пустые кандидаты
+    turn = ToolTurn()
     ctx, payload = FakeContext(), []
-    asyncio.run(handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"id": 5}))
+    asyncio.run(handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "  "}))
     assert turn.sticker_sent is False
     assert ctx.bot.stickers == []
-    assert "Не поняла, какой стикер" in payload[-1]["content"]
+    assert "Пустой" in payload[-1]["content"]
+
+
+def test_handle_send_sticker_disabled(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", False)
+    turn = ToolTurn()
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "lol"})
+    )
+    assert turn.sticker_sent is False
+    assert "отключены" in payload[-1]["content"]
+
+
+def test_handle_send_sticker_miss_allows_retry_then_cap(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "STICKER_SEND_MAX_PER_TURN", 2)
+    monkeypatch.setattr(tool_handlers, "search_stickers", lambda q, n=None: [])
+    turn = ToolTurn()
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "q1"})
+    )
+    assert turn.send_sticker_calls == 1
+    assert "ничего не нашлось" in payload[-1]["content"]
+    assert "осталось попыток" in payload[-1]["content"]
+    asyncio.run(
+        handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "q2"})
+    )
+    assert turn.send_sticker_calls == 2
+    asyncio.run(
+        handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "q3"})
+    )
+    assert turn.send_sticker_calls == 2
+    assert "Лимит" in payload[-1]["content"]
+
+
+def test_handle_send_sticker_mutex_with_pending_messages(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
+    turn = ToolTurn()
+    turn.pending_messages = ["a", "b"]
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "shock"})
+    )
+    assert turn.sticker_sent is False
+    assert "текстовый ответ" in payload[-1]["content"]
+
+
+def test_dispatch_legacy_find_stickers_redirects():
+    turn = ToolTurn()
+    payload = []
+    tc = {
+        "id": "tc-old",
+        "function": {"name": "find_stickers", "arguments": '{"query":"x"}'},
+    }
+    asyncio.run(
+        dispatch_tool_call(turn, payload, FakeUpdate(), FakeContext(), tc, {}, [])
+    )
+    assert "send_sticker" in payload[-1]["content"]
+    assert turn.sticker_sent is False
+
+
+# ---------- send_messages ----------
+
+def test_sanitize_multi_messages_accepts_two_short():
+    out = sanitize_multi_messages(["  лол  ", "и это серьёзно?"])
+    assert out == ["лол", "и это серьёзно?"]
+
+
+def test_sanitize_multi_messages_rejects_single():
+    err = sanitize_multi_messages(["только одно"])
+    assert isinstance(err, str)
+    assert "минимум 2" in err
+
+
+def test_sanitize_multi_messages_truncates_count(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "MULTI_MESSAGE_MAX", 3)
+    out = sanitize_multi_messages(["a", "b", "c", "d"])
+    assert out == ["a", "b", "c"]
+
+
+def test_handle_send_messages_sets_pending_without_tool_result():
+    turn = ToolTurn()
+    payload = []
+    handle_send_messages(
+        turn, payload, TC, {"messages": ["ну ты дал", "серьёзно?"]}
+    )
+    assert turn.pending_messages == ["ну ты дал", "серьёзно?"]
+    assert payload == []
+
+
+def test_handle_send_messages_validation_writes_tool_result():
+    turn = ToolTurn()
+    payload = []
+    handle_send_messages(turn, payload, TC, {"messages": ["одно"]})
+    assert turn.pending_messages is None
+    assert payload[-1]["role"] == "tool"
+    assert "минимум 2" in payload[-1]["content"]
+
+
+def test_handle_send_messages_mutex_with_sticker():
+    turn = ToolTurn()
+    turn.sticker_sent = True
+    payload = []
+    handle_send_messages(
+        turn, payload, TC, {"messages": ["a", "b"]}
+    )
+    assert turn.pending_messages is None
+    assert "Стикер уже отправлен" in payload[-1]["content"]
+
+
+def test_handle_send_messages_mutex_with_reply():
+    turn = ToolTurn()
+    turn.pending_reply = (1, "x", 2)
+    payload = []
+    handle_send_messages(
+        turn, payload, TC, {"messages": ["a", "b"]}
+    )
+    assert turn.pending_messages is None
+    assert "reply_to_message" in payload[-1]["content"]
+
+
+def test_handle_reply_clears_pending_messages():
+    turn = ToolTurn()
+    turn.pending_messages = ["a", "b"]
+    handle_reply(turn, FakeUpdate(mid=1), {"id": 2, "text": "хай"}, {2: 42})
+    assert turn.pending_messages is None
+    assert turn.pending_reply == (42, "хай", 2)
+
+
+def test_dispatch_routes_send_messages():
+    turn = ToolTurn()
+    payload = []
+    tc = {
+        "id": "tc-multi",
+        "function": {
+            "name": "send_messages",
+            "arguments": json.dumps({"messages": ["раз", "два"]}),
+        },
+    }
+    asyncio.run(
+        dispatch_tool_call(turn, payload, FakeUpdate(), FakeContext(), tc, {}, [])
+    )
+    assert turn.pending_messages == ["раз", "два"]
 
 
 # ---------- handle_web_search ----------

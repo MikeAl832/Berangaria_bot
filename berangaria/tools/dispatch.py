@@ -13,9 +13,16 @@
 import json
 import asyncio
 import logging
+import random
 
 from berangaria.config import (
-    STICKER_ENABLED, STICKER_FIND_MAX_PER_TURN, STICKER_TOP_K, WEB_SEARCH_MAX_PER_TURN,
+    STICKER_ENABLED,
+    STICKER_SEND_MAX_PER_TURN,
+    STICKER_TOP_K,
+    WEB_SEARCH_MAX_PER_TURN,
+    MULTI_MESSAGE_MAX,
+    MULTI_MESSAGE_MAX_CHARS,
+    MULTI_MESSAGE_MAX_TOTAL_CHARS,
 )
 from berangaria.tools.schemas import ALLOWED_REACTIONS
 from berangaria.tools.web import RATE_LIMIT_PREFIX, web_search, read_url
@@ -38,11 +45,10 @@ class ToolTurn:
         self.reactions_made = []     # [{"emoji", "on"}] — реакции этого хода (пишутся в историю)
         self.sticker_sent = False    # бот отправил стикер — тоже допускаем ответ без текста
         self.stickers_made = []      # [{"desc", "emotion"}] — стикеры этого хода
-        self.sticker_candidates = {}  # {номер: {"file_id", "desc", "emotion"}} — из find_stickers
-        self.sticker_seq = 0          # сквозная нумерация кандидатов (не сбрасывается между поисками хода)
-        self.find_stickers_calls = 0  # сколько раз find_stickers вызвали в этом ходе
+        self.send_sticker_calls = 0  # one-shot send_sticker attempts this turn (search+send)
         self.web_search_calls = 0     # how many times web_search ran in this turn
         self.pending_reply = None     # (target_mid, text, sid) если модель выбрала reply_to_message
+        self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
 
 
 async def _show_status(turn, update, text):
@@ -72,7 +78,7 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
     # The prompt allows at most two searches per turn (a query plus one retry).
     # Prompt text alone is not enough: the rate limiter in tools.web is
     # process-global, so a runaway turn spends every chat's budget at once. The
-    # ceiling copies the pattern find_stickers already uses — a refusal that says
+    # ceiling copies the pattern send_sticker already uses — a refusal that says
     # what to do instead, not a silent cut-off.
     if turn.web_search_calls >= WEB_SEARCH_MAX_PER_TURN:
         logger.info(f"🔍 [dim]web_search лимит {WEB_SEARCH_MAX_PER_TURN}/ход — отказ[/] ('{query[:60]}')")
@@ -146,155 +152,111 @@ async def handle_read_url(turn, payload_messages, update, tool_call, args):
     })
 
 
-async def handle_find_stickers(turn, payload_messages, update, tool_call, args):
-    fquery = (args.get('query') or '').strip()
-    try:
-        fcount = int(args.get('count') or STICKER_TOP_K)
-    except (TypeError, ValueError):
-        fcount = STICKER_TOP_K
-    fcount = max(1, min(fcount, 10))
+async def handle_send_sticker(turn, payload_messages, update, context, tool_call, args):
+    """One-shot: search by query, pick from top hits, send. Terminal on success."""
+    query = (args.get("query") or "").strip()
+
     if not STICKER_ENABLED:
-        tool_result = "Стикеры отключены."
-    elif not fquery:
-        tool_result = "Пустой запрос. Опиши, какой стикер ищешь."
-    elif turn.find_stickers_calls >= STICKER_FIND_MAX_PER_TURN:
-        logger.info(
-            f"🎨 [dim]find_stickers лимит {STICKER_FIND_MAX_PER_TURN}/ход — отказ[/] "
-            f"('{fquery[:60]}')"
+        tool_result = "Стикеры отключены. Ответь текстом."
+    elif turn.sticker_sent:
+        tool_result = "Стикер в этом ходе уже отправлен. Дополнительный текст не нужен."
+    elif turn.pending_reply is not None or turn.pending_messages is not None:
+        tool_result = (
+            "В этом ходе уже выбран текстовый ответ (reply/send_messages). "
+            "Стикер сюда нельзя — один терминальный путь."
         )
-        if turn.sticker_candidates:
-            tool_result = (
-                f"Лимит поиска стикеров в этом ходе ({STICKER_FIND_MAX_PER_TURN}). "
-                f"Выбери из уже найденных номеров {min(turn.sticker_candidates)}–"
-                f"{max(turn.sticker_candidates)} через send_sticker(id) "
-                f"или ответь без стикера."
-            )
-        else:
-            tool_result = (
-                f"Лимит поиска стикеров в этом ходе ({STICKER_FIND_MAX_PER_TURN}). "
-                f"Ответь без стикера."
-            )
+    elif not query:
+        tool_result = (
+            "Пустой query. Нужна русская эмоция + 2–3 слова "
+            "(напр. «ирония, ухмылка»). Или ответь текстом."
+        )
+    elif turn.send_sticker_calls >= STICKER_SEND_MAX_PER_TURN:
+        logger.info(
+            f"🎨 [dim]send_sticker лимит {STICKER_SEND_MAX_PER_TURN}/ход — отказ[/] "
+            f"('{query[:60]}')"
+        )
+        tool_result = (
+            f"Лимит send_sticker в этом ходе ({STICKER_SEND_MAX_PER_TURN}). "
+            "Ответь текстом без стикера."
+        )
     else:
-        turn.find_stickers_calls += 1
+        turn.send_sticker_calls += 1
         try:
             await update.message.chat.send_action(action="choose_sticker")
         except Exception:
             pass
-        # Поиск синхронный (эмбеддинг + Qdrant) — уводим в поток.
-        # Дедлайн на весь поиск: чат держит turn-lock, и зависший HTTP к
-        # Gemini/Qdrant не должен превращаться в молчание на минуты.
+        # Search is blocking (embed + Qdrant) — off the event loop.
+        # Turn holds the lock; do not wait on Gemini rate limits for minutes.
         try:
             cands = await asyncio.wait_for(
-                asyncio.to_thread(search_stickers, fquery, fcount), timeout=15
+                asyncio.to_thread(search_stickers, query, STICKER_TOP_K),
+                timeout=15,
             )
         except asyncio.TimeoutError:
-            logger.warning("⏳ [yellow]Поиск стикеров не уложился в 15 с — пропускаю[/]")
+            logger.warning("⏳ [yellow]Поиск стикера не уложился в 15 с — пропускаю[/]")
             cands = []
-        remaining = STICKER_FIND_MAX_PER_TURN - turn.find_stickers_calls
+
+        remaining = STICKER_SEND_MAX_PER_TURN - turn.send_sticker_calls
         if not cands:
-            logger.info(f"🎨 [dim]find_stickers '{fquery}' — ничего выше порога[/]")
+            logger.info(f"🎨 [dim]send_sticker '{query}' — ничего выше порога[/]")
             if remaining > 0:
                 tool_result = (
                     "Под этот запрос ничего не нашлось. "
-                    f"Можешь переформулировать ещё (осталось поисков: {remaining}) "
-                    "или ответь без стикера."
+                    f"Можешь один раз сузить query (осталось попыток: {remaining}) "
+                    "или ответь текстом — не описывай стикер словами."
                 )
             else:
                 tool_result = (
                     "Под этот запрос ничего не нашлось. "
-                    "Лимит поиска исчерпан — ответь без стикера."
+                    "Ответь текстом — не описывай стикер словами."
                 )
         else:
-            lines = []
-            for c in cands:
-                turn.sticker_seq += 1
-                turn.sticker_candidates[turn.sticker_seq] = {
-                    "file_id": c.get("file_id"),
-                    "desc": c.get("description") or fquery,
-                    "emotion": c.get("emotion"),
-                }
-                # При ВЫБОРЕ показываем всё: эмоцию, полное описание и теги —
-                # чтобы модель судила по содержанию, а не по обрывку.
-                emo = c.get("emotion") or "—"
-                desc = (c.get("description") or "").replace("\n", " ").strip()
-                kws = ", ".join(c.get("keywords") or [])
-                line = f"#{turn.sticker_seq} [{emo}] {desc}"
-                if kws:
-                    line += f" | теги: {kws}"
-                lines.append(line)
-            logger.info(
-                f"🎨 [magenta]find_stickers:[/] '{fquery}' → {len(cands)} шт. "
-                f"({turn.find_stickers_calls}/{STICKER_FIND_MAX_PER_TURN})"
-            )
-            refine_hint = (
-                f" можно уточнить поиск ещё {remaining} раз(а);"
-                if remaining > 0
-                else " больше искать нельзя — бери из списка или без стикера;"
-            )
-            tool_result = (
-                "Нашла стикеры (выбери подходящий ПО ОПИСАНИЮ и вызови send_sticker "
-                f"с его номером;{refine_hint} если ни один не в тему — ответь словами):\n"
-                + "\n".join(lines)
-            )
+            # Random among top hits — variety; all already above min_score.
+            pick = random.choice(cands)
+            chosen = {
+                "file_id": pick.get("file_id"),
+                "desc": pick.get("description") or query,
+                "emotion": pick.get("emotion"),
+                "score": pick.get("score"),
+            }
+            if not chosen.get("file_id"):
+                tool_result = "Стикер без file_id — ответь текстом."
+            else:
+                thread_id = getattr(update.message, "message_thread_id", None)
+                try:
+                    kw = {
+                        "chat_id": update.effective_chat.id,
+                        "sticker": chosen["file_id"],
+                    }
+                    if thread_id is not None:
+                        kw["message_thread_id"] = thread_id
+                    await context.bot.send_sticker(**kw)
+                    turn.sticker_sent = True
+                    turn.pending_messages = None
+                    turn.stickers_made.append({
+                        "desc": chosen.get("desc"),
+                        "emotion": chosen.get("emotion"),
+                    })
+                    score = chosen.get("score")
+                    score_s = f" score={score:.3f}" if isinstance(score, (int, float)) else ""
+                    logger.info(
+                        f"🎨 [magenta]Стикер отправлен[/] query='{query[:40]}' "
+                        f"«{(chosen.get('desc') or '')[:40]}»{score_s} "
+                        f"({turn.send_sticker_calls}/{STICKER_SEND_MAX_PER_TURN})"
+                    )
+                    # tool_result kept if path is non-terminal; send_llm_request
+                    # ends the turn on sticker_sent without another API round.
+                    tool_result = (
+                        "Стикер отправлен. Ход завершён — дополнительный текст не нужен."
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
+                    tool_result = "Стикер отправить не удалось. Ответь текстом."
 
     payload_messages.append({
         "role": "tool",
-        "tool_call_id": tool_call['id'],
-        "content": tool_result
-    })
-
-
-async def handle_send_sticker(turn, payload_messages, update, context, tool_call, args):
-    if not STICKER_ENABLED:
-        tool_result = "Стикеры отключены."
-    else:
-        # Основной путь: id из результатов find_stickers.
-        chosen = None
-        if args.get('id') is not None:
-            try:
-                chosen = turn.sticker_candidates.get(int(args.get('id')))
-            except (TypeError, ValueError):
-                chosen = None
-        # Совместимость: если вместо id передали query — разовый подбор лучшего.
-        if chosen is None and (args.get('query') or '').strip():
-            q = args['query'].strip()
-            try:
-                cands = await asyncio.wait_for(
-                    asyncio.to_thread(search_stickers, q), timeout=15
-                )
-            except asyncio.TimeoutError:
-                logger.warning("⏳ [yellow]Поиск стикера не уложился в 15 с — пропускаю[/]")
-                cands = []
-            if cands:
-                chosen = {"file_id": cands[0].get("file_id"),
-                          "desc": cands[0].get("description") or q,
-                          "emotion": cands[0].get("emotion")}
-        if not chosen or not chosen.get("file_id"):
-            tool_result = ("Не поняла, какой стикер слать. Сначала вызови find_stickers "
-                           "и передай номер найденного: send_sticker(id).")
-        else:
-            thread_id = getattr(update.message, "message_thread_id", None)
-            try:
-                kw = {"chat_id": update.effective_chat.id, "sticker": chosen["file_id"]}
-                if thread_id is not None:
-                    kw["message_thread_id"] = thread_id
-                await context.bot.send_sticker(**kw)
-                turn.sticker_sent = True
-                turn.stickers_made.append({"desc": chosen.get("desc"),
-                                           "emotion": chosen.get("emotion")})
-                logger.info(f"🎨 [magenta]Стикер отправлен[/] «{(chosen.get('desc') or '')[:40]}»")
-                # tool_result всё равно пишем (на случай, если ход не терминальный
-                # из‑за ошибки порядка), но send_llm_request после sticker_sent
-                # завершает ход без нового round-trip к API.
-                tool_result = "Стикер отправлен. Ход завершён — дополнительный текст не нужен."
-            except Exception as e:
-                logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
-                tool_result = "Стикер отправить не удалось. Ответь текстом."
-
-    payload_messages.append({
-        "role": "tool",
-        "tool_call_id": tool_call['id'],
-        "content": tool_result
+        "tool_call_id": tool_call["id"],
+        "content": tool_result,
     })
 
 
@@ -411,6 +373,89 @@ async def handle_react(turn, payload_messages, update, context, tool_call, args,
     })
 
 
+def sanitize_multi_messages(raw) -> list[str] | str:
+    """Нормализует messages для send_messages.
+
+    Returns:
+        list[str] — 2..MULTI_MESSAGE_MAX непустых строк, или
+        str — human-readable причина отказа (для tool result).
+    """
+    if not isinstance(raw, list):
+        return "messages должен быть массивом строк (2–3 коротких сообщения)."
+
+    cleaned: list[str] = []
+    total = 0
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        if len(text) > MULTI_MESSAGE_MAX_CHARS:
+            text = text[:MULTI_MESSAGE_MAX_CHARS].rstrip()
+        if total + len(text) > MULTI_MESSAGE_MAX_TOTAL_CHARS:
+            room = MULTI_MESSAGE_MAX_TOTAL_CHARS - total
+            if room < 8:
+                break
+            text = text[:room].rstrip()
+        cleaned.append(text)
+        total += len(text)
+        if len(cleaned) >= MULTI_MESSAGE_MAX:
+            break
+
+    if len(cleaned) < 2:
+        return (
+            "Нужно минимум 2 непустых коротких сообщения. "
+            "Иначе ответь одним plain-text сообщением без этого инструмента."
+        )
+    return cleaned
+
+
+def handle_send_messages(turn, payload_messages, tool_call, args):
+    """
+    Терминальный инструмент: пакет коротких сообщений.
+    При успехе выставляет turn.pending_messages и НЕ пишет tool-result
+    (ход завершит вызывающий код без нового round-trip к API).
+    При ошибке валидации / конфликте — tool-result, ход продолжается.
+    """
+    if turn.sticker_sent:
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": (
+                "Стикер уже отправлен в этом ходе — send_messages недоступен. "
+                "Ход завершён стикером."
+            ),
+        })
+        return
+    if turn.pending_reply is not None:
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": (
+                "Уже выбран reply_to_message — send_messages в том же ходе нельзя. "
+                "Оставь один терминальный ответ."
+            ),
+        })
+        return
+
+    result = sanitize_multi_messages(args.get("messages"))
+    if isinstance(result, str):
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": result,
+        })
+        return
+
+    turn.pending_messages = result
+    logger.info(
+        "💬 [magenta]send_messages:[/] %s bubble(s), %s chars total",
+        len(result),
+        sum(len(m) for m in result),
+    )
+
+
 def handle_reply(turn, update, args, sid_to_mid):
     """
     Терминальный инструмент. Только выставляет turn.pending_reply —
@@ -430,6 +475,8 @@ def handle_reply(turn, update, args, sid_to_mid):
     if reply_mid is None:
         # Невалидный/устаревший [#N] — отвечаем на текущее сообщение
         reply_mid = update.message.message_id
+    # Mutex with send_messages: one terminal text path per tool round.
+    turn.pending_messages = None
     turn.pending_reply = (reply_mid, reply_text, reply_sid)
 
 
@@ -455,14 +502,24 @@ async def dispatch_tool_call(turn, payload_messages, update, context, tool_call,
         await handle_web_search(turn, payload_messages, update, tool_call, args)
     elif func_name == 'read_url':
         await handle_read_url(turn, payload_messages, update, tool_call, args)
-    elif func_name == 'find_stickers':
-        await handle_find_stickers(turn, payload_messages, update, tool_call, args)
     elif func_name == 'send_sticker':
         await handle_send_sticker(turn, payload_messages, update, context, tool_call, args)
+    elif func_name == 'find_stickers':
+        # Removed two-step flow: one-shot send_sticker(query) only.
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": (
+                "find_stickers больше нет. Один вызов: "
+                "send_sticker(query=\"эмоция, 2-3 слова\") — поиск и отправка сразу."
+            ),
+        })
     elif func_name == 'react_to_message':
         await handle_react(turn, payload_messages, update, context, tool_call, args, sid_to_mid, history)
     elif func_name == 'reply_to_message':
         handle_reply(turn, update, args, sid_to_mid)
+    elif func_name == 'send_messages':
+        handle_send_messages(turn, payload_messages, tool_call, args)
     else:
         # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
         payload_messages.append({

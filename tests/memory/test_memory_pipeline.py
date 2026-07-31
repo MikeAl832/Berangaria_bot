@@ -16,6 +16,7 @@ from berangaria.memory.pipeline import (
     MemoryTransientError,
     VerifiedMemoryFact,
     process_pending_memory,
+    _ensure_author_attribution,
     _validate_verified_fact,
 )
 from berangaria.memory import store as memory_store
@@ -602,7 +603,7 @@ def test_discarded_candidate_never_reaches_memory_store(
         async def delete(self, memory_id):
             raise AssertionError("DISCARD не должен вызывать delete")
 
-    caplog.set_level(logging.INFO, logger="memory_pipeline")
+    caplog.set_level(logging.INFO, logger="berangaria.memory.pipeline")
     report = asyncio.run(process_pending_memory(Extractor(), Verifier(), Store()))
 
     assert report.approved == 0
@@ -928,6 +929,98 @@ def test_policy_rejection_names_the_matched_token():
             VerifiedMemoryFact("У Миши онкология", "У меня онкология", "profile.fact", "x"),
         )
     assert "онколог" in str(excinfo.value).lower()
+
+
+def test_ensure_author_attribution_prefixes_when_nick_missing():
+    assert (
+        _ensure_author_attribution("Миша", "использует RTX 5070 Ti")
+        == "Миша: использует RTX 5070 Ti"
+    )
+
+
+def test_ensure_author_attribution_is_idempotent_when_nick_present():
+    # Substring match is case-insensitive on the exact display name snapshot.
+    assert (
+        _ensure_author_attribution("Миша", "Миша использует RTX 5070 Ti")
+        == "Миша использует RTX 5070 Ti"
+    )
+    assert (
+        _ensure_author_attribution("Миша", "миша использует RTX 5070 Ti")
+        == "миша использует RTX 5070 Ti"
+    )
+    # Genitive «миши» is not the snapshot «Миша» — prefix is intentional.
+    assert (
+        _ensure_author_attribution("Миша", "у миши кот Пельмень")
+        == "Миша: у миши кот Пельмень"
+    )
+
+
+def test_validate_prefixes_fact_when_verifier_omits_author_name():
+    """Промпт просит ник, код гарантирует его даже если KEEP пришёл без ника."""
+    verified = _validate_verified_fact(
+        _policy_source("Я использую видеокарту RTX 5070 Ti"),
+        VerifiedMemoryFact(
+            "использует RTX 5070 Ti",
+            "использую видеокарту RTX 5070 Ti",
+            "hardware.gpu",
+            "ok",
+        ),
+    )
+    assert verified.fact == "Миша: использует RTX 5070 Ti"
+    assert verified.source_quote == "использую видеокарту RTX 5070 Ti"
+
+
+def test_stored_fact_gets_author_nick_when_model_omits_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "memory.db"))
+    state.init_db()
+
+    from berangaria.memory.pipeline import enqueue_memory_source
+
+    enqueue_memory_source(
+        scope="group_7",
+        author_id="42",
+        author_name="Миша",
+        message_id=919,
+        text="Я постоянно пью чёрный чай",
+        created_at=1_725_000_018.0,
+    )
+
+    class Extractor:
+        async def extract(self, source):
+            return [
+                MemoryCandidate(
+                    "постоянно пьёт чёрный чай",
+                    "постоянно пью чёрный чай",
+                    "preferences.drink",
+                )
+            ]
+
+    class Verifier:
+        async def verify(self, source, candidate):
+            return VerifiedMemoryFact(
+                fact=candidate.fact,
+                source_quote=candidate.source_quote,
+                fact_key=candidate.fact_key,
+                reason="прямое утверждение",
+            )
+
+    class Store:
+        def __init__(self):
+            self.saved = []
+
+        async def save(self, source, fact):
+            self.saved.append(fact)
+            return "mem0-nick-1"
+
+        async def delete(self, memory_id):
+            raise AssertionError(f"неожиданное удаление {memory_id}")
+
+    store = Store()
+    report = asyncio.run(process_pending_memory(Extractor(), Verifier(), store))
+
+    assert report.approved == 1
+    assert store.saved[0].fact == "Миша: постоянно пьёт чёрный чай"
+    assert state.list_memory_facts("group_7")[0].fact == "Миша: постоянно пьёт чёрный чай"
 
 
 def test_source_enters_dead_letter_after_five_failures(monkeypatch, tmp_path):
