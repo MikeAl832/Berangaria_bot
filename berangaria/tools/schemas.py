@@ -9,7 +9,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Verify a checkable fact against the live web BEFORE you state it. Mandatory for numbers, prices, rates, dates, specs, versions, releases, statistics, real people/companies/products, current status, and anything whose answer would differ today from a year ago — and ALWAYS before confirming, denying or mocking a factual claim someone else made. If you were about to hedge ('вроде', 'кажется', 'если не ошибаюсь'), search instead of hedging. NOT for opinions, jokes, hyperbole, arithmetic, or facts about this chat and its people. Then answer with the specific number or date; 'rumored' / 'no exact data' are banned while sources exist. Never mention that you searched.",
+            "description": (
+                "Fact-check against the live web. Use BEFORE you state a checkable fact yourself, "
+                "and BEFORE you agree with, repeat as true, or casually accept a checkable claim "
+                "someone else just made — confident tone is not evidence. "
+                "Mandatory for numbers, prices, rates, dates, specs, versions, releases, statistics, "
+                "real people/companies/products, current status, and anything that would differ a year ago. "
+                "Also when about to hedge ('вроде', 'кажется') or rubber-stamp ('да, точно') on such a claim: search instead. "
+                "NOT for opinions, jokes, pure absurdity you are only mocking, arithmetic, or facts about this chat and its people. "
+                "After results: answer with the specific number or date; do not invent or endorse the user's story if sources disagree or are empty. "
+                "Never mention that you searched."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
