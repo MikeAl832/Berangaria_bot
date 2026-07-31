@@ -1,5 +1,4 @@
 """Unit tests for multi-message delay and delivery helpers."""
-import asyncio
 
 import pytest
 
