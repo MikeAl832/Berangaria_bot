@@ -112,15 +112,17 @@ TOOLS = [
         "function": {
             "name": "send_sticker",
             "description": (
-                "ONE call: search your sticker pack by vibe and send a matching sticker. "
-                "No second tool — the pack is searched and one sticker is posted immediately. "
-                "Use when your whole reply is emotion (laughter, mockery, approval, shock, fatigue, absurdity) "
-                "or you were about to type a short line like 'ржу' / 'жесть' / 'топ' / 'ну ты дал' — that line IS a sticker. "
-                "Prefer this over a reaction when you would have typed something; prefer a reaction only when you would say nothing. "
-                "After a successful send the turn ENDS and plain text alongside is discarded. "
-                "Do NOT use for direct questions, help, or after web_search (answer in words). "
-                "If nothing matches, answer in words — do not invent a text description of a sticker. "
-                "NEVER fake it in text ('*кидает стикер*')."
+                "ONE call: vector-search your sticker pack and post one match immediately "
+                "(no second tool, no id pick). "
+                "Use when the whole reply is emotion — laughter, mockery, refusal, shock, fatigue, cringe — "
+                "or you were about to type 'ржу' / 'жесть' / 'топ' / 'ну ты дал' / 'не хочу'. "
+                "Prefer over a reaction when you would have typed something; reaction-only when you would say nothing. "
+                "INDEX (Russian): each sticker is stored as emotion + secondary emotions + action + use_cases "
+                "(when to send) + situation + keywords + optional character + visual description. "
+                "Query that language: occasion/emotion tags, not a chat retelling. "
+                "On success the turn ENDS; plain text alongside is discarded. "
+                "Not for direct questions, help, or after web_search. Miss → tighter query once or words. "
+                "NEVER fake a sticker in text."
             ),
             "parameters": {
                 "type": "object",
@@ -128,10 +130,10 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "Russian emotion word plus 2–3 short tags — NOT a retelling of the chat. "
-                            "Index language: emotion + keywords + what the frame shows. "
-                            "GOOD: 'ирония, ухмылка', 'шок, глаза по пять копеек', 'раздражение, достали', 'веселье, ржу'. "
-                            "BAD: 'стикер про то как человек купил машину и хвастается'."
+                            "Short Russian tags matching the index: primary emotion and/or use_case phrases. "
+                            "GOOD: 'отказ, не хочу', 'ирония, сарказм', 'отчаяние, паника', 'смущение, обида', "
+                            "'радость, ура', 'усталость, всё', 'злость, бесит'. "
+                            "BAD: 'стикер про то как человек купил машину и хвастается' (story, no match)."
                         )
                     }
                 },

@@ -193,9 +193,11 @@ multi_message_delay_min: 0.4
 multi_message_delay_max: 2.0
 multi_message_delay_total_cap: 5.0
 sticker_enabled: true
-sticker_min_score: 0.28
+sticker_min_score: 0.25
 sticker_top_k: 8
 sticker_send_max_per_turn: 2
+sticker_sync_file: data/stickers_clean.json
+sticker_index_version: 3
 ```
 
 **Parameters:**
@@ -218,6 +220,11 @@ sticker_send_max_per_turn: 2
 - `sticker_send_max_per_turn`: Max one-shot `send_sticker(query)` attempts per reply (search+send).
   Default 2 — one refined query if the first misses. Success ends the turn; no separate find step.
   Legacy key `sticker_find_max_per_turn` is still read as a fallback.
+- `sticker_sync_file`: Catalogue path (`.json` array or `.jsonl`). Relative paths resolve from the
+  repository root.
+- `sticker_index_version`: Bump when the embed text formula or catalogue schema changes. On startup
+  the bot recreates the Qdrant sticker collection and re-embeds the whole catalogue once, then
+  writes the marker under the bot data dir.
 
 `MAX_TOOL_ROUNDS` in `berangaria/config.py` (12) bounds consecutive tool-call rounds. A turn that
 verifies a fact and sends a sticker uses far fewer rounds than the old find→pick→send flow; the
@@ -517,7 +524,7 @@ Berangaria_bot/
 │   ├── media/vision.py              # Gemini image/video/audio
 │   ├── stickers/store.py            # Sticker embeddings and Qdrant search
 │   └── tools/                       # schemas.py, web.py, dispatch.py
-├── data/stickers_clean.jsonl        # Sticker source for the index
+├── data/stickers_clean.json         # Sticker catalogue (JSON array; .jsonl also supported)
 ├── scripts/                         # start.sh, start.bat, logs.sh, sticker CLI
 ├── docker-compose.yml               # Bot, Qdrant, local Bot API, log viewer
 ├── requirements.txt                 # Python dependencies

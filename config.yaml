@@ -57,12 +57,12 @@
 "sticker_enabled": true                  # Включить инструмент send_sticker
 "sticker_collection": "stickers"         # Имя коллекции Qdrant (отдельно от mem0)
 "sticker_dims": 768                      # Размерность векторов (совпадает с embedding_dims)
-"sticker_min_score": 0.28                # Порог релевантности; ниже — стикер не отправляется
-"sticker_top_k": 8                       # Сколько кандидатов брать из поиска (из топа берётся случайный)
-"sticker_auto_sync": true                # Синхронизировать стикеры при старте бота (доливать новые из файла)
-"sticker_sync_file": "data/stickers_clean.jsonl"  # Source to sync from (path relative to the repository root)
-"sticker_sync_max_per_start": 0          # 0 = залить всех недостающих; иначе не больше N за один старт (беречь квоту)
-"sticker_index_version": 2               # Версия формата эмбеддинга. Бампни +1 при смене формулы текста → бот один раз сам переэмбеддит всё при старте
+"sticker_min_score": 0.25                # Cosine floor; v3 RU catalogue aligns better — 0.25 is less empty than 0.28
+"sticker_top_k": 8                       # Top vector hits; one is picked at random among them
+"sticker_auto_sync": true                # Sync catalogue → Qdrant on bot start
+"sticker_sync_file": "data/stickers_clean.json"  # Catalogue (.json array or .jsonl); path relative to repo root
+"sticker_sync_max_per_start": 0          # 0 = all missing; else cap N per start (quota)
+"sticker_index_version": 3               # Bump when embed text formula or catalogue schema changes → full rewrite once
 "sticker_send_max_per_turn": 2           # Max one-shot send_sticker(query) tries per turn (1 retry if miss)
 
 # ========================================

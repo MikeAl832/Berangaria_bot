@@ -1,28 +1,26 @@
 #!/usr/bin/env python
 """
-Синхронизация стикеров с Qdrant.
+Sync stickers into Qdrant.
 
-Читает jsonl (по умолчанию data/stickers_clean.jsonl), сверяет с коллекцией и заливает
-ТОЛЬКО те стикеры, которых там ещё нет (сравнение по детерминированному point_id из
-file_id). Рабочий процесс: ты дописываешь новые строки в конец data/stickers_clean.jsonl,
-запускаешь эту команду — добавляются только новые. Повторный запуск без новых строк
-не делает ничего. Уже удалённые из файла строки из коллекции НЕ удаляются (только добавление).
+Reads a catalogue (default data/stickers_clean.json — JSON array; .jsonl still works),
+compares to the collection, and upserts ONLY missing stickers (deterministic point_id
+from Telegram file_id). Workflow: edit the catalogue, run this command — only new
+file_ids are embedded. A second run with no new rows is a no-op. Rows removed from
+the file are NOT deleted from Qdrant unless you pass --recreate.
 
-Эмбеддинги считаются той же Gemini-моделью, что и mem0. Дневной лимит запросов бережём
-батчингом (1 HTTP-запрос на --batch-size стикеров); если новых много и не хочешь тратить
-квоту разом — ограничь порцию через --limit, остальное дольёшь следующим запуском.
+Embeddings use the same Gemini model as mem0. Batching (1 HTTP call per --batch-size)
+saves quota; use --limit to chunk a large first load.
 
-Примеры (на сервере, внутри контейнера бота):
-    docker compose exec bot python scripts/build_sticker_index.py             # залить все недостающие
-    docker compose exec bot python scripts/build_sticker_index.py --limit 300 # только 300 новых за раз
-    docker compose exec bot python scripts/build_sticker_index.py --dry-run   # показать, сколько нового
+Examples (inside the bot container):
+    docker compose exec bot python scripts/build_sticker_index.py
+    docker compose exec bot python scripts/build_sticker_index.py --recreate   # full rewrite
+    docker compose exec bot python scripts/build_sticker_index.py --dry-run
 
-С хоста (Qdrant проброшен на 127.0.0.1:6333):
+From the host (Qdrant on 127.0.0.1:6333):
     QDRANT_HOST=localhost python scripts/build_sticker_index.py --dry-run
 """
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -33,21 +31,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def load_records(path):
-    recs = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                recs.append(json.loads(line))
-    return recs
+    from berangaria.stickers.store import load_sticker_records
+
+    return load_sticker_records(path)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Синхронизация стикеров с Qdrant (добавляет только новые)")
+    ap = argparse.ArgumentParser(description="Sync stickers to Qdrant (missing only, unless --recreate)")
     ap.add_argument(
         "--input",
-        default=str(PROJECT_ROOT / "data" / "stickers_clean.jsonl"),
-        help="jsonl со стикерами",
+        default=str(PROJECT_ROOT / "data" / "stickers_clean.json"),
+        help="sticker catalogue (.json array or .jsonl)",
     )
     ap.add_argument("--limit", type=int, default=None, help="залить не больше N новых за прогон (беречь квоту)")
     ap.add_argument("--batch-size", type=int, default=50, help="стикеров на один HTTP-запрос эмбеддинга")

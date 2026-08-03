@@ -186,33 +186,52 @@ def get_client():
     return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
 
-# Мусорные значения franchise: у 680/782 стикеров это «meme»/«other» — только шумят вектор.
+# franchise tags that add no retrieval signal (generic buckets).
 _NOISE_FRANCHISE = {None, "", "meme", "other", "unknown"}
+
+
+def _join_list(value) -> str | None:
+    """Normalize a list/str field into a comma-separated non-empty string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, (list, tuple)):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+        return ", ".join(parts) if parts else None
+    text = str(value).strip()
+    return text or None
 
 
 def sticker_text(rec: dict) -> str:
     """
-    Текст для эмбеддинга стикера. Запросы модель формулирует по ЭМОЦИИ/ПОВОДУ
-    ("недоумение, кто-то сморозил глупость"), поэтому emotion+keywords ставим ВПЕРЁД,
-    а длинное визуальное описание — в хвост, чтобы оно не забивало сигнал.
-    Шум (franchise=meme/other, character=null) выкидываем.
+    Text embedded for a sticker. Order matches how send_sticker queries look:
+    emotion / occasion first, visual description last.
+
+    Supports the v3 catalogue fields (situation, use_cases, secondary_emotions,
+    action, text_on_sticker) and the older emotion+keywords+description shape.
+    franchise=meme|other is dropped as noise.
     """
-    kw = rec.get("keywords") or []
-    emotion = rec.get("emotion")
-    desc = rec.get("description")
     franchise = rec.get("franchise")
     if franchise in _NOISE_FRANCHISE:
         franchise = None
-    character = rec.get("character")  # почти всегда null; берём, только если есть
 
     parts = [
-        emotion,
-        ", ".join(kw) if kw else None,
-        character,
-        franchise,
-        desc,
+        _join_list(rec.get("emotion")),
+        _join_list(rec.get("secondary_emotions")),
+        _join_list(rec.get("action")),
+        _join_list(rec.get("use_cases")),
+        _join_list(rec.get("situation")),
+        _join_list(rec.get("keywords")),
+        _join_list(rec.get("character")),
+        _join_list(franchise),
+        _join_list(rec.get("description")),
     ]
-    return " | ".join(str(p) for p in parts if p)
+    text_on = _join_list(rec.get("text_on_sticker"))
+    if text_on:
+        parts.append(f"текст: {text_on}")
+    return " | ".join(p for p in parts if p)
 
 
 def point_id(file_id: str) -> str:
@@ -264,6 +283,11 @@ def upsert_stickers(records, client=None, batch_size=50, sleep_between=0.0, on_p
                     "description": r.get("description"),
                     "keywords": r.get("keywords") or [],
                     "emotion": r.get("emotion"),
+                    "secondary_emotions": r.get("secondary_emotions") or [],
+                    "use_cases": r.get("use_cases") or [],
+                    "situation": r.get("situation"),
+                    "action": r.get("action"),
+                    "character": r.get("character"),
                     "franchise": r.get("franchise"),
                 },
             ))
@@ -313,15 +337,48 @@ def missing_records(records, client=None):
     return out
 
 
-def load_jsonl(path):
-    recs = []
+def load_sticker_records(path) -> list[dict]:
+    """Load a sticker catalogue from ``.json`` (array) or ``.jsonl`` (one object per line)."""
+    import json
+
+    path = str(path)
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                import json
-                recs.append(json.loads(line))
+        raw = f.read()
+    if not raw.strip():
+        return []
+
+    # JSON array / object first (current catalogue is data/stickers_clean.json).
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        # Optional wrapper shapes: {"stickers": [...]} or id -> record.
+        if isinstance(data.get("stickers"), list):
+            return [row for row in data["stickers"] if isinstance(row, dict)]
+        values = list(data.values())
+        if values and all(isinstance(row, dict) for row in values):
+            return values  # type: ignore[return-value]
+        return [data]
+
+    # Fallback: JSONL (legacy data/stickers_clean.jsonl).
+    recs: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        if isinstance(row, dict):
+            recs.append(row)
     return recs
+
+
+def load_jsonl(path) -> list[dict]:
+    """Backward-compatible alias for :func:`load_sticker_records`."""
+    return load_sticker_records(path)
 
 
 # ---- Маркер версии формата индекса (для авто-миграции при старте) ----
@@ -351,14 +408,14 @@ def set_applied_version(v: int) -> None:
 def sync_from_file(path, limit=None, batch_size=50, sleep_between=1.5,
                    recreate=False, force_all=False, on_progress=None):
     """
-    Синхронизирует коллекцию с jsonl.
-      - обычный режим: заливает только недостающие стикеры (по file_id);
-      - force_all=True: переэмбеддивает ВСЕ записи и перезаписывает точки (по тем же id),
-        БЕЗ стирания коллекции — для миграции формата эмбеддинга без «пустого окна».
-    Блокирующая (эмбеддинг + Qdrant) — вызывать из потока (asyncio.to_thread).
-    Возвращает dict со статистикой.
+    Sync Qdrant stickers collection from a catalogue file (.json or .jsonl).
+      - default: upsert only missing file_ids;
+      - force_all=True: re-embed every catalogue row and upsert (same point ids);
+      - recreate=True: drop the collection first (full rewrite; use on format bumps
+        so orphan stickers from an old pack are not left behind).
+    Blocking (embed + Qdrant) — call from a worker thread.
     """
-    records = load_jsonl(path)
+    records = load_sticker_records(path)
     client = get_client()
     if recreate:
         ensure_collection(client, recreate=True)

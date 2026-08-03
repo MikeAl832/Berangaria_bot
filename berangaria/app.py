@@ -112,11 +112,12 @@ async def periodic_summarization():
 
 async def sync_stickers_on_start():
     """
-    При старте синхронизирует стикеры в Qdrant (в потоке, чтобы не блокировать loop).
-      - если версия формата эмбеддинга в коде новее записанной → ОДИН РАЗ переэмбеддит всё
-        (миграция без стирания коллекции), затем пишет новую версию;
-      - иначе просто доливает недостающие. Если новых нет — почти бесплатно.
-    Rate limit переживается внутри (retry на 429), рестарты не нужны.
+    Sync stickers into Qdrant on startup (in a worker thread).
+      - if the embed-format version in config is newer than the marker on disk →
+        one-shot full rewrite (recreate collection + re-embed catalogue), then
+        write the new version marker;
+      - else only upsert missing file_ids (cheap when the catalogue is unchanged).
+    Rate limits are retried inside the embed helper; version is written only on success.
     """
     import os
     from berangaria.config import (
@@ -132,17 +133,23 @@ async def sync_stickers_on_start():
         from berangaria.stickers.store import sync_from_file, get_applied_version, set_applied_version
         applied = get_applied_version()
         if applied < STICKER_INDEX_VERSION:
-            # Миграция формата: переэмбеддить ВСЕ (без лимита, retry вытянет через rate limit).
+            # Format migration: wipe orphans from older packs, re-embed the whole
+            # catalogue. Version marker is written only after success.
             logger.info(
                 f"🎨 [cyan]Миграция индекса стикеров: формат v{applied} → v{STICKER_INDEX_VERSION}, "
-                f"переэмбеддинг всех стикеров (один раз)...[/]"
+                f"полная перезапись коллекции (один раз)...[/]"
             )
             res = await asyncio.to_thread(
-                lambda: sync_from_file(STICKER_SYNC_FILE, limit=None, force_all=True)
+                lambda: sync_from_file(
+                    STICKER_SYNC_FILE,
+                    limit=None,
+                    force_all=True,
+                    recreate=True,
+                )
             )
             set_applied_version(STICKER_INDEX_VERSION)
             logger.info(
-                f"🎨 [green]Миграция завершена: переэмбеддено {res['added']}, "
+                f"🎨 [green]Миграция завершена: залито {res['added']}, "
                 f"всего в коллекции {res['total']}. Формат v{STICKER_INDEX_VERSION} записан.[/]"
             )
         else:

@@ -199,7 +199,7 @@ Berangaria_bot/
 ├── tests/                       # Mirrors the package layout
 ├── scripts/                     # start.sh, start.bat, logs.sh, sticker CLI tools
 ├── docs/                        # Configuration, logging, ADRs, agent docs
-├── data/stickers_clean.jsonl    # Sticker source for the Qdrant index
+├── data/stickers_clean.json     # Sticker catalogue for the Qdrant index
 ├── deploy/                      # Nginx config for the log viewer
 ├── config.yaml                  # Main configuration
 ├── .env                         # Secrets (not committed)

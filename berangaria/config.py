@@ -186,12 +186,15 @@ QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 STICKER_ENABLED = config_yaml.get("sticker_enabled", True)
 STICKER_COLLECTION = config_yaml.get("sticker_collection", "stickers")
 STICKER_DIMS = config_yaml.get("sticker_dims", 768)
-STICKER_MIN_SCORE = config_yaml.get("sticker_min_score", 0.35)
+STICKER_MIN_SCORE = config_yaml.get("sticker_min_score", 0.25)
 STICKER_TOP_K = config_yaml.get("sticker_top_k", 5)
 STICKER_AUTO_SYNC = config_yaml.get("sticker_auto_sync", True)
-STICKER_SYNC_FILE = project_path(config_yaml.get("sticker_sync_file", "data/stickers_clean.jsonl"))
+STICKER_SYNC_FILE = project_path(
+    config_yaml.get("sticker_sync_file", "data/stickers_clean.json")
+)
 STICKER_SYNC_MAX_PER_START = config_yaml.get("sticker_sync_max_per_start", 0)
-STICKER_INDEX_VERSION = config_yaml.get("sticker_index_version", 1)
+# v3: JSON catalogue + richer sticker_text (situation/use_cases/secondary…).
+STICKER_INDEX_VERSION = _as_int(config_yaml.get("sticker_index_version", 3), 3)
 # One-shot send_sticker(query) attempts per turn (search+send). Default 2 = one
 # refined retry if the first query misses; success ends the turn immediately.
 _sticker_send_cap = config_yaml.get(
