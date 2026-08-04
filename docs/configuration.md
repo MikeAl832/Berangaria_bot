@@ -16,6 +16,9 @@ Environment variables for sensitive data:
 TELEGRAM_BOT_TOKEN=<token>
 API_KEY=<deepseek_key>
 GEMINI_API_KEY=<gemini_key>
+# Optional Fish Audio TTS (send_voice tool). Without both, voice stays off.
+FISH_API_KEY=<fish_key>
+FISH_VOICE_ID=<voice_model_id>
 # Telegram API application credentials for the local Bot API server:
 TELEGRAM_API_ID=<api_id>
 TELEGRAM_API_HASH=<api_hash>
@@ -89,6 +92,37 @@ video_max_duration_sec: 300
 Do not pass `temperature`, `topP`, or `topK` to Gemini 3.x models: they are tuned for the default
 temperature of 1.0, and lower values are documented to cause looping and degraded output. The vision
 requests in `berangaria/media/vision.py` deliberately send only `maxOutputTokens`.
+
+### TTS / Voice notes (Fish Audio)
+
+```yaml
+tts_enabled: true
+tts_model: "s2.1-pro-free"
+tts_format: "opus"
+tts_latency: "normal"
+tts_max_chars: 400
+tts_timeout_seconds: 45
+tts_max_per_turn: 1
+tts_default_emotion: "calm"
+```
+
+**Parameters:**
+- `tts_enabled`: Master switch. Effective only when `FISH_API_KEY` and `FISH_VOICE_ID` are set in `.env`.
+- `tts_model`: Fish model header (`s2.1-pro-free` is the free tier; paid fallback `s2.1-pro`).
+- `tts_format`: Prefer `opus` for Telegram voice notes.
+- `tts_latency`: `normal` | `balanced` | `low`.
+- `tts_max_chars`: Hard cap on spoken text passed to Fish.
+- `tts_timeout_seconds`: HTTP timeout for one synthesis request.
+- `tts_max_per_turn`: Max successful `send_voice` attempts per LLM turn (usually 1).
+- `tts_default_emotion`: Applied when the model omits `emotion` (`calm`, or empty for none).
+
+The model calls `send_voice(text, emotion?)`. On success the turn ends (mutex with sticker / multi / reply tools). Emotion is a whitelist only: calm, sarcastic, disdainful, bored, indifferent, confident, sighing, chuckling, none.
+
+Smoke test (same client as the bot):
+
+```bash
+python scripts/fish_tts_smoke.py --suite
+```
 
 ### Memory (Mem0 + Embeddings)
 
@@ -501,6 +535,17 @@ MEM0_CONFIG = {
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot authentication | @BotFather |
 | `API_KEY` | Yes | DeepSeek API access | platform.deepseek.com |
 | `GEMINI_API_KEY` | Yes | Gemini vision + embeddings | aistudio.google.com |
+| `FISH_API_KEY` | No | Fish Audio TTS | fish.audio/app/api-keys |
+| `FISH_VOICE_ID` | No | Fish voice model id for `send_voice` | fish.audio library |
+
+### Production: TTS secrets without SSH
+
+The VPS `.env` is untracked and is not wiped by deploy `git reset --hard`.
+For TTS only, `deploy.yml` can upsert `FISH_API_KEY` / `FISH_VOICE_ID` from
+**GitHub → Settings → Secrets and variables → Actions** into that file before
+`docker compose up`. Empty secrets are skipped (existing server values kept).
+Other bot keys still live only in the server `.env` until the same pattern is
+extended later. Do not commit `.env` or put keys in `config.yaml`.
 
 ## File Structure
 
@@ -523,10 +568,11 @@ Berangaria_bot/
 │   ├── memory/pipeline.py           # Strict memory verification pipeline
 │   ├── memory/store.py              # Mem0 initialization
 │   ├── media/vision.py              # Gemini image/video/audio
+│   ├── media/tts.py                 # Fish Audio TTS (send_voice)
 │   ├── stickers/store.py            # Sticker embeddings and Qdrant search
 │   └── tools/                       # schemas.py, web.py, dispatch.py
 ├── data/stickers_clean.json         # Sticker catalogue (JSON array; .jsonl also supported)
-├── scripts/                         # start.sh, start.bat, logs.sh, sticker CLI
+├── scripts/                         # start.sh, start.bat, logs.sh, sticker CLI, fish_tts_smoke.py
 ├── docker-compose.yml               # Bot, Qdrant, local Bot API, log viewer
 ├── requirements.txt                 # Python dependencies
 └── qdrant_storage/                  # Vector DB data (auto-created)

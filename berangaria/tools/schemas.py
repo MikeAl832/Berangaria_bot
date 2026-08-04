@@ -173,7 +173,7 @@ TOOLS = [
                 "Use RARELY when the reply is naturally two beats — a reaction then a thought, a joke then a question — "
                 "not to pad length. Most turns are still ONE plain-text reply or a sticker. "
                 "After a successful call the turn ENDS: plain text written alongside is discarded; "
-                "do not combine with reply_to_message or send_sticker. "
+                "do not combine with reply_to_message, send_sticker, or send_voice. "
                 "Each string is one bubble: short, no service tags, no emoji. "
                 "Not for facts after web_search, lists, instructions, or ambient one-liners."
             ),
@@ -192,6 +192,56 @@ TOOLS = [
                     }
                 },
                 "required": ["messages"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_voice",
+            "description": (
+                "Speak a SHORT reply as a Telegram voice note in your calm, slightly haughty voice. "
+                "Use RARELY — only when spoken deadpan lands better than text "
+                "(quiet burn, dry one-liner, intimate private-chat beat). "
+                "Default remains plain text or send_sticker. "
+                "On success the turn ENDS; do not combine with send_sticker, send_messages, or reply_to_message. "
+                "Not for long explanations, lists, code, facts after web_search, or pure emotion "
+                "(pure emotion → send_sticker). "
+                "Optional emotion is a subtle delivery cue only — calm / sarcastic / disdainful / "
+                "bored / indifferent / confident / sighing / chuckling. Never invent other tags; "
+                "never put [brackets] in text; never announce that this is a voice message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "What you say aloud: 1–2 short sentences, plain speech, no emoji, "
+                            "no service tags, no stage directions."
+                        ),
+                    },
+                    "emotion": {
+                        "type": "string",
+                        "description": (
+                            "Optional delivery cue. Omit for default calm deadpan. "
+                            "Allowed: calm, sarcastic, disdainful, bored, indifferent, "
+                            "confident, sighing, chuckling, none."
+                        ),
+                        "enum": [
+                            "calm",
+                            "sarcastic",
+                            "disdainful",
+                            "bored",
+                            "indifferent",
+                            "confident",
+                            "sighing",
+                            "chuckling",
+                            "none",
+                        ],
+                    },
+                },
+                "required": ["text"],
             },
         },
     },

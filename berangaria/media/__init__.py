@@ -1,1 +1,1 @@
-"""Media understanding: Gemini for images, video, and audio."""
+"""Media: Gemini vision/audio understanding and Fish Audio TTS."""

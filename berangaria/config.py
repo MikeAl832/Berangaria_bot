@@ -88,6 +88,12 @@ TELEGRAM_BOT_API_LOCAL_MODE = _as_bool(
 )
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Fish Audio TTS (optional — voice notes via send_voice). Prefer FISH_API_KEY.
+FISH_API_KEY = (
+    os.environ.get("FISH_API_KEY", "")
+    or os.environ.get("FISH_AUDIO_API_KEY", "")
+).strip()
+FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
 
 # Валидация обязательных API ключей
 if not TELEGRAM_TOKEN:
@@ -202,6 +208,34 @@ _sticker_send_cap = config_yaml.get(
     config_yaml.get("sticker_find_max_per_turn", 2),
 )
 STICKER_SEND_MAX_PER_TURN = max(1, min(_as_int(_sticker_send_cap, 2), 5))
+
+# ========================================
+# 🔊 TTS (Fish Audio)
+# ========================================
+# Master yaml flag; effective readiness also needs FISH_API_KEY + FISH_VOICE_ID.
+_tts_yaml_enabled = _as_bool(config_yaml.get("tts_enabled", True), True)
+TTS_MODEL = str(config_yaml.get("tts_model", "s2.1-pro-free") or "s2.1-pro-free").strip()
+_tts_format = str(config_yaml.get("tts_format", "opus") or "opus").strip().lower()
+TTS_FORMAT = _tts_format if _tts_format in {"opus", "mp3", "wav", "pcm"} else "opus"
+_tts_latency = str(config_yaml.get("tts_latency", "normal") or "normal").strip().lower()
+TTS_LATENCY = _tts_latency if _tts_latency in {"normal", "balanced", "low"} else "normal"
+TTS_SAMPLE_RATE = max(
+    8000,
+    min(_as_int(config_yaml.get("tts_sample_rate", 48000), 48000), 48000),
+)
+TTS_MAX_CHARS = max(40, min(_as_int(config_yaml.get("tts_max_chars", 400), 400), 2000))
+TTS_TIMEOUT_SECONDS = max(
+    5.0,
+    min(_as_float(config_yaml.get("tts_timeout_seconds", 45.0), 45.0), 120.0),
+)
+TTS_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("tts_max_per_turn", 1), 1), 3))
+_tts_default_emotion = config_yaml.get("tts_default_emotion", "calm")
+if isinstance(_tts_default_emotion, str):
+    TTS_DEFAULT_EMOTION = _tts_default_emotion.strip().lower() or None
+else:
+    TTS_DEFAULT_EMOTION = "calm"
+# True only when the operator wants TTS and secrets are present.
+TTS_ENABLED = bool(_tts_yaml_enabled and FISH_API_KEY and FISH_VOICE_ID)
 
 # ========================================
 # 🔍 SEARCH

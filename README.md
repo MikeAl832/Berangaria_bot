@@ -19,6 +19,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Fact-checking by default**: the system prompt treats built-in knowledge as undated gossip. Any reply resting on a number, date, name or a checkable claim someone else made goes through `web_search` first — including before the bot corrects or mocks anyone. Opinions, jokes and anything about the chat itself are explicitly excluded, the search is capped per turn, and the mechanics stay invisible in the reply.
 - **Stickers as first-class replies**: when the answer is mostly emotion, the bot sends a sticker instead of typing it. Reactions acknowledge, stickers reply — the prompt now states that tiebreaker instead of leaving the two tools competing for the same situations.
 - **Telegram reactions** via function calling for natural emoji responses
+- **Optional voice notes** via Fish Audio TTS (`send_voice`) — rare deadpan spoken replies when the model chooses the tool
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
 - **Streaming replies** with native Telegram drafts in private chats and one final delivery in groups
@@ -63,6 +64,9 @@ Create `.env` file:
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 API_KEY=your_deepseek_api_key
 GEMINI_API_KEY=your_gemini_api_key
+# Optional: Fish Audio TTS for send_voice tool
+FISH_API_KEY=your_fish_api_key
+FISH_VOICE_ID=your_voice_model_id
 # Telegram API application credentials for the local Bot API server:
 TELEGRAM_API_ID=your_telegram_api_id
 TELEGRAM_API_HASH=your_telegram_api_hash
@@ -195,7 +199,7 @@ Berangaria_bot/
 │   ├── core/                    # state.py, utils.py, paths.py, logging_setup.py
 │   ├── chat/                    # handlers.py, llm_client.py, streaming.py
 │   ├── memory/                  # pipeline.py (durable queue), store.py (Mem0)
-│   ├── media/                   # vision.py (Gemini image/video/audio)
+│   ├── media/                   # vision.py + tts.py (Gemini + Fish Audio)
 │   ├── stickers/                # store.py (embeddings + Qdrant search)
 │   └── tools/                   # schemas.py, web.py, dispatch.py
 ├── tests/                       # Mirrors the package layout

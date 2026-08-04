@@ -15,6 +15,7 @@ from berangaria.tools.dispatch import (
     handle_reply,
     handle_react,
     handle_send_sticker,
+    handle_send_voice,
     handle_send_messages,
     handle_web_search,
     dispatch_tool_call,
@@ -83,12 +84,17 @@ class FakeBot:
     def __init__(self):
         self.reactions = []
         self.stickers = []
+        self.voices = []
 
     async def set_message_reaction(self, chat_id, message_id, reaction):
         self.reactions.append((chat_id, message_id, reaction))
 
     async def send_sticker(self, **kw):
         self.stickers.append(kw)
+
+    async def send_voice(self, **kw):
+        self.voices.append(kw)
+        return type("Msg", (), {"message_id": 777})()
 
 
 class FakeContext:
@@ -322,6 +328,118 @@ def test_handle_send_messages_mutex_with_sticker():
     )
     assert turn.pending_messages is None
     assert "Стикер уже отправлен" in payload[-1]["content"]
+
+
+def test_handle_send_messages_mutex_with_voice():
+    turn = ToolTurn()
+    turn.voice_sent = True
+    payload = []
+    handle_send_messages(
+        turn, payload, TC, {"messages": ["a", "b"]}
+    )
+    assert turn.pending_messages is None
+    assert "Голосовое уже отправлено" in payload[-1]["content"]
+
+
+# ---------- handle_send_voice ----------
+
+def test_handle_send_voice_synthesizes_and_sends(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "TTS_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "TTS_MAX_PER_TURN", 1)
+    monkeypatch.setattr(tool_handlers, "TTS_MAX_CHARS", 400)
+    monkeypatch.setattr(tool_handlers, "TTS_FORMAT", "opus")
+    monkeypatch.setattr(tool_handlers, "is_tts_ready", lambda: True)
+    monkeypatch.setattr(
+        tool_handlers,
+        "synthesize_speech",
+        lambda text, emotion=...: b"OGGFAKE",
+    )
+    turn = ToolTurn()
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_voice(
+            turn,
+            payload,
+            FakeUpdate(mid=11),
+            ctx,
+            TC,
+            {"text": "Ну да. Конечно.", "emotion": "sarcastic"},
+        )
+    )
+    assert turn.voice_sent is True
+    assert turn.send_voice_calls == 1
+    assert turn.voices_made[0]["text"] == "Ну да. Конечно."
+    assert turn.voices_made[0]["emotion"] == "sarcastic"
+    assert ctx.bot.voices
+    assert ctx.bot.voices[0]["chat_id"] == 555
+    assert "завершён" in payload[-1]["content"]
+
+
+def test_handle_send_voice_disabled(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "TTS_ENABLED", False)
+    monkeypatch.setattr(tool_handlers, "is_tts_ready", lambda: False)
+    turn = ToolTurn()
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_voice(
+            turn, payload, FakeUpdate(), ctx, TC, {"text": "хай"}
+        )
+    )
+    assert turn.voice_sent is False
+    assert ctx.bot.voices == []
+    assert "отключены" in payload[-1]["content"]
+
+
+def test_handle_send_voice_mutex_with_sticker(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "TTS_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "is_tts_ready", lambda: True)
+    turn = ToolTurn()
+    turn.sticker_sent = True
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_voice(
+            turn, payload, FakeUpdate(), ctx, TC, {"text": "хай"}
+        )
+    )
+    assert turn.voice_sent is False
+    assert "Стикер уже отправлен" in payload[-1]["content"]
+
+
+def test_handle_send_voice_empty_text(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "TTS_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "is_tts_ready", lambda: True)
+    turn = ToolTurn()
+    ctx, payload = FakeContext(), []
+    asyncio.run(
+        handle_send_voice(
+            turn, payload, FakeUpdate(), ctx, TC, {"text": "   "}
+        )
+    )
+    assert turn.voice_sent is False
+    assert "Пустой" in payload[-1]["content"]
+
+
+def test_dispatch_routes_send_voice(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "TTS_ENABLED", True)
+    monkeypatch.setattr(tool_handlers, "TTS_MAX_PER_TURN", 1)
+    monkeypatch.setattr(tool_handlers, "is_tts_ready", lambda: True)
+    monkeypatch.setattr(
+        tool_handlers, "synthesize_speech", lambda *a, **k: b"x"
+    )
+    turn = ToolTurn()
+    payload = []
+    tc = {
+        "id": "tc-v",
+        "function": {
+            "name": "send_voice",
+            "arguments": '{"text":"ок","emotion":"calm"}',
+        },
+    }
+    asyncio.run(
+        dispatch_tool_call(turn, payload, FakeUpdate(), FakeContext(), tc, {}, [])
+    )
+    assert turn.voice_sent is True
+    assert payload[-1]["role"] == "tool"
 
 
 def test_handle_send_messages_mutex_with_reply():

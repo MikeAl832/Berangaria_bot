@@ -23,8 +23,9 @@ Key modules:
 - `berangaria/chat/streaming.py`: DeepSeek SSE reconstruction and throttled private Telegram drafts.
 - `berangaria/memory/pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
 - `berangaria/memory/store.py`: retryable Mem0 initialization.
-- `berangaria/tools/schemas.py` / `web.py` / `dispatch.py`: tool definitions handed to the LLM, web search and URL reading, and the dispatcher for reactions, replies, and stickers.
+- `berangaria/tools/schemas.py` / `web.py` / `dispatch.py`: tool definitions handed to the LLM, web search and URL reading, and the dispatcher for reactions, replies, stickers, and voice notes.
 - `berangaria/media/vision.py`: Gemini image, video, and audio requests.
+- `berangaria/media/tts.py`: Fish Audio TTS for optional `send_voice` Telegram voice notes.
 - `berangaria/stickers/store.py`: Gemini embeddings and Qdrant-backed sticker search/indexing.
 
 ## Setup and validation

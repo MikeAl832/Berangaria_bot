@@ -66,6 +66,20 @@
 "sticker_send_max_per_turn": 2           # Max one-shot send_sticker(query) tries per turn (1 retry if miss)
 
 # ========================================
+# 🔊 TTS (Fish Audio → Telegram voice notes)
+# ========================================
+# Secrets: FISH_API_KEY + FISH_VOICE_ID in .env. Without them the tool stays off.
+"tts_enabled": true                      # Master switch; also requires API key + voice id
+"tts_model": "s2.1-pro-free"             # Fish model header (free tier until ~2026-08-31; then s2.1-pro)
+"tts_format": "opus"                     # Telegram voice notes prefer ogg/opus
+"tts_latency": "normal"                  # normal | balanced | low
+"tts_sample_rate": 48000                 # Opus default; leave 48000 unless you know better
+"tts_max_chars": 400                     # Hard cap on spoken text (voice ≠ essay)
+"tts_timeout_seconds": 45                # HTTP timeout for one synthesis
+"tts_max_per_turn": 1                    # At most one voice note per turn
+"tts_default_emotion": "calm"            # Applied when the model omits emotion (empty = none)
+
+# ========================================
 # 🔍 SEARCH
 # ========================================
 "web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The DDG limit is process-global

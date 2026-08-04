@@ -15,6 +15,8 @@ import asyncio
 import logging
 import random
 
+from io import BytesIO
+
 from berangaria.config import (
     STICKER_ENABLED,
     STICKER_SEND_MAX_PER_TURN,
@@ -23,10 +25,23 @@ from berangaria.config import (
     MULTI_MESSAGE_MAX,
     MULTI_MESSAGE_MAX_CHARS,
     MULTI_MESSAGE_MAX_TOTAL_CHARS,
+    TTS_ENABLED,
+    TTS_MAX_CHARS,
+    TTS_MAX_PER_TURN,
+    TTS_FORMAT,
 )
 from berangaria.tools.schemas import ALLOWED_REACTIONS
 from berangaria.tools.web import RATE_LIMIT_PREFIX, web_search, read_url
 from berangaria.stickers.store import search_stickers
+from berangaria.media.tts import (
+    TTSError,
+    is_tts_ready,
+    resolve_emotion_key,
+    sanitize_speech_text,
+    synthesize_speech,
+    voice_filename,
+)
+from berangaria.core.utils import strip_internal_tags
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +61,9 @@ class ToolTurn:
         self.sticker_sent = False    # бот отправил стикер — тоже допускаем ответ без текста
         self.stickers_made = []      # [{"desc", "emotion"}] — стикеры этого хода
         self.send_sticker_calls = 0  # one-shot send_sticker attempts this turn (search+send)
+        self.voice_sent = False      # бот отправил голосовое — терминальный путь
+        self.voices_made = []        # [{"text", "emotion"}] — голосовые этого хода
+        self.send_voice_calls = 0    # send_voice attempts this turn
         self.web_search_calls = 0     # how many times web_search ran in this turn
         self.pending_reply = None     # (target_mid, text, sid) если модель выбрала reply_to_message
         self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
@@ -160,6 +178,11 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
         tool_result = "Стикеры отключены. Ответь текстом."
     elif turn.sticker_sent:
         tool_result = "Стикер в этом ходе уже отправлен. Дополнительный текст не нужен."
+    elif turn.voice_sent:
+        tool_result = (
+            "Голосовое в этом ходе уже отправлено. "
+            "Стикер сюда нельзя — один терминальный путь."
+        )
     elif turn.pending_reply is not None or turn.pending_messages is not None:
         tool_result = (
             "В этом ходе уже выбран текстовый ответ (reply/send_messages). "
@@ -411,6 +434,113 @@ def sanitize_multi_messages(raw) -> list[str] | str:
     return cleaned
 
 
+async def handle_send_voice(turn, payload_messages, update, context, tool_call, args):
+    """Synthesize + send one Telegram voice note. Terminal on success."""
+    raw_text = args.get("text")
+    # Keep raw emotion for Fish (… / none / sarcastic); store resolved key in history.
+    raw_emotion = args.get("emotion", ...)
+    emotion_key = resolve_emotion_key(raw_emotion)
+    spoken = sanitize_speech_text(
+        strip_internal_tags(raw_text) if isinstance(raw_text, str) else "",
+        max_chars=TTS_MAX_CHARS,
+    )
+
+    if not TTS_ENABLED or not is_tts_ready():
+        tool_result = "Голосовые отключены или нет API-ключа. Ответь текстом."
+    elif turn.voice_sent:
+        tool_result = "Голосовое в этом ходе уже отправлено. Дополнительный текст не нужен."
+    elif turn.sticker_sent:
+        tool_result = (
+            "Стикер уже отправлен в этом ходе — send_voice недоступен. "
+            "Ход завершён стикером."
+        )
+    elif turn.pending_reply is not None or turn.pending_messages is not None:
+        tool_result = (
+            "В этом ходе уже выбран текстовый ответ (reply/send_messages). "
+            "Голосовое сюда нельзя — один терминальный путь."
+        )
+    elif not spoken:
+        tool_result = (
+            "Пустой text. Нужна короткая фраза для озвучки "
+            "(1–2 предложения). Или ответь текстом."
+        )
+    elif turn.send_voice_calls >= TTS_MAX_PER_TURN:
+        logger.info(
+            f"🔊 [dim]send_voice лимит {TTS_MAX_PER_TURN}/ход — отказ[/] "
+            f"('{spoken[:60]}')"
+        )
+        tool_result = (
+            f"Лимит send_voice в этом ходе ({TTS_MAX_PER_TURN}). "
+            "Ответь текстом без голосового."
+        )
+    else:
+        turn.send_voice_calls += 1
+        try:
+            await update.message.chat.send_action(action="record_voice")
+        except Exception:
+            pass
+
+        try:
+            audio = await asyncio.wait_for(
+                asyncio.to_thread(synthesize_speech, spoken, emotion=raw_emotion),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("⏳ [yellow]TTS не уложился в 60 с — пропускаю[/]")
+            tool_result = "Озвучка не успела. Ответь текстом."
+        except TTSError as exc:
+            logger.warning(f"⚠️ [yellow]TTS:[/] {exc}")
+            tool_result = "Озвучка не удалась. Ответь текстом."
+        except Exception as exc:
+            logger.warning(f"⚠️ [yellow]TTS неожиданно:[/] {exc}", exc_info=True)
+            tool_result = "Озвучка не удалась. Ответь текстом."
+        else:
+            thread_id = getattr(update.message, "message_thread_id", None)
+            bio = BytesIO(audio)
+            bio.name = voice_filename(TTS_FORMAT)
+            try:
+                try:
+                    await update.message.chat.send_action(action="upload_voice")
+                except Exception:
+                    pass
+                kw = {
+                    "chat_id": update.effective_chat.id,
+                    "voice": bio,
+                }
+                if thread_id is not None:
+                    kw["message_thread_id"] = thread_id
+                # Reply to the trigger message when present (feels like an answer).
+                reply_mid = getattr(update.message, "message_id", None)
+                if reply_mid is not None:
+                    kw["reply_to_message_id"] = reply_mid
+                    kw["allow_sending_without_reply"] = True
+                sent = await context.bot.send_voice(**kw)
+                turn.voice_sent = True
+                turn.pending_messages = None
+                turn.pending_reply = None
+                turn.voices_made.append({
+                    "text": spoken,
+                    "emotion": emotion_key,
+                })
+                emo_s = f" emotion={emotion_key}" if emotion_key else ""
+                logger.info(
+                    f"🔊 [magenta]Голосовое отправлено[/] chars={len(spoken)} "
+                    f"bytes={len(audio)}{emo_s} mid={getattr(sent, 'message_id', '?')}"
+                )
+                tool_result = (
+                    "Голосовое отправлено. Ход завершён — дополнительный текст не нужен."
+                )
+            except Exception as exc:
+                logger.warning(f"⚠️ [yellow]Не удалось отправить голосовое:[/] {exc}")
+                tool_result = "Голосовое отправить не удалось. Ответь текстом."
+
+    payload_messages.append({
+        "role": "tool",
+        "tool_call_id": tool_call["id"],
+        "content": tool_result,
+    })
+
+
 def handle_send_messages(turn, payload_messages, tool_call, args):
     """
     Терминальный инструмент: пакет коротких сообщений.
@@ -425,6 +555,16 @@ def handle_send_messages(turn, payload_messages, tool_call, args):
             "content": (
                 "Стикер уже отправлен в этом ходе — send_messages недоступен. "
                 "Ход завершён стикером."
+            ),
+        })
+        return
+    if turn.voice_sent:
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": (
+                "Голосовое уже отправлено в этом ходе — send_messages недоступен. "
+                "Ход завершён голосовым."
             ),
         })
         return
@@ -520,6 +660,8 @@ async def dispatch_tool_call(turn, payload_messages, update, context, tool_call,
         handle_reply(turn, update, args, sid_to_mid)
     elif func_name == 'send_messages':
         handle_send_messages(turn, payload_messages, tool_call, args)
+    elif func_name == 'send_voice':
+        await handle_send_voice(turn, payload_messages, update, context, tool_call, args)
     else:
         # Неизвестный инструмент — всё равно отвечаем, иначе API упадёт
         payload_messages.append({

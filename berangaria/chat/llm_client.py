@@ -182,7 +182,8 @@ def _render_history_for_api(history: list) -> list:
         reactions = m.get("reactions") if role == "assistant" else None          # что бот поставил сам
         incoming = m.get("incoming_reactions") if role == "assistant" else None  # что поставили ему
         stickers = m.get("stickers") if role == "assistant" else None            # какие стикеры отправил
-        if reactions or incoming or stickers:
+        voices = m.get("voices") if role == "assistant" else None                # голосовые этого хода
+        if reactions or incoming or stickers or voices:
             if content:
                 out.append({"role": "assistant", "content": content})
             notes = []
@@ -198,6 +199,22 @@ def _render_history_for_api(history: list) -> list:
                     e = s.get('emotion')
                     parts.append(f"[{e}] «{d}»" if e else f"«{d}»")
                 notes.append("Ты отправила стикер " + ", ".join(parts) + ".")
+            if voices:
+                # Content already holds the spoken words when present; only quote
+                # them in the note if this row is voice-only empty content.
+                if content and content.strip():
+                    notes.append("Это сообщение ты отправила голосом.")
+                else:
+                    parts = []
+                    for v in voices:
+                        t = (v.get("text") or "").strip()
+                        if len(t) > 80:
+                            t = t[:80] + "…"
+                        e = v.get("emotion")
+                        parts.append(f"[{e}] «{t}»" if e else f"«{t}»")
+                    notes.append(
+                        "Ты отправила голосовое сообщение " + ", ".join(parts) + "."
+                    )
             if incoming:
                 quote = content.strip()
                 quote = (quote[:40] + "…") if len(quote) > 40 else quote
@@ -898,13 +915,23 @@ async def send_llm_request(
         Дописывает в хвост — префикс не меняется, cache hit сохраняется.
         Возвращает созданную запись (чтобы потом проставить ей mid) или None.
         """
-        if not text and not turn.reactions_made and not turn.stickers_made:
+        if (
+            not text
+            and not turn.reactions_made
+            and not turn.stickers_made
+            and not turn.voices_made
+        ):
             return None
         entry = {"role": "assistant", "content": text}
         if turn.reactions_made:
             entry["reactions"] = list(turn.reactions_made)
         if turn.stickers_made:
             entry["stickers"] = list(turn.stickers_made)
+        if turn.voices_made:
+            entry["voices"] = list(turn.voices_made)
+            # Spoken words are the reply content when the only payload was voice.
+            if not text and turn.voices_made:
+                entry["content"] = turn.voices_made[-1].get("text") or ""
         async with get_history_lock(key):
             history.append(entry)
             histories[key] = history
@@ -1097,7 +1124,7 @@ async def send_llm_request(
                                 exc_info=True,
                             )
                             await _delete_turn_status()
-                            if turn.reactions_made or turn.stickers_made:
+                            if turn.reactions_made or turn.stickers_made or turn.voices_made:
                                 await _save_assistant("")
                             return
                         api_call_count[key] = api_call_count.get(key, 0) + 1
@@ -1107,7 +1134,7 @@ async def send_llm_request(
                                 sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
                             except Exception as exc:
                                 logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
-                                if turn.reactions_made or turn.stickers_made:
+                                if turn.reactions_made or turn.stickers_made or turn.voices_made:
                                     await _save_assistant("")
                                 raise ReplyDeliveryError(
                                     "Telegram не подтвердил доставку ответа"
@@ -1116,8 +1143,8 @@ async def send_llm_request(
                             await _remember_bot_mid(saved, sent_mid)
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
-                            if turn.reacted or turn.sticker_sent:
-                                await _save_assistant("")  # запоминаем реакцию/стикер, текста нет
+                            if turn.reacted or turn.sticker_sent or turn.voice_sent:
+                                await _save_assistant("")  # реакция/стикер/голос, текста нет
                             elif not mentioned:
                                 logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
                             else:
@@ -1147,7 +1174,7 @@ async def send_llm_request(
                                 f"❌ Не удалось доставить серию сообщений: {exc}",
                                 exc_info=True,
                             )
-                            if turn.reactions_made or turn.stickers_made:
+                            if turn.reactions_made or turn.stickers_made or turn.voices_made:
                                 await _save_assistant("")
                             raise ReplyDeliveryError(
                                 "Telegram не подтвердил доставку серии сообщений"
@@ -1157,7 +1184,7 @@ async def send_llm_request(
                             history_text = "\n".join(delivered)
                             saved = await _save_assistant(history_text)
                             await _remember_bot_mid(saved, sent_mid)
-                        elif turn.reactions_made or turn.stickers_made:
+                        elif turn.reactions_made or turn.stickers_made or turn.voices_made:
                             await _save_assistant("")
                         return
 
@@ -1166,6 +1193,18 @@ async def send_llm_request(
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         await _save_assistant("")
                         logger.info("🎨 [dim]Ход завершён стикером (без доп. текста)[/]")
+                        if turn.status_message:
+                            try:
+                                await turn.status_message.delete()
+                            except Exception:
+                                pass
+                        return
+
+                    # Голосовое уже в чате — терминальный ответ, без ещё одного round-trip.
+                    if turn.voice_sent:
+                        api_call_count[key] = api_call_count.get(key, 0) + 1
+                        await _save_assistant("")
+                        logger.info("🔊 [dim]Ход завершён голосовым (без доп. текста)[/]")
                         if turn.status_message:
                             try:
                                 await turn.status_message.delete()
@@ -1202,8 +1241,8 @@ async def send_llm_request(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    if turn.reacted or turn.sticker_sent:
-                        # Ограничилась реакцией/стикером — валидный ответ. Запоминаем в истории.
+                    if turn.reacted or turn.sticker_sent or turn.voice_sent:
+                        # Ограничилась реакцией/стикером/голосом — валидный ответ.
                         await _save_assistant("")
                         if turn.status_message:
                             try:
@@ -1252,7 +1291,7 @@ async def send_llm_request(
                     sent_mid = await _deliver(reply, target_mid, turn.status_message)
                 except Exception as exc:
                     logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
-                    if turn.reactions_made or turn.stickers_made:
+                    if turn.reactions_made or turn.stickers_made or turn.voices_made:
                         await _save_assistant("")
                     raise ReplyDeliveryError(
                         "Telegram не подтвердил доставку ответа"

@@ -55,6 +55,11 @@ jobs:
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          # TTS only for now. Same pattern can later cover TELEGRAM_*/API_KEY/etc.
+          # Values never printed — only key names in deploy logs.
+          FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
+          FISH_VOICE_ID: ${{ secrets.FISH_VOICE_ID }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -63,6 +68,8 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           timeout: 60s
           command_timeout: 10m
+          # Forward env into the remote script (appleboy does not pass `env:` alone).
+          envs: FISH_API_KEY,FISH_VOICE_ID
           
           script: |
             set -eu
@@ -94,6 +101,28 @@ jobs:
             fi
 
             test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+
+            # --- TTS secrets → server .env (untracked; survives git reset --hard) ---
+            # Empty GitHub secret leaves any existing line alone, so a missing
+            # Actions secret cannot wipe a working key already on the VPS.
+            upsert_env() {
+              key="$1"
+              value="$2"
+              touch .env
+              if [ -z "$value" ]; then
+                echo "Skipping ${key} (GitHub secret empty/unset — keeping server .env as-is)"
+                return 0
+              fi
+              if grep -qE "^${key}=" .env 2>/dev/null; then
+                grep -vE "^${key}=" .env > .env.upsert.tmp || true
+                mv .env.upsert.tmp .env
+              fi
+              # printf only; never echo the value (would land in Actions logs).
+              printf '%s=%s\n' "$key" "$value" >> .env
+              echo "Upserted ${key} into .env"
+            }
+            upsert_env FISH_API_KEY "${FISH_API_KEY:-}"
+            upsert_env FISH_VOICE_ID "${FISH_VOICE_ID:-}"
             
             docker compose up -d --build --remove-orphans --force-recreate
 
