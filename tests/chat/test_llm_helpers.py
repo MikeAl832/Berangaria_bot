@@ -147,6 +147,40 @@ def test_render_user_without_sid_unchanged():
     assert _render_history_for_api(hist) == [{"role": "user", "content": "hi"}]
 
 
+def test_render_assistant_voice_like_sticker_note():
+    """Voice is an action note with quoted speech — not typed assistant prose."""
+    hist = [{
+        "role": "assistant",
+        "content": "",
+        "voices": [{"text": "Ну да. Конечно.", "emotion": "sarcastic"}],
+    }]
+    out = _render_history_for_api(hist)
+    assert len(out) == 1
+    assert out[0]["role"] == "system"
+    assert "голосовое" in out[0]["content"]
+    assert "Ну да. Конечно." in out[0]["content"]
+    assert "sarcastic" in out[0]["content"]
+    assert "действия в чате" in out[0]["content"]
+    # Must not also appear as a normal assistant message (that looked like typing).
+    assert not any(m.get("role") == "assistant" for m in out)
+
+
+def test_render_legacy_voice_row_with_content_not_duplicated():
+    """Older rows may have spoken text in content; still only one voice note."""
+    hist = [{
+        "role": "assistant",
+        "content": "Ну да. Конечно.",
+        "voices": [{"text": "Ну да. Конечно.", "emotion": "calm"}],
+    }]
+    out = _render_history_for_api(hist)
+    assistant_msgs = [m for m in out if m["role"] == "assistant"]
+    assert assistant_msgs == []
+    assert any(
+        m["role"] == "system" and "голосовое" in m["content"] and "Ну да" in m["content"]
+        for m in out
+    )
+
+
 # ---------- _build_sid_map / _renumber_sids ----------
 
 def test_build_sid_map():

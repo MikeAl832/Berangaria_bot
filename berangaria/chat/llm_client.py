@@ -184,7 +184,14 @@ def _render_history_for_api(history: list) -> list:
         stickers = m.get("stickers") if role == "assistant" else None            # какие стикеры отправил
         voices = m.get("voices") if role == "assistant" else None                # голосовые этого хода
         if reactions or incoming or stickers or voices:
-            if content:
+            # Typed assistant text (if any). Voice words live only in the action
+            # note — same as stickers — so the model does not re-read them as a
+            # normal typed reply plus a weird "you said this aloud" footer.
+            if content and not voices:
+                out.append({"role": "assistant", "content": content})
+            elif content and voices and (reactions or stickers or incoming):
+                # Rare hybrid row: keep non-voice prose if something else is
+                # attached; pure voice turns keep content empty in storage.
                 out.append({"role": "assistant", "content": content})
             notes = []
             if reactions:
@@ -200,21 +207,17 @@ def _render_history_for_api(history: list) -> list:
                     parts.append(f"[{e}] «{d}»" if e else f"«{d}»")
                 notes.append("Ты отправила стикер " + ", ".join(parts) + ".")
             if voices:
-                # Content already holds the spoken words when present; only quote
-                # them in the note if this row is voice-only empty content.
-                if content and content.strip():
-                    notes.append("Это сообщение ты отправила голосом.")
-                else:
-                    parts = []
-                    for v in voices:
-                        t = (v.get("text") or "").strip()
-                        if len(t) > 80:
-                            t = t[:80] + "…"
-                        e = v.get("emotion")
-                        parts.append(f"[{e}] «{t}»" if e else f"«{t}»")
-                    notes.append(
-                        "Ты отправила голосовое сообщение " + ", ".join(parts) + "."
-                    )
+                # Parallel to stickers: "Ты отправила голосовое [emo] «слова»."
+                parts = []
+                for v in voices:
+                    t = (v.get("text") or "").strip()
+                    if not t and content:
+                        t = content.strip()
+                    if len(t) > 80:
+                        t = t[:80] + "…"
+                    e = v.get("emotion")
+                    parts.append(f"[{e}] «{t}»" if e else f"«{t}»")
+                notes.append("Ты отправила голосовое " + ", ".join(parts) + ".")
             if incoming:
                 quote = content.strip()
                 quote = (quote[:40] + "…") if len(quote) > 40 else quote
@@ -528,13 +531,22 @@ async def summarize_history(history: list) -> list:
     # сбрасываем нумерацию с #1, чтобы номера не росли бесконечно.
     _renumber_sids(keep_recent)
 
-    # Берём только содержательные реплики. Реакция-без-текста (content="") сюда не идёт:
-    # её эмодзи живут в поле reactions, которое в резюме не нужно — старые реакции забываются.
-    text_to_summarize = "\n".join([
-        f"{m['role']}: {strip_tiktok_urls(m['content'])}"
-        for m in to_summarize
-        if isinstance(m.get('content'), str) and strip_tiktok_urls(m.get('content', '')).strip()
-    ])
+    # Содержательные реплики + слова из голосовых (content у voice-only пустой,
+    # как у стикеров). Чистые реакции/стикеры без текста в резюме не нужны.
+    summary_lines: list[str] = []
+    for m in to_summarize:
+        role = m.get("role") or "assistant"
+        raw = m.get("content")
+        if isinstance(raw, str) and strip_tiktok_urls(raw).strip():
+            summary_lines.append(f"{role}: {strip_tiktok_urls(raw)}")
+            continue
+        for v in m.get("voices") or []:
+            if not isinstance(v, dict):
+                continue
+            spoken = (v.get("text") or "").strip()
+            if spoken:
+                summary_lines.append(f"{role}: {strip_tiktok_urls(spoken)}")
+    text_to_summarize = "\n".join(summary_lines)
     if not text_to_summarize.strip():
         logger.warning("📝 [yellow]Суммаризация пропущена:[/] нет текстового содержимого для сжатия")
         return history
@@ -928,10 +940,9 @@ async def send_llm_request(
         if turn.stickers_made:
             entry["stickers"] = list(turn.stickers_made)
         if turn.voices_made:
+            # Like stickers: empty content + structured field. Spoken words are
+            # rendered only in the system action note (and used in summarization).
             entry["voices"] = list(turn.voices_made)
-            # Spoken words are the reply content when the only payload was voice.
-            if not text and turn.voices_made:
-                entry["content"] = turn.voices_made[-1].get("text") or ""
         async with get_history_lock(key):
             history.append(entry)
             histories[key] = history
