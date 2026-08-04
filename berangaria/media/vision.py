@@ -30,10 +30,26 @@ def _log_description(prefix: str, description: str, meta: str = "") -> None:
 
 # ========================== PROMPTS ==========================
 
-_IMAGE_PROMPT = (
-    "Опиши это изображение так, как ты рассказал бы другу в переписке. "
-    "Твой ответ будет передан в текстовый чат, где тебя не видят — только читают твои слова.\n\n"
-    
+# Distinct from a technical failure so the chat LLM can react without inventing
+# visual details. Used when Gemini returns promptFeedback.blockReason / SAFETY.
+POLICY_BLOCKED_IMAGE = (
+    "(модель зрения отказалась описывать изображение из‑за ограничений безопасности; "
+    "содержимое, вероятно, чувствительное или NSFW — не выдумывай детали кадра)"
+)
+POLICY_BLOCKED_VIDEO = (
+    "(модель зрения отказалась описывать видео из‑за ограничений безопасности; "
+    "содержимое, вероятно, чувствительное или NSFW — не выдумывай детали)"
+)
+POLICY_BLOCKED_AUDIO = (
+    "(модель зрения отказалась разбирать аудио из‑за ограничений безопасности; "
+    "содержимое, вероятно, чувствительное — не выдумывай, что было сказано)"
+)
+VISION_FAILED_IMAGE = "(не удалось разобрать изображение)"
+VISION_FAILED_VIDEO = "(не удалось разобрать видео)"
+VISION_FAILED_AUDIO = "(не удалось разобрать аудио)"
+
+
+_IMAGE_PROMPT_CORE = (
     "Что упомянуть обязательно:\n"
     "• Кто/что в кадре — люди (внешность, одежда, эмоции), объекты, обстановка\n"
     "• Текст и логотипы (процитируй дословно, если видишь надписи)\n"
@@ -41,14 +57,31 @@ _IMAGE_PROMPT = (
     "«мем Distracted Boyfriend», «логотип NVIDIA»). Если не уверен — скажи «похоже на...\". "
     "Если не узнаёшь — честно напиши, что не опознал\n"
     "• Настроение, атмосферу, цветовую гамму\n\n"
-    
+
     "Важно:\n"
     "- Говори естественно, без заголовков и пунктов — как в сообщении мессенджера\n"
     "- Не начинай с «На картинке...» или «Изображение показывает...» — сразу к делу\n"
     "- Если что-то смешное или странное — можешь добавить лёгкий комментарий\n\n"
-    
+
     "Пиши на русском языке."
 )
+
+
+def _image_prompt(image_count: int = 1) -> str:
+    """Vision prompt for one photo or a multi-image album (single Gemini call)."""
+    if image_count <= 1:
+        intro = (
+            "Опиши это изображение так, как ты рассказал бы другу в переписке. "
+            "Твой ответ будет передан в текстовый чат, где тебя не видят — только читают твои слова."
+        )
+    else:
+        intro = (
+            f"Это альбом из {image_count} изображений в одном сообщении (все кадры ниже по порядку). "
+            "Опиши их вместе так, как рассказал бы другу в переписке — ответ уйдёт в текстовый чат. "
+            "Если кадры связаны — покажи связь; если разные — кратко пройдись по каждому, "
+            "чтобы было понятно, что на каком. Не пиши отдельные отчёты с заголовками «Фото 1»."
+        )
+    return f"{intro}\n\n{_IMAGE_PROMPT_CORE}"
 
 
 def _video_prompt(duration: float) -> str:
@@ -81,50 +114,70 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024  # ~18MB inline limit with buffer
 
 
-def _gemini_extract_text(resp_json: dict) -> str:
-    """Extract text from Gemini response, handling prompt feedback / safety blocks."""
+def _gemini_extract_text(resp_json: dict) -> tuple[str, bool]:
+    """Extract text from Gemini response.
+
+    Returns ``(text, blocked)``. ``blocked=True`` means safety/policy refusal
+    (promptFeedback.blockReason or finishReason SAFETY with no usable text) —
+    not a transport or empty-model failure.
+    """
     candidates = resp_json.get("candidates") or []
     if not candidates:
         feedback = resp_json.get("promptFeedback") or {}
         block_reason = feedback.get("blockReason")
         if block_reason:
             logger.warning(f"Gemini blocked request: {block_reason}")
-            return ""
-        return ""
-    parts = (candidates[0].get("content") or {}).get("parts") or []
+            return "", True
+        return "", False
+
+    candidate = candidates[0]
+    parts = (candidate.get("content") or {}).get("parts") or []
     text_parts = [p.get("text", "") for p in parts if "text" in p]
-    return "".join(text_parts).strip()
+    text = "".join(text_parts).strip()
+    finish_reason = (candidate.get("finishReason") or "").upper()
+    if finish_reason == "SAFETY" and not text:
+        logger.warning("Gemini blocked response: finishReason=SAFETY")
+        return "", True
+    return text, False
 
 
-async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "") -> str:
-    """Describe image using Gemini API."""
+async def _gemini_describe_images(
+    images: list[tuple[bytes, str]],
+    caption: str = "",
+) -> str:
+    """Describe one or more images in a single Gemini generateContent call."""
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY not set in .env")
         return ""
+    if not images:
+        return ""
 
-    user_text = _IMAGE_PROMPT
+    user_text = _image_prompt(len(images))
     if caption:
+        label = "к альбому" if len(images) > 1 else "к картинке"
         user_text += (
-            f"\n\nПользователь добавил подпись к картинке: «{caption}»\n"
+            f"\n\nПользователь добавил подпись {label}: «{caption}»\n"
             "Учитывай её при описании — проверь, совпадает ли подпись с тем, что видишь, "
             "и используй как подсказку для узнавания персонажей."
         )
 
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    parts: list[dict] = [{"text": user_text}]
+    for image_bytes, mime in images:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
 
+    # Larger album → allow a longer single answer; still one API call.
+    max_tokens = 4096 if len(images) > 1 else 2048
     payload = {
         "contents": [{
             "role": "user",
-            "parts": [
-                {"text": user_text},
-                {"inline_data": {"mime_type": mime, "data": b64}},
-            ]
+            "parts": parts,
         }],
         # temperature/topP are deliberately omitted: Gemini 3.x is tuned for the
         # default temperature of 1.0, and lower values are documented to cause
         # looping and degraded output. Restraint comes from the prompt text.
         "generationConfig": {
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": max_tokens,
         },
     }
 
@@ -138,16 +191,22 @@ async def _gemini_describe_image(image_bytes: bytes, mime: str, caption: str = "
                 logger.error(f"Gemini image API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
-            description = _gemini_extract_text(data)
+            description, blocked = _gemini_extract_text(data)
+            if blocked:
+                _log_description(
+                    f"🖼️ [Gemini:{GEMINI_MODEL}]",
+                    POLICY_BLOCKED_IMAGE,
+                    meta=f"blocked images={len(images)}",
+                )
+                return POLICY_BLOCKED_IMAGE
+
             usage = data.get("usageMetadata") or {}
-            
-            # Логирование с превью для INFO, полное для DEBUG
             meta = (
                 f"tokens prompt={usage.get('promptTokenCount', '?')}, "
-                f"out={usage.get('candidatesTokenCount', '?')}"
+                f"out={usage.get('candidatesTokenCount', '?')}, "
+                f"images={len(images)}"
             )
             _log_description(f"🖼️ [Gemini:{GEMINI_MODEL}]", description, meta=meta)
-            
             return description
     except Exception as e:
         logger.error(f"Gemini image error: {e}")
@@ -321,7 +380,14 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
                 logger.error(f"Gemini video API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
-            description = _gemini_extract_text(data)
+            description, blocked = _gemini_extract_text(data)
+            if blocked:
+                _log_description(
+                    f"🎬 [Gemini:{GEMINI_MODEL}, {file_size} байт]",
+                    POLICY_BLOCKED_VIDEO,
+                    meta="blocked",
+                )
+                return POLICY_BLOCKED_VIDEO
             usage = data.get("usageMetadata") or {}
             _log_description(
                 f"🎬 [Gemini:{GEMINI_MODEL}, {file_size} байт]",
@@ -334,7 +400,6 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
             return description
     except Exception as e:
         logger.error(f"Gemini video error: {e}")
-        return ""
         return ""
     finally:
         # Подчищаем за собой загруженный файл из Gemini Files API
@@ -407,7 +472,13 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
                 logger.error(f"Gemini audio API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
-            transcript = _gemini_extract_text(data)
+            transcript, blocked = _gemini_extract_text(data)
+            if blocked:
+                _log_description(
+                    f"🎤 [Gemini:{GEMINI_MODEL}, {file_size} байт]",
+                    POLICY_BLOCKED_AUDIO,
+                )
+                return POLICY_BLOCKED_AUDIO
             _log_description(f"🎤 [Gemini:{GEMINI_MODEL}, {file_size} байт]", transcript)
             return transcript
     except Exception as e:
@@ -421,8 +492,19 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
 # ========================== ПУБЛИЧНЫЙ API ==========================
 
 async def describe_image_bytes(image_bytes: bytes, mime: str, caption: str = "") -> str:
-    """Возвращает текстовое описание картинки через Gemini."""
-    return await _gemini_describe_image(image_bytes, mime, caption)
+    """Возвращает текстовое описание одной картинки через Gemini."""
+    return await _gemini_describe_images([(image_bytes, mime)], caption=caption)
+
+
+async def describe_images(
+    images: list[tuple[bytes, str]],
+    caption: str = "",
+) -> str:
+    """Одно описание для одного или нескольких изображений (один вызов Gemini).
+
+    ``images`` — список ``(bytes, mime_type)`` в порядке альбома.
+    """
+    return await _gemini_describe_images(images, caption=caption)
 
 
 async def describe_video(

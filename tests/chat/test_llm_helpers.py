@@ -411,3 +411,101 @@ def test_failed_summary_does_not_mutate_live_history(monkeypatch):
 
     assert result is history
     assert history == before
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = str(payload)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def _summary_history(n=12):
+    return [
+        {"role": "user", "content": f"[Message: m{i}]", "sid": i + 1, "mid": i + 10}
+        for i in range(n)
+    ]
+
+
+def test_successful_summary_disables_thinking_and_returns_new_list(monkeypatch):
+    captured = {}
+
+    class OkClient:
+        def __init__(self, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json=None, headers=None):
+            captured["payload"] = json
+            return _FakeResponse(
+                payload={
+                    "choices": [
+                        {"message": {"content": "Важные факты: RTX 5070 Ti, решили ждать."}}
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", OkClient)
+    history = _summary_history(12)
+    before = copy.deepcopy(history)
+
+    result = asyncio.run(llm_client.summarize_history(history))
+
+    assert result is not history
+    assert history == before
+    assert result[0]["role"] == "user"
+    assert result[0]["content"].startswith("[Previous conversation summary:")
+    assert "RTX 5070 Ti" in result[0]["content"]
+    assert len(result) == llm_client.SUMMARY_INTERVAL + 1
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert "top_k" not in captured["payload"]
+    assert captured["timeout"] == 120.0
+
+
+def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
+    """content=null раньше ронял re.sub → TypeError → «Ошибка суммаризации»."""
+
+    class EmptyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "reasoning_content": "долгий CoT без финального ответа",
+                            }
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", EmptyClient)
+    history = _summary_history(12)
+    before = copy.deepcopy(history)
+
+    result = asyncio.run(llm_client.summarize_history(history))
+
+    assert result is history
+    assert history == before

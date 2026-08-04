@@ -114,10 +114,12 @@ Each original text message, including short ones, is queued durably in SQLite wi
 
 When media is received:
 1. **Images/Stickers**: Gemini analyzes and provides natural conversational description
-2. **Videos**: Full video processing (no frame extraction) with timeline understanding
-3. **Voice/Audio**: Speech transcription with diarization support
-4. Description injected as `[Image description: ...]`, `[Video description: ...]`, or transcript
-5. Main LLM responds as if it observed the media directly
+2. **Photo albums**: Telegram `media_group_id` photos are gathered briefly, then described in **one** multi-image Gemini call (not N separate calls)
+3. **Videos**: Full video processing (no frame extraction) with timeline understanding
+4. **Voice/Audio**: Speech transcription with diarization support
+5. Description injected as `[Image description: ...]`, `[Video description: ...]`, or transcript
+6. Main LLM responds as if it observed the media directly
+7. **Safety/policy blocks**: if Gemini refuses the media, the chat model gets an explicit placeholder (sensitive/NSFW-likely) instead of a generic failure — it must not invent visual details
 
 **Supported formats:**
 - Images: JPEG, PNG, WebP (static stickers)
@@ -128,7 +130,7 @@ When media is received:
 - Inline processing for small files (<18MB)
 - Resumable upload for larger files via Gemini Files API
 - Automatic cleanup of temporary files
-- Media description caching (keyed by `file_unique_id`)
+- Media description caching (keyed by `file_unique_id`; albums use a composite key)
 - Duration limits: 300s for video, 300s for audio (`video_max_duration_sec` / `audio_max_duration_sec`)
 
 **Natural language prompts:**
@@ -141,7 +143,7 @@ Vision prompts redesigned for conversational output instead of structured report
 - **Summary generation** uses DeepSeek with specialized prompt preserving key facts
 - **History preservation** as `[Previous conversation summary: ...]` message
 - **Message debouncing** (4 seconds) to merge rapid consecutive messages from same user
-- **Smart media handling**: descriptions truncated at sentence boundaries (max 800 chars/item)
+- **Smart media handling**: descriptions truncated at sentence boundaries (max 1500 chars/item; albums are one combined description)
 - **Random reply system**: system-level instructions for natural spontaneous responses
 - **Time-aware context**: 3+ hour gaps treated as new conversations
 - **Streaming delivery**: DeepSeek SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted

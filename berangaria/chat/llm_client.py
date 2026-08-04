@@ -510,8 +510,7 @@ async def summarize_history(history: list) -> list:
     # Старые сообщения уходят в резюме (их [#N] исчезают), у оставшихся свежих
     # сбрасываем нумерацию с #1, чтобы номера не росли бесконечно.
     _renumber_sids(keep_recent)
-    
-    # Формируем текст для локальной модели
+
     # Берём только содержательные реплики. Реакция-без-текста (content="") сюда не идёт:
     # её эмодзи живут в поле reactions, которое в резюме не нужно — старые реакции забываются.
     text_to_summarize = "\n".join([
@@ -519,15 +518,20 @@ async def summarize_history(history: list) -> list:
         for m in to_summarize
         if isinstance(m.get('content'), str) and strip_tiktok_urls(m.get('content', '')).strip()
     ])
-    
+    if not text_to_summarize.strip():
+        logger.warning("📝 [yellow]Суммаризация пропущена:[/] нет текстового содержимого для сжатия")
+        return history
+
+    # Thinking по умолчанию у deepseek-v4-* (effort=high) легко съедает 30s timeout
+    # и/или весь max_tokens в reasoning_content, оставляя content=null → ложный фейл.
+    # Для технического резюме CoT не нужен — как в memory pipeline.
     summary_payload = {
         "model": MODEL,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "Напиши ТЕХНИЧЕСКОЕ РЕЗЮМЕ диалога на русском:"
-                    "Сожми этот диалог в КРАТКОЕ резюме на русском языке. "
+                    "Сожми этот диалог в КРАТКОЕ техническое резюме на русском языке. "
                     "Пиши ТОЛЬКО суть, без вводных фраз. "
                     "Обязательно сохрани: имена, цифры, модели (например, RTX 5070 Ti), "
                     "технические характеристики, решения и важные факты. "
@@ -542,32 +546,47 @@ async def summarize_history(history: list) -> list:
         "max_tokens": 2000,
         "temperature": 0.3,
         "top_p": 0.9,
-        "top_k": 40 
+        "thinking": {"type": "disabled"},
     }
-    
+
     try:
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
             "Content-Type": "application/json"
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(DEEPSEEK_API_URL, json=summary_payload, headers=headers)
             logger.info(f"Ответ сумморизации: [cyan]{response.status_code}[/]")
             response.raise_for_status()
             data = response.json()
-            summary = data['choices'][0]['message']['content']
-            
-            summary = re.sub(r'<think>.*?</think>', '', summary, flags=re.DOTALL).strip()
+            message = (data.get("choices") or [{}])[0].get("message") or {}
+            # content nullable в API. При thinking=on и исчерпанном max_tokens сюда
+            # часто null — раньше re.sub(None) давал TypeError → «Ошибка суммаризации».
+            raw = message.get("content")
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(
+                    "пустой content в ответе суммаризации"
+                    + (
+                        f" (есть reasoning_content, {len(message.get('reasoning_content') or '')} символов)"
+                        if message.get("reasoning_content")
+                        else ""
+                    )
+                )
+
+            summary = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+            if not summary:
+                raise ValueError("резюме пустое после очистки thinking-тегов")
+
             logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
-            
+
             if FULL_DEBUG_LOGS:
                 logger.debug(f"Содержание:\n{summary}")
-            
+
             return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
-            
+
     except Exception as e:
         logger.error(f"❌ [red]Ошибка суммаризации:[/] {e}")
-        return history 
+        return history
 
 
 async def send_llm_request(

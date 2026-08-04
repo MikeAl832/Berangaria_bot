@@ -82,8 +82,8 @@ async def periodic_summarization():
                 async with state.get_turn_lock(key):
                     history = state.histories.get(key, [])
 
-                    # Суммаризируем только если история достаточно длинная
-                    if len(history) >= SUMMARY_INTERVAL:
+                    # Нужно > SUMMARY_INTERVAL+1, иначе 1 резюме + keep не короче исходника
+                    if len(history) > SUMMARY_INTERVAL + 1:
                         old_len = len(history)
                         new_history = await summarize_history(history)
 

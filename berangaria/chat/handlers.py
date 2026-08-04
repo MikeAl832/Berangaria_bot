@@ -24,7 +24,13 @@ from berangaria.memory.pipeline import (
     enqueue_memory_source,
     release_memory_sources,
 )
-from berangaria.media.vision import describe_image_bytes, describe_video, transcribe_audio
+from berangaria.media.vision import (
+    describe_image_bytes,
+    describe_images,
+    describe_video,
+    transcribe_audio,
+    VISION_FAILED_IMAGE,
+)
 from berangaria.core.utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
     download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
@@ -32,6 +38,12 @@ from berangaria.core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Telegram delivers album photos as separate updates with the same media_group_id.
+# Wait after the last photo so we can download them all and describe in one Gemini call.
+ALBUM_GATHER_SECONDS = 1.2
+_album_buffer: dict[str, dict] = {}
+_album_lock = asyncio.Lock()
 
 
 def truncate_at_sentence(text: str, max_chars: int) -> str:
@@ -213,6 +225,16 @@ async def _discard_pending_buffers(
                 message.get("memory_source_id") for message in data.get("messages", [])
             )
             discarded += 1
+
+    # Album gather buffers have not enqueued memory yet — just cancel timers.
+    async with _album_lock:
+        for album_key in [k for k in _album_buffer if k.startswith(prefix)]:
+            data = _album_buffer.pop(album_key)
+            task = data.get("task")
+            if task is not None:
+                task.cancel()
+            discarded += 1
+
     if source_ids:
         abandon_memory_sources(source_ids)
     if discarded:
@@ -220,6 +242,134 @@ async def _discard_pending_buffers(
             f"🧹 [dim]Сброшено ждущих буферов для '{key}': {discarded}[/]"
         )
     return discarded
+
+
+def _album_cache_key(file_unique_ids: list[str]) -> str:
+    """Stable cache key for a multi-image album (order-independent)."""
+    return "album:" + ",".join(sorted(file_unique_ids))
+
+
+async def _flush_album_after_delay(album_key: str) -> None:
+    """Wait for late album members, then describe all photos in one Gemini call."""
+    try:
+        await asyncio.sleep(ALBUM_GATHER_SECONDS)
+        async with _album_lock:
+            data = _album_buffer.pop(album_key, None)
+        if not data:
+            return
+        await _process_photo_album(data)
+    except asyncio.CancelledError:
+        # Timer restarted — another photo joined the album.
+        pass
+    except Exception as e:
+        logger.error(f"❌ [red]Ошибка обработки альбома:[/] {e}")
+
+
+async def _process_photo_album(data: dict) -> None:
+    """Download album photos and send one multi-image vision request."""
+    items: list[dict] = data["items"]
+    update = data["update"]
+    context = data["context"]
+    if not items:
+        return
+
+    # Cap matches how many media tags we keep in one buffered turn.
+    items = items[:MAX_MEDIA_ITEMS_IN_CONTEXT]
+    unique_ids = [item["file_unique_id"] for item in items]
+    cache_key = _album_cache_key(unique_ids)
+    captions = [item["caption"] for item in items if item.get("caption")]
+    caption = "\n".join(captions)
+
+    # Prefer the update that carries the caption (Telegram usually puts it on one).
+    for item in items:
+        if item.get("caption") and item.get("update") is not None:
+            update = item["update"]
+            break
+
+    cached = state.get_cached_media_description(cache_key)
+    if cached is not None:
+        logger.info(
+            f"♻️ [dim]Альбом ({len(items)} фото) уже разобран, берём из кэша[/]"
+        )
+        await queue_message(
+            update, context, text=caption,
+            media_description=cached, media_kind="image",
+        )
+        return
+
+    images: list[tuple[bytes, str]] = []
+    for item in items:
+        try:
+            image_bytes, mime = await download_media_as_base64(
+                item["file_id"], context, return_bytes=True
+            )
+            images.append((image_bytes, mime))
+        except Exception as e:
+            logger.error(
+                f"❌ [red]Не удалось скачать фото альбома "
+                f"{item.get('file_unique_id')}:[/] {e}"
+            )
+
+    if not images:
+        image_description = VISION_FAILED_IMAGE
+    else:
+        try:
+            image_description = await describe_images(images, caption=caption)
+        except Exception as e:
+            logger.error(f"❌ [red]Ошибка multi-image vision:[/] {e}")
+            image_description = ""
+        if not image_description:
+            image_description = VISION_FAILED_IMAGE
+        else:
+            state.cache_media_description(cache_key, image_description)
+
+    logger.info(
+        f"🖼️ [dim]Альбом: {len(images)}/{len(items)} фото → 1 Gemini-вызов[/]"
+    )
+    await queue_message(
+        update, context, text=caption,
+        media_description=image_description, media_kind="image",
+    )
+
+
+async def _buffer_album_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    media_group_id: str,
+    caption: str,
+) -> None:
+    """Accumulate photos of one Telegram album; flush after a short quiet window."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]
+    album_key = f"{chat_id}_{user_id}_{media_group_id}"
+    item = {
+        "file_id": photo.file_id,
+        "file_unique_id": photo.file_unique_id,
+        "caption": caption or "",
+        "update": update,
+    }
+
+    async with _album_lock:
+        if album_key in _album_buffer:
+            entry = _album_buffer[album_key]
+            task = entry.get("task")
+            if task is not None:
+                task.cancel()
+            entry["items"].append(item)
+            # Keep the latest context (bot identity unchanged across the album).
+            entry["context"] = context
+            if caption:
+                entry["update"] = update
+        else:
+            _album_buffer[album_key] = {
+                "items": [item],
+                "update": update,
+                "context": context,
+            }
+        _album_buffer[album_key]["task"] = asyncio.create_task(
+            _flush_album_after_delay(album_key)
+        )
 
 
 @access_required
@@ -293,13 +443,14 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with get_turn_lock(key):
         history = histories.get(key)
-        # `<=`: при длине ровно SUMMARY_INTERVAL сжимать нечего — summarize_history
-        # вернёт тот же список, и пользователь увидит «не удалось» вместо честного
-        # «слишком короткая», заплатив за вызов DeepSeek.
-        if not history or len(history) <= SUMMARY_INTERVAL:
+        # После сжатия всегда 1 резюме + SUMMARY_INTERVAL свежих = SUMMARY_INTERVAL+1.
+        # При len <= SUMMARY_INTERVAL+1 либо сжимать нечего, либо длина не уменьшится —
+        # не дёргаем DeepSeek впустую.
+        min_for_shrink = SUMMARY_INTERVAL + 1
+        if not history or len(history) <= min_for_shrink:
             await update.message.reply_text(
                 f"📝 История слишком короткая для суммаризации "
-                f"(нужно больше {SUMMARY_INTERVAL} сообщений)."
+                f"(нужно больше {min_for_shrink} сообщений)."
             )
             return
 
@@ -380,8 +531,10 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     else:
         message_parts.append(f"[Message: ({'сообщение без текста' if is_group else 'без текста'})]")
 
-    # Добавляем описания медиа (ограничиваем для экономии токенов)
-    MAX_DESC_CHARS = 800  # Максимум символов на одно описание медиа
+    # Добавляем описания медиа (ограничиваем для экономии токенов).
+    # Albums collapse to one description, so the per-item budget is higher than
+    # the old 800-char cap (which assumed up to N separate photo tags).
+    MAX_DESC_CHARS = 1500
     media_items = [
         (m.get("media_kind", "image"), m["media_description"])
         for m in messages if m.get("media_description")
@@ -832,6 +985,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await queue_message(update, context, text=caption)
         return
 
+    # Album: gather by media_group_id, then one multi-image Gemini call.
+    media_group_id = getattr(update.message, "media_group_id", None)
+    if media_group_id:
+        await _buffer_album_photo(update, context, str(media_group_id), caption)
+        return
+
     image_description = None
     try:
         photo = update.message.photo[-1]
@@ -848,8 +1007,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ [red]Ошибка обработки фото:[/] {e}")
 
     if not image_description:
-        # Если описать не удалось — оставим хотя бы пометку
-        image_description = "(не удалось разобрать изображение)"
+        # Technical failure only — policy blocks already return a non-empty placeholder.
+        image_description = VISION_FAILED_IMAGE
 
     await queue_message(update, context, text=caption,
                         media_description=image_description, media_kind="image")

@@ -328,16 +328,17 @@ Request cost: $0.000285
 
 **How it works:**
 - Runs at every hour listed in `summary_hours` (shipped: 05:00 and 14:00) AM (local time)
-- Summarizes all active chats with 10+ messages
+- Summarizes chats longer than `summary_interval + 1` messages (result must be strictly shorter)
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
+- Uses DeepSeek with thinking disabled (technical summary does not need CoT)
 
 **Manual trigger:**
 Use `/summarize` command to compress chat history immediately.
 
 **Configuration:**
 - Schedule is set by `summary_hours` in config.yaml (shipped: `[5, 14]`)
-- Minimum messages required: `summary_interval` parameter in `config.yaml`
+- Minimum messages required: more than `summary_interval + 1` (result is always 1 summary + `summary_interval` recent)
 
 **Logs:**
 ```
