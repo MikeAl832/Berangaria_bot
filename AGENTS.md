@@ -27,6 +27,8 @@ Key modules:
 - `berangaria/media/vision.py`: Gemini image, video, and audio requests.
 - `berangaria/media/tts.py`: Fish Audio TTS for optional `send_voice` Telegram voice notes.
 - `berangaria/stickers/store.py`: Gemini embeddings and Qdrant-backed sticker search/indexing.
+- `berangaria/user_bridge/`: optional read-only Telethon listener so the bot can see
+  other bots' messages in allowlisted groups; replies stay on Bot API; fail-open.
 
 ## Setup and validation
 

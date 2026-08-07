@@ -70,6 +70,9 @@ FISH_VOICE_ID=your_voice_model_id
 # Telegram API application credentials for the local Bot API server:
 TELEGRAM_API_ID=your_telegram_api_id
 TELEGRAM_API_HASH=your_telegram_api_hash
+# Optional: read-only user bridge (see other bots in groups)
+# USER_BRIDGE_SESSION=from_scripts_user_bridge_login
+# and set user_bridge_enabled: true in config.yaml
 ```
 
 The production Compose configuration starts the local Telegram Bot API server

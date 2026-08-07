@@ -512,8 +512,12 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
     # Формируем единое сообщение из буфера
     first_msg = messages[0]
     timestamp = first_msg["timestamp"]
-    
-    message_parts = [f"[User: {user_name}] [Time: {timestamp}]"]
+    # User bridge marks other bots as author_kind=Bot so the LLM can tell them apart.
+    author_kind = first_msg.get("author_kind") or "User"
+    if author_kind not in ("User", "Bot"):
+        author_kind = "User"
+
+    message_parts = [f"[{author_kind}: {user_name}] [Time: {timestamp}]"]
     
     # Добавляем информацию о пересылке, если она есть
     if first_msg.get("forward_info"):
@@ -680,6 +684,7 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if getattr(update.message, "date", None) is not None
             else time.time()
         ),
+        "author_kind": "User",
     }
 
     # Ставим оригинальный текст в очередь до debounce: поздняя правка Telegram
@@ -707,7 +712,142 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         release_memory_sources([memory_source_id])
         return
 
-    # Запускаем новый таймер
+    await _enqueue_buffered(
+        buffer_key=buffer_key,
+        msg_data=msg_data,
+        update=update,
+        context=context,
+        key=key,
+        is_group=is_group,
+        user_id=user_id,
+        user_name=user_name,
+        mentioned=mentioned,
+        random_reply=random_reply,
+    )
+
+
+async def queue_bridge_bot_message(
+    update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    text: str,
+    media_description: str | None = None,
+    media_kind: str | None = None,
+    reply_to_name: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_user_id: int | None = None,
+    created_at: float | None = None,
+):
+    """Ingest a group message from another bot (user-bridge path).
+
+    Differences from queue_message:
+    - groups only
+    - never enqueues long-term memory
+    - history author tag is [Bot: ...]
+    - mention uses text + reply_to_user_id (no real Bot API Update entities)
+    """
+    from berangaria.config import BOT_NAMES
+    from berangaria.user_bridge.policy import message_mentions_bot
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "bot"
+    is_group = True
+
+    # Bridge is groups-only; refuse anything else without side effects.
+    chat_type = getattr(update.effective_chat, "type", "supergroup")
+    if chat_type not in ("group", "supergroup"):
+        return
+
+    if not _check_access_permissions(chat_id, user_id, is_group):
+        logger.info(
+            "👀 [dim]User bridge: чат не в allowlist chat=%s[/]", chat_id
+        )
+        return
+
+    original_text = text or ""
+    text = strip_tiktok_urls(original_text)
+
+    now = now_local()
+    timestamp = f"{now.hour:02d}:{now.minute:02d}"
+
+    bot = context.bot
+    bot_id = getattr(bot, "id", None)
+    if bot_id is None:
+        try:
+            me = await bot.get_me()
+            bot_id = me.id
+        except Exception:
+            bot_id = 0
+
+    mentioned = message_mentions_bot(
+        text,
+        bot_id=int(bot_id or 0),
+        bot_username=getattr(bot, "username", None),
+        bot_first_name=getattr(bot, "first_name", None),
+        reply_to_user_id=reply_to_user_id,
+        bot_names=BOT_NAMES,
+    )
+    random_reply = should_reply_randomly(chat_id)
+
+    if not text and not media_description:
+        return
+
+    key = get_history_key(chat_id, False, user_id)
+    buffer_key = f"bridge_{chat_id}_{user_id}"
+
+    msg_data = {
+        "text": text,
+        "media_description": media_description,
+        "media_kind": media_kind,
+        "timestamp": timestamp,
+        "reply_to_name": reply_to_name,
+        "reply_to_text": reply_to_text,
+        "forward_info": None,
+        "message_id": update.message.message_id,
+        "created_at": created_at if created_at is not None else time.time(),
+        "author_kind": "Bot",
+        # Explicit: bridge traffic must not create durable memory sources.
+        "memory_source_id": None,
+    }
+
+    log_text = text if len(text) <= 80 else f"{text[:77]}..."
+    logger.info(
+        "👀 [[blue]bridge | %s[/]] [magenta]%s[/]: %s",
+        chat_id,
+        user_name,
+        log_text or "(media)",
+    )
+
+    await _enqueue_buffered(
+        buffer_key=buffer_key,
+        msg_data=msg_data,
+        update=update,
+        context=context,
+        key=key,
+        is_group=is_group,
+        user_id=user_id,
+        user_name=user_name,
+        mentioned=mentioned,
+        random_reply=random_reply,
+    )
+
+
+async def _enqueue_buffered(
+    *,
+    buffer_key: str,
+    msg_data: dict,
+    update,
+    context: ContextTypes.DEFAULT_TYPE,
+    key: str,
+    is_group: bool,
+    user_id: int,
+    user_name: str,
+    mentioned: bool,
+    random_reply: bool,
+):
+    """Shared debounce buffer append used by user and bridge paths."""
+
     async def wait_and_process(debounce: float | None = None):
         source_ids: list[int | None] = []
         try:

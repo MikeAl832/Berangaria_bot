@@ -26,6 +26,9 @@ TELEGRAM_API_HASH=<api_hash>
 TELEGRAM_BOT_API_BASE_URL=http://127.0.0.1:8081
 TELEGRAM_BOT_API_LOCAL_MODE=true
 BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
+# Optional user bridge (read-only MTProto — see other bots in groups):
+# USER_BRIDGE_SESSION=<string from scripts/user_bridge_login.py>
+# USER_BRIDGE_ENABLED=true   # or set user_bridge_enabled in config.yaml
 ```
 
 The production Compose file starts `aiogram/telegram-bot-api` with
@@ -538,15 +541,44 @@ MEM0_CONFIG = {
 | `FISH_API_KEY` | No | Fish Audio TTS | fish.audio/app/api-keys |
 | `FISH_VOICE_ID` | No | Fish voice model id for `send_voice` | fish.audio library |
 
-### Production: TTS secrets without SSH
+### Production: secrets without SSH
 
 The VPS `.env` is untracked and is not wiped by deploy `git reset --hard`.
-For TTS only, `deploy.yml` can upsert `FISH_API_KEY` / `FISH_VOICE_ID` from
+`deploy.yml` can upsert the following from
 **GitHub → Settings → Secrets and variables → Actions** into that file before
-`docker compose up`. Empty secrets are skipped (existing server values kept).
-Other bot keys still live only in the server `.env` until the same pattern is
-extended later. Do not commit `.env` or put keys in `config.yaml`.
+`docker compose up`. Empty secrets are skipped (existing server values kept):
 
+- `FISH_API_KEY` / `FISH_VOICE_ID` (TTS)
+- `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (local Bot API + user bridge)
+- `USER_BRIDGE_SESSION` (Telethon StringSession for the optional user bridge)
+
+Other bot keys may still live only in the server `.env` until the same pattern
+is extended. Do not commit `.env` or put keys in `config.yaml`.
+
+### User bridge (optional)
+
+Bot API does not deliver messages from other bots in groups. When enabled, a
+**read-only** Telethon client on your user account listens in allowlisted groups
+and injects those messages into the normal debounce → LLM → Bot API reply path.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `user_bridge_enabled` | `false` | Master switch (`USER_BRIDGE_ENABLED` env override) |
+| `user_bridge_chat_ids` | `[]` | Empty = use `allowed_groups`; else explicit chat ids |
+| `user_bridge_reconnect_seconds` | `5` | Pause after bridge disconnect |
+| `user_bridge_media_timeout_seconds` | `60` | Cap for download + vision per bot media |
+| `user_bridge_dedup_ttl_seconds` | `300` | Drop duplicate `(chat_id, message_id)` |
+
+Rules enforced in code:
+
+- groups only; only `sender.bot`; skip Berangaria’s own bot id
+- **no** long-term memory enqueue for bridge traffic
+- history uses `[Bot: name]` (not `[User: …]`)
+- replies / tools stay on Bot API
+- bridge errors reconnect; they never stop Bot API polling
+
+One-time session: `python scripts/user_bridge_login.py` → put `USER_BRIDGE_SESSION=…`
+in `.env` and the matching GitHub Actions secret.
 ## File Structure
 
 ```

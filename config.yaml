@@ -102,7 +102,7 @@
 "random_reply_chance": 10                # Шанс случайного ответа в группе (%)
 "summary_interval": 10                   # Сколько сообщений оставить после сжатия истории
 "timezone": "Europe/Moscow"              # Часовой пояс бота (Time-теги, CURRENT TIME, cron суммаризации)
-"summary_hours": [5, 14]                 # Автосуммаризация в эти часы по timezone (05:00 и 14:00 МСК)
+"summary_hours": [5]                 # Автосуммаризация в эти часы по timezone (05:00 и 14:00 МСК)
 "message_debounce_seconds": 4.0          # Таймаут для склейки последовательных сообщений (секунды)
 "random_reply_cooldown": 10              # Минимальный интервал между случайными ответами (секунды)
 "admin_mode": false                      # true = только админы используют опасные команды
@@ -119,6 +119,18 @@
 "allowed_users": [1217938322, 1809564460]
 "allowed_groups": [-1002263830880]
 "admin_alert_chat_id": 1217938322        # ID чата для алертов о падениях (null = выкл, например свой user id)
+
+# ========================================
+# 👀 USER BRIDGE (видеть сообщения других ботов в группах)
+# ========================================
+# Read-only MTProto sidecar (Telethon). Ответы, tools, memory path — только Bot API.
+# Secrets: TELEGRAM_API_ID, TELEGRAM_API_HASH, USER_BRIDGE_SESSION в .env / GitHub Secrets.
+# Выключено по умолчанию: без session бот работает как раньше.
+"user_bridge_enabled": false
+"user_bridge_chat_ids": []               # пусто = пересечение с allowed_groups; иначе явный allowlist
+"user_bridge_reconnect_seconds": 5       # пауза между reconnect при обрыве session/сети
+"user_bridge_media_timeout_seconds": 60  # таймаут download+vision на одно bot-media
+"user_bridge_dedup_ttl_seconds": 300     # окно дедупа (chat_id, message_id)
 
 # ========================================
 # 💰 ЦЕНЫ DeepSeek (за 1M токенов)

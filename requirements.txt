@@ -9,3 +9,4 @@ qdrant-client==1.18.0
 fastembed==0.8.0
 colorama==0.4.6
 beautifulsoup4==4.13.4
+telethon==1.40.0

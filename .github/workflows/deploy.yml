@@ -56,10 +56,13 @@ jobs:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         env:
-          # TTS only for now. Same pattern can later cover TELEGRAM_*/API_KEY/etc.
+          # Secrets upserted into the VPS .env (untracked; survives git reset --hard).
           # Values never printed — only key names in deploy logs.
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
           FISH_VOICE_ID: ${{ secrets.FISH_VOICE_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          USER_BRIDGE_SESSION: ${{ secrets.USER_BRIDGE_SESSION }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -69,7 +72,7 @@ jobs:
           timeout: 60s
           command_timeout: 10m
           # Forward env into the remote script (appleboy does not pass `env:` alone).
-          envs: FISH_API_KEY,FISH_VOICE_ID
+          envs: FISH_API_KEY,FISH_VOICE_ID,TELEGRAM_API_ID,TELEGRAM_API_HASH,USER_BRIDGE_SESSION
           
           script: |
             set -eu
@@ -123,6 +126,9 @@ jobs:
             }
             upsert_env FISH_API_KEY "${FISH_API_KEY:-}"
             upsert_env FISH_VOICE_ID "${FISH_VOICE_ID:-}"
+            upsert_env TELEGRAM_API_ID "${TELEGRAM_API_ID:-}"
+            upsert_env TELEGRAM_API_HASH "${TELEGRAM_API_HASH:-}"
+            upsert_env USER_BRIDGE_SESSION "${USER_BRIDGE_SESSION:-}"
             
             docker compose up -d --build --remove-orphans --force-recreate
 

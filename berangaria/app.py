@@ -47,9 +47,11 @@ from berangaria.chat.handlers import (
     handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
 )
 from berangaria.core.utils import now_local, next_summary_run
+from berangaria.user_bridge import start_user_bridge, stop_user_bridge
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telethon").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -317,7 +319,17 @@ def main():
     summarization_task = loop.create_task(periodic_summarization())
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
     memory_flush_task = loop.create_task(periodic_memory_flush())
-    
+    # User bridge is fail-open: missing secrets / Telethon errors never block polling.
+    # Boot task only calls start_user_bridge; the long-lived supervisor lives inside
+    # the user_bridge module and is stopped explicitly below.
+    async def _boot_user_bridge():
+        try:
+            await start_user_bridge(app)
+        except Exception:
+            logger.exception("👀 [red]User bridge: ошибка запуска (бот продолжает работу)[/]")
+
+    bridge_boot_task = loop.create_task(_boot_user_bridge())
+
     try:
         # allowed_updates=ALL_TYPES — иначе Telegram НЕ присылает message_reaction.
         # Лишние типы без хендлеров просто игнорируются.
@@ -326,7 +338,12 @@ def main():
         logger.info("🛑 [yellow]Получен сигнал остановки...[/]")
     finally:
         # Graceful shutdown
-        background_tasks = [summarization_task, sticker_sync_task, memory_flush_task]
+        background_tasks = [summarization_task, sticker_sync_task, memory_flush_task, bridge_boot_task]
+        try:
+            if not loop.is_closed():
+                loop.run_until_complete(stop_user_bridge())
+        except Exception as e:
+            logger.debug(f"User bridge stop: {e}")
         for task in background_tasks:
             task.cancel()
         try:

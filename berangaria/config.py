@@ -327,6 +327,40 @@ MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементо�
 ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
 
+# ========================================
+# 👀 USER BRIDGE (read-only MTProto → bot messages in groups)
+# ========================================
+# Optional: when disabled or secrets missing, the bot never starts Telethon.
+USER_BRIDGE_ENABLED = _bool_setting("USER_BRIDGE_ENABLED", "user_bridge_enabled", False)
+_raw_bridge_chats = config_yaml.get("user_bridge_chat_ids", [])
+if not isinstance(_raw_bridge_chats, (list, tuple)):
+    _raw_bridge_chats = []
+USER_BRIDGE_CHAT_IDS: list[int] = [
+    cid for cid in (_as_int(x, 0) for x in _raw_bridge_chats) if cid != 0
+]
+USER_BRIDGE_RECONNECT_SECONDS = max(
+    1.0,
+    _float_setting("USER_BRIDGE_RECONNECT_SECONDS", "user_bridge_reconnect_seconds", 5.0),
+)
+USER_BRIDGE_MEDIA_TIMEOUT_SECONDS = max(
+    5.0,
+    _float_setting(
+        "USER_BRIDGE_MEDIA_TIMEOUT_SECONDS", "user_bridge_media_timeout_seconds", 60.0
+    ),
+)
+USER_BRIDGE_DEDUP_TTL_SECONDS = max(
+    30.0,
+    _float_setting("USER_BRIDGE_DEDUP_TTL_SECONDS", "user_bridge_dedup_ttl_seconds", 300.0),
+)
+# api_id/api_hash are also used by the local Bot API compose service; session is bridge-only.
+_raw_telegram_api_id = (os.environ.get("TELEGRAM_API_ID") or "").strip()
+try:
+    TELEGRAM_API_ID = int(_raw_telegram_api_id) if _raw_telegram_api_id else 0
+except ValueError:
+    TELEGRAM_API_ID = 0
+TELEGRAM_API_HASH = (os.environ.get("TELEGRAM_API_HASH") or "").strip()
+USER_BRIDGE_SESSION = (os.environ.get("USER_BRIDGE_SESSION") or "").strip()
+
 # Чат для алертов о критических ошибках (null = выключено)
 _admin_alert_chat_id = config_yaml.get("admin_alert_chat_id", None)
 if _admin_alert_chat_id is None:
