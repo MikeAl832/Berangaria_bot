@@ -254,10 +254,13 @@ def test_format_memory_empty():
     assert _format_memory_block({"results": []}) == ""
 
 
-def test_format_memory_filters_below_min_score():
+def test_format_memory_filters_below_min_score(monkeypatch):
+    # Pin the floor so this unit test does not track production memory_min_score.
+    floor = 0.3
+    monkeypatch.setattr(llm_client, "MEMORY_MIN_SCORE", floor)
     res = {"results": [
-        {"memory": "пороговый факт", "score": 0.3},
-        {"memory": "слабый факт", "score": 0.29},
+        {"memory": "пороговый факт", "score": floor},
+        {"memory": "слабый факт", "score": floor - 0.01},
     ]}
     out = _format_memory_block(res)
     assert "пороговый факт" in out
@@ -376,12 +379,15 @@ def test_format_memory_keeps_fact_related_to_current_query():
     assert "Helix" in _format_memory_block(res, query="какой у меня редактор Helix")
 
 
-def test_format_memory_keeps_live_relevant_score_above_vector_floor():
+def test_format_memory_keeps_live_relevant_score_above_vector_floor(monkeypatch):
+    floor = 0.3
+    monkeypatch.setattr(llm_client, "MEMORY_MIN_SCORE", floor)
     res = {
         "results": [
             {
                 "memory": "Пользователь titlo10 использует Helix как основной редактор",
-                "score": 0.3465,
+                # Slightly above the floor — vector match is weak but topical.
+                "score": floor + 0.0465,
             }
         ]
     }

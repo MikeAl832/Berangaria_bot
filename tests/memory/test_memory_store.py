@@ -1,5 +1,4 @@
 from berangaria.memory import store as memory_store
-from berangaria.config import MEMORY_MIN_SCORE
 from berangaria.prompts import MEM0_CUSTOM_INSTRUCTIONS
 
 
@@ -27,7 +26,8 @@ def test_memory_initialization_retries(monkeypatch):
 
 
 def test_memory_quality_settings_are_strict_and_explicit():
-    assert MEMORY_MIN_SCORE == 0.3
+    # Prompt-surface policy, not shipped numeric knobs (memory_min_score lives in
+    # config.yaml and must stay free to tune without breaking unit tests).
     assert "только один уже одобренный факт" in MEM0_CUSTOM_INSTRUCTIONS
     assert "не перефразируй" in MEM0_CUSTOM_INSTRUCTIONS
     assert "точный переданный текст" in MEM0_CUSTOM_INSTRUCTIONS
