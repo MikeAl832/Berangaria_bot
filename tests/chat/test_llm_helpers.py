@@ -468,7 +468,7 @@ def _summary_history(n=12):
     ]
 
 
-def test_successful_summary_disables_thinking_and_returns_new_list(monkeypatch):
+def test_successful_summary_enables_thinking_and_returns_new_list(monkeypatch):
     captured = {}
 
     class OkClient:
@@ -503,7 +503,9 @@ def test_successful_summary_disables_thinking_and_returns_new_list(monkeypatch):
     assert result[0]["content"].startswith("[Previous conversation summary:")
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
-    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["reasoning_effort"] == "high"
+    assert captured["payload"]["max_tokens"] == 8192
     assert "top_k" not in captured["payload"]
     assert captured["timeout"] == 120.0
 

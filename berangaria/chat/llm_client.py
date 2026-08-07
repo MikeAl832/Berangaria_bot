@@ -551,16 +551,18 @@ async def summarize_history(history: list) -> list:
         logger.warning("📝 [yellow]Суммаризация пропущена:[/] нет текстового содержимого для сжатия")
         return history
 
-    # Thinking по умолчанию у deepseek-v4-* (effort=high) легко съедает 30s timeout
-    # и/или весь max_tokens в reasoning_content, оставляя content=null → ложный фейл.
-    # Для технического резюме CoT не нужен — как в memory pipeline.
+    # Thinking on (default high effort) — quality of multi-turn compression depends on CoT.
+    # Reasoning tokens share the max_tokens budget with content; too small a budget
+    # yields content=null while reasoning_content is full. Keep a long client timeout
+    # (was 30s → false timeouts under thinking).
     summary_payload = {
         "model": MODEL,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "Сожми этот диалог в КРАТКОЕ техническое резюме на русском языке. "
+                    "Напиши ТЕХНИЧЕСКОЕ РЕЗЮМЕ диалога на русском:"
+                    "Сожми этот диалог в КРАТКОЕ резюме на русском языке. "
                     "Пиши ТОЛЬКО суть, без вводных фраз. "
                     "Обязательно сохрани: имена, цифры, модели (например, RTX 5070 Ti), "
                     "технические характеристики, решения и важные факты. "
@@ -572,10 +574,11 @@ async def summarize_history(history: list) -> list:
                 "content": text_to_summarize
             }
         ],
-        "max_tokens": 2000,
+        "max_tokens": 8192,
         "temperature": 0.3,
         "top_p": 0.9,
-        "thinking": {"type": "disabled"},
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
     }
 
     try:

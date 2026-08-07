@@ -368,7 +368,7 @@ Request cost: $0.000285
 - Summarizes chats longer than `summary_interval + 1` messages (result must be strictly shorter)
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
-- Uses DeepSeek with thinking disabled (technical summary does not need CoT)
+- Uses DeepSeek with thinking enabled (`reasoning_effort: high`); long client timeout and a larger `max_tokens` budget so CoT does not starve the final summary
 
 **Manual trigger:**
 Use `/summarize` command to compress chat history immediately.
