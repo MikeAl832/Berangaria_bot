@@ -179,7 +179,7 @@ bot_names: ["Бер", "Ber"]
 random_reply_chance: 10
 summary_interval: 10
 timezone: "Europe/Moscow"
-summary_hours: [5, 14]
+summary_hours: [5]
 message_debounce_seconds: 4.0
 max_buffered_messages: 30
 max_buffered_chars: 20000
@@ -201,7 +201,7 @@ log_backup_count: 5
 - `random_reply_chance`: Default probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts.
 - `summary_interval`: Messages preserved after summarization
 - `timezone`: Bot timezone for `[Time:]` tags, CURRENT TIME in the system prompt, and scheduled summarization (default `Europe/Moscow`)
-- `summary_hours`: Local hours when automatic history compression runs (default `[5, 14]` → 05:00 and 14:00)
+- `summary_hours`: Local hours when automatic history compression runs (shipped: `[5]` → 05:00; default if omitted: `[5, 14]`)
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `max_buffered_messages` / `max_buffered_chars`: Budget for one debounce buffer. Every message
   restarts the debounce window, so without a budget a continuous stream merges into a single
@@ -364,7 +364,7 @@ Request cost: $0.000285
 ### Automatic Summarization
 
 **How it works:**
-- Runs at every hour listed in `summary_hours` (shipped: 05:00 and 14:00) AM (local time)
+- Runs at every hour listed in `summary_hours` (shipped: 05:00 local time)
 - Summarizes chats longer than `summary_interval + 1` messages (result must be strictly shorter)
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
@@ -374,7 +374,7 @@ Request cost: $0.000285
 Use `/summarize` command to compress chat history immediately.
 
 **Configuration:**
-- Schedule is set by `summary_hours` in config.yaml (shipped: `[5, 14]`)
+- Schedule is set by `summary_hours` in config.yaml (shipped: `[5]`)
 - Minimum messages required: more than `summary_interval + 1` (result is always 1 summary + `summary_interval` recent)
 
 **Logs:**

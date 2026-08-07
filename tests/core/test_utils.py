@@ -12,7 +12,7 @@ from berangaria.core.utils import (
     strip_tiktok_urls,
     strip_tiktok_urls_preserving_whitespace,
 )
-from berangaria.config import SUMMARY_HOURS, BOT_TZ
+from berangaria.config import BOT_TZ
 
 
 def test_escape_user_text_neutralizes_service_tags():
@@ -118,7 +118,10 @@ def test_is_low_signal_user_text():
     assert not is_low_signal_user_text("сегодня купил новую видеокарту")
 
 
-def test_next_summary_run_picks_afternoon_slot():
+def test_next_summary_run_picks_afternoon_slot(monkeypatch):
+    # Schedule is config-driven; pin hours so the unit test does not track
+    # production summary_hours in config.yaml.
+    monkeypatch.setattr("berangaria.core.utils.SUMMARY_HOURS", [5, 14])
     # 10:00 МСК → ближайший 14:00 того же дня
     now = datetime(2026, 7, 8, 10, 0, 0, tzinfo=BOT_TZ)
     nxt = next_summary_run(now)
@@ -126,13 +129,22 @@ def test_next_summary_run_picks_afternoon_slot():
     assert nxt.day == 8
 
 
-def test_next_summary_run_rolls_to_next_morning():
+def test_next_summary_run_rolls_to_next_morning(monkeypatch):
+    monkeypatch.setattr("berangaria.core.utils.SUMMARY_HOURS", [5, 14])
     # 16:00 МСК → следующий 05:00
     now = datetime(2026, 7, 8, 16, 0, 0, tzinfo=BOT_TZ)
     nxt = next_summary_run(now)
     assert nxt.hour == 5
     assert nxt.day == 9
-    assert set(SUMMARY_HOURS) >= {5, 14}
+
+
+def test_next_summary_run_single_slot_rolls_to_next_day(monkeypatch):
+    # Shipped config may list only one hour (e.g. [5]); still rolls forward.
+    monkeypatch.setattr("berangaria.core.utils.SUMMARY_HOURS", [5])
+    now = datetime(2026, 7, 8, 10, 0, 0, tzinfo=BOT_TZ)
+    nxt = next_summary_run(now)
+    assert nxt.hour == 5
+    assert nxt.day == 9
 
 
 def test_now_local_is_bot_tz():
