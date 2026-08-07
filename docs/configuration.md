@@ -546,14 +546,19 @@ MEM0_CONFIG = {
 The VPS `.env` is untracked and is not wiped by deploy `git reset --hard`.
 `deploy.yml` can upsert the following from
 **GitHub → Settings → Secrets and variables → Actions** into that file before
-`docker compose up`. Empty secrets are skipped (existing server values kept):
+`docker compose up`. Empty secrets are skipped (existing server values kept),
+and empty shell exports are unset so Compose still reads the server `.env`
+(shell environment wins over the project file for `${VAR}` interpolation):
 
 - `FISH_API_KEY` / `FISH_VOICE_ID` (TTS)
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (local Bot API + user bridge)
 - `USER_BRIDGE_SESSION` (Telethon StringSession for the optional user bridge)
 
-Other bot keys may still live only in the server `.env` until the same pattern
-is extended. Do not commit `.env` or put keys in `config.yaml`.
+`TELEGRAM_API_ID` / `TELEGRAM_API_HASH` must exist either as GitHub secrets or
+already in the VPS `.env` — `docker-compose.yml` requires them for
+`telegram-bot-api`. Other bot keys may still live only in the server `.env`
+until the same pattern is extended. Do not commit `.env` or put keys in
+`config.yaml`.
 
 ### User bridge (optional)
 

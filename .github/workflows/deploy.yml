@@ -105,15 +105,22 @@ jobs:
 
             test "$(git rev-parse HEAD)" = "${{ github.sha }}"
 
-            # --- TTS secrets → server .env (untracked; survives git reset --hard) ---
+            # --- Secrets → server .env (untracked; survives git reset --hard) ---
             # Empty GitHub secret leaves any existing line alone, so a missing
             # Actions secret cannot wipe a working key already on the VPS.
+            #
+            # Compose interpolates ${VAR:?...} with shell env taking precedence
+            # over the project .env file. appleboy still forwards empty secrets
+            # as VAR= into this SSH session; that empty shell value would hide a
+            # correct server .env line and fail required vars (TELEGRAM_API_ID).
+            # After optional upsert, drop empty exports so .env can supply them.
             upsert_env() {
               key="$1"
               value="$2"
               touch .env
               if [ -z "$value" ]; then
                 echo "Skipping ${key} (GitHub secret empty/unset — keeping server .env as-is)"
+                unset "$key" || true
                 return 0
               fi
               if grep -qE "^${key}=" .env 2>/dev/null; then
@@ -129,7 +136,7 @@ jobs:
             upsert_env TELEGRAM_API_ID "${TELEGRAM_API_ID:-}"
             upsert_env TELEGRAM_API_HASH "${TELEGRAM_API_HASH:-}"
             upsert_env USER_BRIDGE_SESSION "${USER_BRIDGE_SESSION:-}"
-            
+
             docker compose up -d --build --remove-orphans --force-recreate
 
             # `up -d` returns as soon as containers are created. Under
