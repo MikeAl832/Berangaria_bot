@@ -1,4 +1,4 @@
-"""DeepSeek SSE aggregation and throttled Telegram streaming previews."""
+"""OpenAI-compatible SSE aggregation and throttled Telegram streaming previews."""
 
 from __future__ import annotations
 
@@ -28,6 +28,20 @@ class StreamedCompletionResponse:
         return self.data
 
 
+def _delta_reasoning_text(delta: dict[str, Any]) -> str:
+    """Extract reasoning text from a streamed delta without exposing it to preview."""
+    reasoning_content = delta.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        return reasoning_content
+    reasoning = delta.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        return reasoning
+    if isinstance(reasoning, dict):
+        text = reasoning.get("content") or reasoning.get("text") or ""
+        return text if isinstance(text, str) else ""
+    return ""
+
+
 def _merge_tool_call(target: dict[str, Any], delta: dict[str, Any]) -> None:
     """Merge one OpenAI-compatible streamed tool-call delta in place."""
     if delta.get("id"):
@@ -50,7 +64,7 @@ async def stream_chat_completion(
     headers: dict[str, str],
     on_content: ContentCallback | None = None,
 ) -> StreamedCompletionResponse:
-    """Consume DeepSeek SSE and rebuild a normal chat-completion response.
+    """Consume OpenAI-compatible SSE and rebuild a normal chat-completion response.
 
     Only cumulative ``delta.content`` is exposed to ``on_content``. Reasoning and
     tool-call arguments are retained for API continuity but never sent to preview.
@@ -91,7 +105,7 @@ async def stream_chat_completion(
             try:
                 event = json.loads(raw_data)
             except json.JSONDecodeError:
-                logger.warning("Пропущена некорректная SSE-строка DeepSeek: %r", raw_data[:200])
+                logger.warning("Пропущена некорректная SSE-строка чат-модели: %r", raw_data[:200])
                 continue
 
             if event.get("usage"):
@@ -106,8 +120,9 @@ async def stream_chat_completion(
             delta = choice.get("delta") or {}
             if delta.get("role"):
                 role = delta["role"]
-            if delta.get("reasoning_content"):
-                reasoning_parts.append(delta["reasoning_content"])
+            reasoning_text = _delta_reasoning_text(delta)
+            if reasoning_text:
+                reasoning_parts.append(reasoning_text)
             if delta.get("content"):
                 content_parts.append(delta["content"])
                 if on_content is not None:
@@ -125,7 +140,7 @@ async def stream_chat_completion(
                 _merge_tool_call(target, tool_delta)
 
         if not done_received and not finish_reason:
-            raise RuntimeError("DeepSeek SSE завершился без [DONE] и finish_reason")
+            raise RuntimeError("Chat completion SSE завершился без [DONE] и finish_reason")
 
         message: dict[str, Any] = {
             "role": role,

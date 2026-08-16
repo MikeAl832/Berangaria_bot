@@ -35,7 +35,8 @@ from berangaria.config import (
     MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
     MEMORY_SOURCE_RETENTION_SECONDS,
     SUMMARY_HOURS, TIMEZONE_NAME,
-    STREAMING_ENABLED,
+    STREAMING_ENABLED, MODEL, CHAT_API_URL, CHAT_PROVIDER,
+    CHAT_PROVIDER_ALLOW_FALLBACKS,
     TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
     TELEGRAM_BOT_API_LOCAL_MODE,
 )
@@ -301,6 +302,14 @@ def main():
     register_handlers(app)
 
     logger.info(f"🎲 Шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]")
+    logger.info(f"🧠 Чат-модель: [cyan]{MODEL}[/] ([magenta]{CHAT_API_URL}[/])")
+    if CHAT_PROVIDER == "auto":
+        logger.info("🧭 OpenRouter provider: [cyan]auto[/]")
+    else:
+        logger.info(
+            f"🧭 OpenRouter provider: [cyan]{CHAT_PROVIDER}[/] "
+            f"(fallbacks=[yellow]{CHAT_PROVIDER_ALLOW_FALLBACKS}[/])"
+        )
     logger.info(f"📝 Максимальный контекст: [yellow]{MAX_CONTEXT_TOKENS}[/] токенов")
     logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
     logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")

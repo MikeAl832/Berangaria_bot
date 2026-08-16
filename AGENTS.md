@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. DeepSeek handles chat and summarization, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter (default `openai/gpt-5.6-luna`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 All runtime code lives in the `berangaria` package; the entry point is `python -m berangaria`.
 Tests under `tests/` mirror the package layout. One-off CLI tools live in `scripts/`.
@@ -20,7 +20,7 @@ Key modules:
 - `berangaria/core/utils.py`, `berangaria/core/logging_setup.py`: helpers and logging configuration.
 - `berangaria/chat/handlers.py`: Telegram commands, message buffering, media handling, access control, and chat-event handling.
 - `berangaria/chat/llm_client.py`: history rendering, approved-memory retrieval, summarization, LLM retries, tool rounds, reply delivery, and persistence.
-- `berangaria/chat/streaming.py`: DeepSeek SSE reconstruction and throttled private Telegram drafts.
+- `berangaria/chat/streaming.py`: OpenAI-compatible SSE reconstruction and throttled private Telegram drafts.
 - `berangaria/memory/pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
 - `berangaria/memory/store.py`: retryable Mem0 initialization.
 - `berangaria/tools/schemas.py` / `web.py` / `dispatch.py`: tool definitions handed to the LLM, web search and URL reading, and the dispatcher for reactions, replies, stickers, and voice notes.

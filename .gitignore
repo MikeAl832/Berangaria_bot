@@ -7,6 +7,7 @@ qdrant_storage/
 bot_data/
 __pycache__/
 venv
+.venv/
 CHANGES_TO_APPLY.md
 PROMPT_QUALITY_ANALYSIS.md
 VISION_QUALITY_GUIDE.md

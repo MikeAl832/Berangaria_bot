@@ -4,9 +4,8 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: DeepSeek v4 Flash (chat, summarization, strict memory extraction/verification)
-  - Alternative: DeepSeek v4 Pro for better instruction following
-  - Alternative: Grok-4.3 for superior humor and character consistency
+- **Main LLM**: OpenRouter `openai/gpt-5.6-luna` (chat and summarization)
+  - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
 - **Vector Store**: Qdrant (local Docker container)
@@ -34,7 +33,8 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 - Python 3.10+
 - Docker (for Qdrant)
-- DeepSeek API key
+- OpenRouter API key (chat and summarization)
+- DeepSeek API key (strict memory extraction/verification)
 - Google Gemini API key (for vision and embeddings)
 - Telegram bot token
 
@@ -62,6 +62,7 @@ Create `.env` file:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+OPENROUTER_API_KEY=your_openrouter_api_key
 API_KEY=your_deepseek_api_key
 GEMINI_API_KEY=your_gemini_api_key
 # Optional: Fish Audio TTS for send_voice tool
@@ -83,6 +84,7 @@ limit to be processed.
 
 API keys:
 - Telegram: [@BotFather](https://t.me/botfather)
+- OpenRouter: [openrouter.ai/keys](https://openrouter.ai/keys)
 - DeepSeek: [platform.deepseek.com](https://platform.deepseek.com)
 - Gemini: [aistudio.google.com](https://aistudio.google.com)
 
@@ -91,7 +93,8 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: DeepSeek model name
+- `model`: OpenRouter model slug (shipped: `openai/gpt-5.6-luna`)
+- `chat_provider`: `auto` or a host slug from the model page (`openai` = Luna discount)
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
@@ -147,13 +150,13 @@ Vision prompts redesigned for conversational output instead of structured report
 
 - **Token budgeting** per chat with automatic summarization at 85% capacity (configurable via `max_context_tokens`)
 - **Manual summarization** via `/summarize` command (admin-only in groups if `admin_mode: true`)
-- **Summary generation** uses DeepSeek with specialized prompt preserving key facts
+- **Summary generation** uses the chat model with specialized prompt preserving key facts
 - **History preservation** as `[Previous conversation summary: ...]` message
 - **Message debouncing** (4 seconds) to merge rapid consecutive messages from same user
 - **Smart media handling**: descriptions truncated at sentence boundaries (max 1500 chars/item; albums are one combined description)
 - **Random reply system**: system-level instructions for natural spontaneous responses
 - **Time-aware context**: 3+ hour gaps treated as new conversations
-- **Streaming delivery**: DeepSeek SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted
+- **Streaming delivery**: OpenRouter SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted
 
 ## Commands
 
@@ -218,22 +221,17 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### DeepSeek v4 Flash (per 1M tokens)
+### OpenRouter `openai/gpt-5.6-luna` (per 1M tokens, current 50% discount)
+- Regular input: $0.10
+- Cached input: $0.01
+- Cache write: $0.125 (1.25× input)
+- Output: $0.60
+- OpenRouter `usage.cost` is preferred when the provider returns it
+
+### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
 - Regular input: $0.14
-- Cached input: $0.0028 (50x cheaper)
+- Cached input: $0.0028
 - Output: $0.28
-- **Typical usage**: 1000 messages ≈ $0.4 (with 70-80% cache hit rate)
-
-### DeepSeek v4 Pro (per 1M tokens)
-- Regular input: $0.435
-- Cached input: $0.003625
-- Output: $0.87
-- **Typical usage**: 1000 messages ≈ $1.27 (better instruction following)
-
-### Grok-4.3 (per 1M tokens)
-- Input: $1.25
-- Output: $2.50
-- **Typical usage**: 1000 messages ≈ $4 (best for character/humor)
 
 ### Gemini (Vision & Embeddings)
 - Vision: Free tier (15 requests/min, 1500 requests/day)
@@ -241,9 +239,9 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Flash**: Best value for general conversations ($0.4/1000)
-- **Pro**: Better instruction following, less drift ($1.27/1000)
-- **Grok**: Superior character consistency and humor ($4/1000)
+- **Luna via OpenRouter**: shipped chat/summarization model — cheap, fast, tool-capable
+- **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
+- Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
 
 ## Debug Mode
 
@@ -268,7 +266,7 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **High costs**: 
 - Check cache hit rate in logs (should be 70-90% after warmup)
-- Consider switching to DeepSeek v4 Pro if Flash hallucinates
+- Confirm `OPENROUTER_API_KEY` is set and the `model` slug is still discounted if costs jump
 - Monitor token usage with `/stats` command
 
 **Bot uses emojis in text**:

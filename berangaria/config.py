@@ -4,6 +4,7 @@ Secrets come only from the environment (.env or docker compose env_file);
 everything else is set in config.yaml at the repository root.
 """
 import os
+import re
 
 import yaml
 from zoneinfo import ZoneInfo
@@ -87,6 +88,11 @@ TELEGRAM_BOT_API_LOCAL_MODE = _as_bool(
     bool(TELEGRAM_BOT_API_BASE_URL),
 )
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
+# Chat/summarization go through OpenRouter. Mem0 extraction stays on DeepSeek.
+CHAT_API_KEY = (
+    os.environ.get("OPENROUTER_API_KEY", "")
+    or os.environ.get("CHAT_API_KEY", "")
+).strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Fish Audio TTS (optional — voice notes via send_voice). Prefer FISH_API_KEY.
 FISH_API_KEY = (
@@ -100,12 +106,67 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
 if not DEEPSEEK_API_KEY:
     raise ValueError("API_KEY (DeepSeek) не установлен в .env файле!")
+if not CHAT_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY (чат) не установлен в .env файле!")
 
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter chat + DeepSeek Mem0)
 # ========================================
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-MODEL = config_yaml.get("model", "deepseek-v4-flash")
+CHAT_API_URL = _str_setting(
+    "CHAT_API_URL",
+    "chat_api_url",
+    "https://openrouter.ai/api/v1/chat/completions",
+)
+CHAT_API_REFERER = _str_setting(
+    "CHAT_API_REFERER",
+    "chat_api_referer",
+    "https://github.com/MikeAl832/Berangaria_bot",
+)
+CHAT_API_TITLE = _str_setting("CHAT_API_TITLE", "chat_api_title", "Berangaria")
+MODEL = config_yaml.get("model", "openai/gpt-5.6-luna")
+
+
+def _normalize_chat_provider(raw: object) -> str:
+    """``auto`` or an OpenRouter provider slug from the model card (``openai``, ``azure``)."""
+    if raw is None:
+        return "auto"
+    if not isinstance(raw, str):
+        raise ValueError(
+            "chat_provider должен быть строкой: auto или slug провайдера "
+            "(openai, azure, amazon-bedrock)"
+        )
+    value = raw.strip().lower()
+    if value in {"", "auto", "any", "default", "none"}:
+        return "auto"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", value):
+        raise ValueError(
+            f"Некорректный chat_provider: {raw!r}. "
+            "Используй auto или slug с карточки модели OpenRouter (openai, azure, amazon-bedrock)."
+        )
+    return value
+
+
+CHAT_PROVIDER = _normalize_chat_provider(
+    os.environ.get("CHAT_PROVIDER", config_yaml.get("chat_provider", "auto"))
+)
+CHAT_PROVIDER_ALLOW_FALLBACKS = _bool_setting(
+    "CHAT_PROVIDER_ALLOW_FALLBACKS", "chat_provider_allow_fallbacks", True
+)
+if CHAT_PROVIDER == "auto":
+    CHAT_PROVIDER_PREFERENCES: dict[str, object] | None = None
+else:
+    CHAT_PROVIDER_PREFERENCES = {
+        "order": [CHAT_PROVIDER],
+        "allow_fallbacks": CHAT_PROVIDER_ALLOW_FALLBACKS,
+    }
+
+
+def apply_chat_routing(payload: dict) -> dict:
+    """Attach OpenRouter provider routing when the operator pinned a host."""
+    if CHAT_PROVIDER_PREFERENCES:
+        payload["provider"] = CHAT_PROVIDER_PREFERENCES
+    return payload
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
 MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
@@ -374,11 +435,26 @@ else:
         raise ValueError("admin_alert_chat_id должен быть одним Telegram chat id или null") from exc
 
 # ========================================
-# 💰 ЦЕНЫ DeepSeek (за 1M токенов)
+# 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.14)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.0028)
-PRICE_COMPLETION = config_yaml.get("price_completion", 0.28)
+# Defaults match OpenRouter openai/gpt-5.6-luna at the current 50% discount.
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.10)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.01)
+PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.125)
+PRICE_COMPLETION = config_yaml.get("price_completion", 0.60)
+
+
+def chat_api_headers() -> dict[str, str]:
+    """OpenAI-compatible headers for the chat/summarization provider."""
+    headers = {
+        "Authorization": f"Bearer {CHAT_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    if CHAT_API_REFERER:
+        headers["HTTP-Referer"] = CHAT_API_REFERER
+    if CHAT_API_TITLE:
+        headers["X-Title"] = CHAT_API_TITLE
+    return headers
 
 # ========================================
 # 🧠 MEM0 КОНФИГУРАЦИЯ

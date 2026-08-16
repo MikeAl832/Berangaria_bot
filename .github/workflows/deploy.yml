@@ -63,6 +63,7 @@ jobs:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           USER_BRIDGE_SESSION: ${{ secrets.USER_BRIDGE_SESSION }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -72,7 +73,7 @@ jobs:
           timeout: 60s
           command_timeout: 10m
           # Forward env into the remote script (appleboy does not pass `env:` alone).
-          envs: FISH_API_KEY,FISH_VOICE_ID,TELEGRAM_API_ID,TELEGRAM_API_HASH,USER_BRIDGE_SESSION
+          envs: FISH_API_KEY,FISH_VOICE_ID,TELEGRAM_API_ID,TELEGRAM_API_HASH,USER_BRIDGE_SESSION,OPENROUTER_API_KEY
           
           script: |
             set -eu
@@ -136,6 +137,7 @@ jobs:
             upsert_env TELEGRAM_API_ID "${TELEGRAM_API_ID:-}"
             upsert_env TELEGRAM_API_HASH "${TELEGRAM_API_HASH:-}"
             upsert_env USER_BRIDGE_SESSION "${USER_BRIDGE_SESSION:-}"
+            upsert_env OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}"
 
             docker compose up -d --build --remove-orphans --force-recreate
 

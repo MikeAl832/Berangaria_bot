@@ -14,6 +14,7 @@ Environment variables for sensitive data:
 
 ```env
 TELEGRAM_BOT_TOKEN=<token>
+OPENROUTER_API_KEY=<openrouter_key>
 API_KEY=<deepseek_key>
 GEMINI_API_KEY=<gemini_key>
 # Optional Fish Audio TTS (send_voice tool). Without both, voice stays off.
@@ -48,24 +49,36 @@ Prompt texts live separately in `berangaria/prompts.py`.
 
 ## config.yaml Parameters
 
-### Main LLM (DeepSeek)
+### Main LLM (OpenRouter)
 
 ```yaml
-model: "deepseek-v4-flash"
+model: "openai/gpt-5.6-luna"
+chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
+chat_provider: "openai"
+chat_provider_allow_fallbacks: true
 max_context_tokens: 32000
 max_reply_tokens: 4096
 generation_params:
-  temperature: 0.9
-  top_p: 0.95
+  temperature: 0.8
+  top_p: 0.91
 ```
 
 **Parameters:**
-- `model`: DeepSeek model identifier
+- `model`: OpenRouter model slug used for chat and summarization
+- `chat_api_url`: Chat Completions endpoint (`CHAT_API_URL` env override)
+- `chat_provider`: `auto` lets OpenRouter pick the host (price + uptime). Any other
+  value is the provider slug from the model page — for Luna the discounted host is
+  `openai`. Also `CHAT_PROVIDER` in `.env`.
+- `chat_provider_allow_fallbacks`: When a host is pinned, still try others if it is
+  down (`true`, shipped). Set `false` to fail rather than pay Azure/Bedrock full price.
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
 - `generation_params`: Model sampling parameters (temperature, top_p)
 
-Additional supported parameters: `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`
+OpenRouter drops parameters the upstream model does not support (for example
+`repetition_penalty` / `top_k` on OpenAI). Optional: `reasoning.effort` for GPT-5.6.
+Secret: `OPENROUTER_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still
+required for Mem0 extraction/verification.
 
 ### Vision (Gemini)
 
@@ -208,7 +221,7 @@ log_backup_count: 5
   unbounded history entry. On reaching either limit the buffer is flushed instead of extended.
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
 - `admin_mode`: Restrict management commands to group admins
-- `streaming_enabled`: Enable DeepSeek SSE and private-chat Telegram draft previews; group chats receive one final message
+- `streaming_enabled`: Enable chat-model SSE and private-chat Telegram draft previews; group chats receive one final message
 - `stream_update_interval_seconds`: Minimum delay between private Telegram draft updates; clamped to 0.25-5 seconds
 - `stream_preview_min_chars`: Minimum buffered answer length before the first private draft update
 - `debug`: Enable detailed logging
@@ -287,17 +300,21 @@ Access is checked before photos, stickers, videos, or audio are downloaded or se
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 0.435
-price_prompt_cache_hit: 0.003625
-price_completion: 0.87
+price_prompt_cache_miss: 0.10
+price_prompt_cache_hit: 0.01
+price_prompt_cache_write: 0.125
+price_completion: 0.60
 ```
 
 **Parameters (per 1M tokens):**
 - `price_prompt_cache_miss`: Regular input tokens
-- `price_prompt_cache_hit`: Cached input tokens
+- `price_prompt_cache_hit`: Cached input tokens (cache read)
+- `price_prompt_cache_write`: Tokens written into the prompt cache (GPT-5.6 bills 1.25× input)
 - `price_completion`: Output tokens
 
-Current prices for DeepSeek v4 Flash. Update when prices change.
+Shipped values are OpenRouter `openai/gpt-5.6-luna` at the current 50% discount.
+If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
+Update the yaml prices when the discount ends or the model slug changes.
 
 ## Memory Configuration
 
@@ -368,7 +385,7 @@ Request cost: $0.000285
 - Summarizes chats longer than `summary_interval + 1` messages (result must be strictly shorter)
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
-- Uses DeepSeek with thinking enabled (`reasoning_effort: high`); long client timeout and a larger `max_tokens` budget so CoT does not starve the final summary
+- Uses the chat model with OpenRouter `reasoning.effort: high`; long client timeout and a larger `max_tokens` budget so CoT does not starve the final summary
 
 **Manual trigger:**
 Use `/summarize` command to compress chat history immediately.
@@ -410,13 +427,14 @@ Use `/summarize` command to compress chat history immediately.
 
 ### High API Costs
 
-**Symptoms:** Unexpected DeepSeek charges
+**Symptoms:** Unexpected OpenRouter charges
 
 **Solutions:**
 1. Check cache hit rate in logs (target: 70-90%)
-2. Verify using `deepseek-v4-flash` (not reasoning models)
+2. Confirm the shipped `openai/gpt-5.6-luna` slug (not a pro/reasoning variant unless intended)
 3. Reduce `max_context_tokens` if conversations too long
 4. Use `/summarize` to compress long chats
+5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
 
 ### Poor Memory Recall
 
@@ -487,7 +505,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- DeepSeek v4 flash is optimized for speed
+- OpenRouter `openai/gpt-5.6-luna` is the shipped high-volume chat model
 
 ## Advanced Configuration
 
@@ -536,7 +554,8 @@ MEM0_CONFIG = {
 | Variable | Required | Purpose | Source |
 |----------|----------|---------|--------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot authentication | @BotFather |
-| `API_KEY` | Yes | DeepSeek API access | platform.deepseek.com |
+| `OPENROUTER_API_KEY` | Yes | Chat and summarization via OpenRouter | openrouter.ai/keys |
+| `API_KEY` | Yes | DeepSeek API access for Mem0 extractor/verifier | platform.deepseek.com |
 | `GEMINI_API_KEY` | Yes | Gemini vision + embeddings | aistudio.google.com |
 | `FISH_API_KEY` | No | Fish Audio TTS | fish.audio/app/api-keys |
 | `FISH_VOICE_ID` | No | Fish voice model id for `send_voice` | fish.audio library |
@@ -553,6 +572,7 @@ and empty shell exports are unset so Compose still reads the server `.env`
 - `FISH_API_KEY` / `FISH_VOICE_ID` (TTS)
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (local Bot API + user bridge)
 - `USER_BRIDGE_SESSION` (Telethon StringSession for the optional user bridge)
+- `OPENROUTER_API_KEY` (chat and summarization)
 
 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` must exist either as GitHub secrets or
 already in the VPS `.env` — `docker-compose.yml` requires them for
@@ -600,7 +620,7 @@ Berangaria_bot/
 │   ├── core/utils.py                # Helper functions
 │   ├── core/logging_setup.py        # Logging configuration
 │   ├── chat/handlers.py             # Telegram event handlers
-│   ├── chat/llm_client.py           # DeepSeek client
+│   ├── chat/llm_client.py           # OpenRouter chat client
 │   ├── chat/streaming.py            # SSE reconstruction and drafts
 │   ├── memory/pipeline.py           # Strict memory verification pipeline
 │   ├── memory/store.py              # Mem0 initialization
@@ -617,6 +637,8 @@ Berangaria_bot/
 
 ## References
 
+- [OpenRouter API Docs](https://openrouter.ai/docs)
+- [GPT-5.6 Luna on OpenRouter](https://openrouter.ai/openai/gpt-5.6-luna)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)

@@ -9,15 +9,16 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from berangaria.config import (
-    DEEPSEEK_API_KEY, DEEPSEEK_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS, PRICE_PROMPT_CACHE_MISS,
-    PRICE_PROMPT_CACHE_HIT, PRICE_COMPLETION,
+    CHAT_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS,
+    PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_PROMPT_CACHE_WRITE,
+    PRICE_COMPLETION,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
     MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
-    MULTI_MESSAGE_CHARS_PER_SEC,
+    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers, apply_chat_routing,
 )
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
 from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
@@ -31,6 +32,47 @@ from berangaria.core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _message_reasoning_len(message: dict) -> int:
+    """Length of provider reasoning, whether DeepSeek- or OpenAI-shaped."""
+    reasoning_content = message.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        return len(reasoning_content)
+    reasoning = message.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        return len(reasoning)
+    if isinstance(reasoning, dict):
+        text = reasoning.get("content") or reasoning.get("text") or ""
+        return len(text) if isinstance(text, str) else 0
+    return 0
+
+
+def _estimate_request_cost(
+    usage: dict,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+    cache_write_tokens: int,
+) -> float:
+    """Prefer the provider's billed `usage.cost`; otherwise estimate from prices."""
+    billed = usage.get("cost")
+    if billed is not None:
+        try:
+            return float(billed)
+        except (TypeError, ValueError):
+            pass
+
+    cached = max(0, int(cached_tokens or 0))
+    written = max(0, int(cache_write_tokens or 0))
+    uncached = max(0, int(prompt_tokens or 0) - cached - written)
+    return (
+        (uncached / 1_000_000) * PRICE_PROMPT_CACHE_MISS
+        + (cached / 1_000_000) * PRICE_PROMPT_CACHE_HIT
+        + (written / 1_000_000) * PRICE_PROMPT_CACHE_WRITE
+        + (int(completion_tokens or 0) / 1_000_000) * PRICE_COMPLETION
+    )
 
 
 class ReplyDeliveryError(RuntimeError):
@@ -577,32 +619,26 @@ async def summarize_history(history: list) -> list:
         "max_tokens": 8192,
         "temperature": 0.3,
         "top_p": 0.9,
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "high",
+        "reasoning": {"effort": "high"},
     }
+    apply_chat_routing(summary_payload)
 
     try:
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        headers = chat_api_headers()
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(DEEPSEEK_API_URL, json=summary_payload, headers=headers)
+            response = await client.post(CHAT_API_URL, json=summary_payload, headers=headers)
             logger.info(f"Ответ сумморизации: [cyan]{response.status_code}[/]")
             response.raise_for_status()
             data = response.json()
             message = (data.get("choices") or [{}])[0].get("message") or {}
-            # content nullable в API. При thinking=on и исчерпанном max_tokens сюда
+            # content nullable в API. При reasoning и исчерпанном max_tokens сюда
             # часто null — раньше re.sub(None) давал TypeError → «Ошибка суммаризации».
             raw = message.get("content")
             if not isinstance(raw, str) or not raw.strip():
+                reasoning_len = _message_reasoning_len(message)
                 raise ValueError(
                     "пустой content в ответе суммаризации"
-                    + (
-                        f" (есть reasoning_content, {len(message.get('reasoning_content') or '')} символов)"
-                        if message.get("reasoning_content")
-                        else ""
-                    )
+                    + (f" (есть reasoning, {reasoning_len} символов)" if reasoning_len else "")
                 )
 
             summary = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
@@ -709,7 +745,7 @@ async def send_llm_request(
 
     async def _request_completion(client, payload, headers):
         if not STREAMING_ENABLED:
-            return await client.post(DEEPSEEK_API_URL, json=payload, headers=headers)
+            return await client.post(CHAT_API_URL, json=payload, headers=headers)
 
         preview = TelegramStreamPreview(
             update,
@@ -722,7 +758,7 @@ async def send_llm_request(
         try:
             return await stream_chat_completion(
                 client,
-                DEEPSEEK_API_URL,
+                CHAT_API_URL,
                 payload=payload,
                 headers=headers,
                 on_content=preview.publish,
@@ -996,19 +1032,16 @@ async def send_llm_request(
                 # Факты после поиска/чтения ссылки — холоднее, меньше выдумок
                 gen_params["temperature"] = FACTUAL_TEMPERATURE
 
-            payload = {
+            payload = apply_chat_routing({
                 "model": MODEL,
                 "messages": payload_messages,
                 "max_tokens": MAX_REPLY_TOKENS,
                 "tools": TOOLS,
                 **gen_params
-            }
+            })
 
             try:
-                headers = {
-                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                    "Content-Type": "application/json"
-                }
+                headers = chat_api_headers()
                 
                 response = await _request_completion(client, payload, headers)
 
@@ -1065,18 +1098,20 @@ async def send_llm_request(
                     
                     prompt_details = usage.get('prompt_tokens_details', {})
                     cached_tokens = prompt_details.get('cached_tokens', 0)
+                    cache_write_tokens = prompt_details.get('cache_write_tokens', 0)
                     
                     chat_tokens[key] = total_tokens
                     
                     logger.info(f"📊 Токены: запрос=[cyan]{prompt_tokens}[/] (кэш=[cyan]{cached_tokens}[/]), "
                                 f"ответ=[cyan]{completion_tokens}[/], всего=[bright_green]{total_tokens}[/]")
-                
-                    prompt_not_cached = prompt_tokens - cached_tokens
-                    cost_prompt = (prompt_not_cached / 1_000_000) * PRICE_PROMPT_CACHE_MISS
-                    cost_cached = (cached_tokens / 1_000_000) * PRICE_PROMPT_CACHE_HIT
-                    cost_completion = (completion_tokens / 1_000_000) * PRICE_COMPLETION
 
-                    total_cost = cost_prompt + cost_cached + cost_completion
+                    total_cost = _estimate_request_cost(
+                        usage,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        cached_tokens=cached_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                    )
                     logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
                 
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):

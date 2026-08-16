@@ -46,6 +46,36 @@ class _Client:
         return _StreamContext(self.response)
 
 
+def test_stream_aggregates_openai_reasoning_without_previewing_it():
+    response = _StreamResponse([
+        ": keep-alive",
+        _event({"choices": [{"delta": {"role": "assistant", "reasoning": "секрет"}}]}),
+        _event({"choices": [{"delta": {"content": "При"}}]}),
+        _event({"choices": [{"delta": {"content": "вет"}, "finish_reason": "stop"}]}),
+        _event({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+        "data: [DONE]",
+    ])
+    client = _Client(response)
+    previews = []
+
+    async def on_content(text):
+        previews.append(text)
+
+    result = asyncio.run(stream_chat_completion(
+        client,
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={"model": "openai/gpt-5.6-luna", "messages": []},
+        headers={"Authorization": "Bearer test"},
+        on_content=on_content,
+    ))
+
+    data = result.json()
+    assert data["choices"][0]["message"]["content"] == "Привет"
+    assert data["choices"][0]["message"]["reasoning_content"] == "секрет"
+    assert previews == ["При", "Привет"]
+    assert all("секрет" not in preview for preview in previews)
+
+
 def test_stream_aggregates_content_without_previewing_reasoning():
     response = _StreamResponse([
         ": keep-alive",

@@ -8,7 +8,15 @@
 import asyncio
 import copy
 
+import pytest
+
 from berangaria.chat import llm_client
+from berangaria.config import (
+    CHAT_PROVIDER_PREFERENCES,
+    _normalize_chat_provider,
+    apply_chat_routing,
+)
+from berangaria import config as bot_config
 from berangaria.core import state
 
 from berangaria.chat.llm_client import (
@@ -474,7 +482,7 @@ def _summary_history(n=12):
     ]
 
 
-def test_successful_summary_enables_thinking_and_returns_new_list(monkeypatch):
+def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     captured = {}
 
     class OkClient:
@@ -488,6 +496,8 @@ def test_successful_summary_enables_thinking_and_returns_new_list(monkeypatch):
             return None
 
         async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["headers"] = headers
             captured["payload"] = json
             return _FakeResponse(
                 payload={
@@ -509,11 +519,20 @@ def test_successful_summary_enables_thinking_and_returns_new_list(monkeypatch):
     assert result[0]["content"].startswith("[Previous conversation summary:")
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
-    assert captured["payload"]["thinking"] == {"type": "enabled"}
-    assert captured["payload"]["reasoning_effort"] == "high"
+    assert captured["url"] == llm_client.CHAT_API_URL
+    assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
+    assert captured["headers"]["X-Title"] == "Berangaria"
+    assert captured["payload"]["model"] == llm_client.MODEL
+    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert "thinking" not in captured["payload"]
+    assert "reasoning_effort" not in captured["payload"]
     assert captured["payload"]["max_tokens"] == 8192
     assert "top_k" not in captured["payload"]
     assert captured["timeout"] == 120.0
+    if CHAT_PROVIDER_PREFERENCES:
+        assert captured["payload"]["provider"] == CHAT_PROVIDER_PREFERENCES
+    else:
+        assert "provider" not in captured["payload"]
 
 
 def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
@@ -551,3 +570,60 @@ def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
 
     assert result is history
     assert history == before
+
+
+def test_estimate_request_cost_prefers_provider_usage_cost():
+    cost = llm_client._estimate_request_cost(
+        {"cost": "0.00123"},
+        prompt_tokens=1000,
+        completion_tokens=500,
+        cached_tokens=0,
+        cache_write_tokens=0,
+    )
+    assert cost == 0.00123
+
+
+def test_estimate_request_cost_splits_cache_write_from_uncached():
+    cost = llm_client._estimate_request_cost(
+        {},
+        prompt_tokens=1000,
+        completion_tokens=100,
+        cached_tokens=400,
+        cache_write_tokens=200,
+    )
+    expected = (
+        (400 / 1_000_000) * llm_client.PRICE_PROMPT_CACHE_MISS
+        + (400 / 1_000_000) * llm_client.PRICE_PROMPT_CACHE_HIT
+        + (200 / 1_000_000) * llm_client.PRICE_PROMPT_CACHE_WRITE
+        + (100 / 1_000_000) * llm_client.PRICE_COMPLETION
+    )
+    assert cost == expected
+
+
+def test_normalize_chat_provider_accepts_auto_aliases():
+    assert _normalize_chat_provider(None) == "auto"
+    assert _normalize_chat_provider("AUTO") == "auto"
+    assert _normalize_chat_provider(" default ") == "auto"
+    assert _normalize_chat_provider("OpenAI") == "openai"
+    assert _normalize_chat_provider("amazon-bedrock") == "amazon-bedrock"
+    assert _normalize_chat_provider("azure/us") == "azure/us"
+
+
+def test_normalize_chat_provider_rejects_junk():
+    with pytest.raises(ValueError):
+        _normalize_chat_provider("openai; drop")
+    with pytest.raises(ValueError):
+        _normalize_chat_provider(["openai"])
+
+
+def test_apply_chat_routing_omits_provider_in_auto(monkeypatch):
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", None)
+    payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
+    assert "provider" not in payload
+
+
+def test_apply_chat_routing_pins_openai(monkeypatch):
+    prefs = {"order": ["openai"], "allow_fallbacks": True}
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", prefs)
+    payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
+    assert payload["provider"] == prefs

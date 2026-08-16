@@ -1,20 +1,26 @@
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter)
 # ========================================
-"model": "deepseek-v4-pro"
+# Чат и суммаризация идут на OpenRouter. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
+"model": "openai/gpt-5.6-luna"
+"chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
+# Хостер модели на OpenRouter. auto = сам выбирает (цена+аptime).
+# Иначе slug с карточки модели: openai (скидка Luna), azure, amazon-bedrock.
+"chat_provider": "openai"
+"chat_provider_allow_fallbacks": true     # если выбранный хостер лёг — пробовать остальных
 "max_context_tokens": 32000  # Максимальная история контекста
 "max_reply_tokens": 4096     # Максимальный размер ответа
 
-# Параметры генерации (можно добавить: top_k, min_p, presence_penalty, repetition_penalty, thinking)
+# Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает
+# (например repetition_penalty / top_k у OpenAI). Можно добавить reasoning: {effort: medium}.
 "generation_params":
   "temperature": 0.8
   "top_p": 0.91
-  "repetition_penalty": 1.08
 
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.
 "factual_temperature": 0.4
-"streaming_enabled": true                  # Потоковые ответы DeepSeek и Telegram preview
+"streaming_enabled": true                  # Потоковые ответы чат-модели и Telegram preview
 "stream_update_interval_seconds": 0.8      # Не чаще одного обновления preview за этот интервал
 "stream_preview_min_chars": 12             # Не показывать первые слишком короткие обрывки ответа
 
@@ -133,8 +139,11 @@
 "user_bridge_dedup_ttl_seconds": 300     # окно дедупа (chat_id, message_id)
 
 # ========================================
-# 💰 ЦЕНЫ DeepSeek (за 1M токенов)
+# 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-"price_prompt_cache_miss": 0.435         # Обычные входные токены
-"price_prompt_cache_hit": 0.003625       # Кэшированные токены (в 50 раз дешевле!)
-"price_completion": 0.87                 # Выходные токены
+# openai/gpt-5.6-luna на OpenRouter, текущая скидка 50% (вход $0.10 / кэш $0.01 / выход $0.60).
+# Cache write у GPT-5.6 = 1.25× входа. Если OpenRouter вернул usage.cost — берём его.
+"price_prompt_cache_miss": 0.10          # Обычные входные токены
+"price_prompt_cache_hit": 0.01           # Прочитанные из кэша
+"price_prompt_cache_write": 0.125        # Запись в кэш (1.25× входа)
+"price_completion": 0.60                 # Выходные токены
