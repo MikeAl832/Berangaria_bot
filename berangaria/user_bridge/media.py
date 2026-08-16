@@ -127,7 +127,11 @@ async def describe_bridge_media(
             try:
                 with open(path, "wb") as fh:
                     fh.write(raw)
-                desc = await describe_video(path, duration=duration, caption=caption or "")
+                desc = await describe_video(
+                    video_path=path,
+                    duration=duration,
+                    caption=caption or "",
+                )
                 return (desc or VISION_FAILED_VIDEO), "video"
             finally:
                 try:
@@ -149,7 +153,10 @@ async def describe_bridge_media(
             try:
                 with open(path, "wb") as fh:
                     fh.write(raw)
-                desc = await transcribe_audio(path, duration=duration)
+                desc = await transcribe_audio(
+                    audio_path=path,
+                    caption=caption or "",
+                )
                 return (desc or VISION_FAILED_AUDIO), "audio"
             finally:
                 try:
