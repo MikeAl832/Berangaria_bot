@@ -15,7 +15,6 @@
 # (например repetition_penalty / top_k у OpenAI). Можно добавить reasoning: {effort: medium}.
 "generation_params":
   "temperature": 0.8
-  "top_p": 0.91
 
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.
