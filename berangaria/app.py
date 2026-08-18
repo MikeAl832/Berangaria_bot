@@ -27,7 +27,14 @@ setup_logging(
 )
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    MessageReactionHandler,
+    filters,
+)
 
 from berangaria.config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
@@ -41,9 +48,11 @@ from berangaria.config import (
     TELEGRAM_BOT_API_LOCAL_MODE,
 )
 from berangaria.core import state
+from berangaria.core import alerts
 from berangaria.memory import store as memory_store
 from berangaria.chat.handlers import (
-    start, clear, stats, random_chance, summarize_command,
+    start, clear, stats, top, dashboard, dashboard_callback,
+    random_chance, summarize_command,
     handle_message, handle_media, handle_video, handle_sticker, handle_voice,
     handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
 )
@@ -67,7 +76,7 @@ async def _telegram_post_init(_application: Application) -> None:
     logger.info("✅ [bright_green]Бот запущен![/]")
 
 
-async def periodic_summarization():
+async def periodic_summarization(bot=None):
     """Суммаризирует активные чаты в заданные часы (по умолчанию 05:00 и 14:00 МСК)."""
     from berangaria.chat.llm_client import summarize_history
 
@@ -122,6 +131,12 @@ async def periodic_summarization():
             raise
         except Exception as e:
             logger.error(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}", exc_info=True)
+            await alerts.notify_owner(
+                bot,
+                category="Summarization job",
+                message="периодическая суммаризация завершилась ошибкой",
+                error=e,
+            )
 
 
 async def sync_stickers_on_start():
@@ -179,7 +194,7 @@ async def sync_stickers_on_start():
         logger.error(f"🎨 [red]Синк/миграция стикеров при старте не удались:[/] {e}", exc_info=True)
 
 
-async def periodic_memory_flush():
+async def periodic_memory_flush(bot=None):
     """Периодически подбирает durable memory-очередь после фоновых попыток."""
     if MEMORY_FLUSH_INTERVAL_SECONDS <= 0:
         logger.info("🧠 [dim]Периодический retry памяти выключен[/]")
@@ -221,10 +236,25 @@ async def periodic_memory_flush():
                     report.retried,
                     report.dead_lettered,
                 )
+            if report.dead_lettered:
+                await alerts.notify_owner(
+                    bot,
+                    category="Memory dead-letter",
+                    message=(
+                        f"источников окончательно отклонено: {report.dead_lettered}; "
+                        f"обработано в проходе: {report.processed}"
+                    ),
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"❌ [red]Ошибка периодического flush памяти:[/] {e}", exc_info=True)
+            await alerts.notify_owner(
+                bot,
+                category="Memory job",
+                message="периодический flush памяти завершился ошибкой",
+                error=e,
+            )
 
 
 def build_telegram_application() -> Application:
@@ -250,8 +280,11 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("top", top))
+    app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("random", random_chance))
     app.add_handler(CommandHandler("summarize", summarize_command))
+    app.add_handler(CallbackQueryHandler(dashboard_callback, pattern=r"^dashboard:"))
 
     # Правки сообщений: ловим раньше основных хендлеров, чтобы обновить текст в буфере,
     # пока сообщение ещё не ушло в DeepSeek (фильтр матчит только edited_message)
@@ -332,15 +365,17 @@ def main():
     logger.info(f"🌊 Потоковые ответы: [yellow]{STREAMING_ENABLED}[/]")
     if VISION_MODE:
         logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
-    logger.info("🔧 Команды: /start, /clear, /stats, /random X, /summarize")
+    logger.info(
+        "🔧 Команды: /start, /clear, /stats, /top, /dashboard, /random X, /summarize"
+    )
     hours_label = ", ".join(f"{h:02d}:00" for h in SUMMARY_HOURS)
     logger.info(f"🕒 Часовой пояс: [yellow]{TIMEZONE_NAME}[/]")
     logger.info(f"📝 Автосуммаризация: [yellow]{hours_label}[/] ({TIMEZONE_NAME})")
     # Запускаем фоновые задачи суммаризации и синхронизации стикеров
     loop = asyncio.get_event_loop()
-    summarization_task = loop.create_task(periodic_summarization())
+    summarization_task = loop.create_task(periodic_summarization(app.bot))
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
-    memory_flush_task = loop.create_task(periodic_memory_flush())
+    memory_flush_task = loop.create_task(periodic_memory_flush(app.bot))
     # User bridge is fail-open: missing secrets / Telethon errors never block polling.
     # Boot task only calls start_user_bridge; the long-lived supervisor lives inside
     # the user_bridge module and is stopped explicitly below.

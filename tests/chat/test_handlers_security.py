@@ -72,3 +72,14 @@ def test_sticker_access_checked_before_media_processing(monkeypatch):
     asyncio.run(handlers.handle_sticker(update, _Context()))
 
     assert update.message.replies == ["Не разговариваю с незнакомцами."]
+
+
+def test_owner_bypasses_user_and_group_allowlists(monkeypatch):
+    monkeypatch.setattr(handlers, "OWNER_USER_ID", 2)
+    monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
+    monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-999])
+
+    assert handlers._check_access_permissions(100, 2, False)
+    assert handlers._check_access_permissions(-100, 2, True)
+    assert not handlers._check_access_permissions(100, 3, False)
+    assert not handlers._check_access_permissions(-100, 3, True)

@@ -17,6 +17,7 @@ import random
 
 from io import BytesIO
 
+from berangaria.analytics import store as analytics_store
 from berangaria.config import (
     STICKER_ENABLED,
     STICKER_SEND_MAX_PER_TURN,
@@ -327,6 +328,18 @@ def _quote_for_mid(history, react_mid) -> str | None:
     return None
 
 
+def _author_for_mid(history, message_id) -> tuple[int | None, str | None]:
+    for item in history or []:
+        if item.get("role") != "user" or item.get("mid") != message_id:
+            continue
+        try:
+            author_id = int(item["author_id"])
+        except (KeyError, TypeError, ValueError):
+            return None, None
+        return author_id, item.get("author_name")
+    return None, None
+
+
 async def handle_react(turn, payload_messages, update, context, tool_call, args, sid_to_mid, history):
     # Модель часто шлёт эмодзи с вариативным селектором U+FE0F (❤️),
     # а Telegram и ALLOWED_REACTIONS хранят каноничную форму без него (❤).
@@ -380,6 +393,21 @@ async def handle_react(turn, payload_messages, update, context, tool_call, args,
                     "on_sid": react_sid,  # снимок на момент хода (для логов/старых записей)
                     "on": on_quote,
                 })
+                target_user_id, target_user_name = _author_for_mid(history, react_mid)
+                effective_user = getattr(update, "effective_user", None)
+                if target_user_id is None and react_mid == update.message.message_id:
+                    target_user_id = getattr(effective_user, "id", None)
+                    target_user_name = getattr(effective_user, "first_name", None)
+                analytics_store.record_event(
+                    "bot_reaction",
+                    chat_id=update.effective_chat.id,
+                    chat_type=getattr(update.effective_chat, "type", "unknown"),
+                    actor_kind="bot",
+                    target_user_id=target_user_id,
+                    target_user_name=target_user_name,
+                    message_id=react_mid,
+                    details={"emoji": emoji},
+                )
                 logger.info(
                     f"😀 [magenta]Реакция:[/] {emoji} → "
                     f"[#{react_sid if react_sid is not None else 'текущее'}] (mid={react_mid})"

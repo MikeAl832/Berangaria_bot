@@ -16,12 +16,14 @@ from berangaria.config import (
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
     MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
-    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers, apply_chat_routing,
+    MULTI_MESSAGE_CHARS_PER_SEC, CHAT_PROVIDER, chat_api_headers, apply_chat_routing,
 )
+from berangaria.analytics import store as analytics_store
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
 from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, save_history
 from berangaria.memory import store as memory_store
 from berangaria.core import state
+from berangaria.core import alerts
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
@@ -329,6 +331,52 @@ async def send_llm_request(
     async def _remember_bot_mid(entry, sent_mid):
         await assistant_turn.remember_bot_message_id(entry, sent_mid, key=key)
 
+    def _target_identity(target_mid: int | None) -> tuple[int | None, str | None]:
+        if target_mid is not None:
+            target = next(
+                (
+                    item
+                    for item in history
+                    if item.get("role") == "user" and item.get("mid") == target_mid
+                ),
+                None,
+            )
+            if target is not None and target.get("author_id") is not None:
+                try:
+                    return int(target["author_id"]), target.get("author_name")
+                except (TypeError, ValueError):
+                    pass
+            if target_mid != getattr(update.message, "message_id", None):
+                return None, None
+        return user_id, user_name
+
+    def _record_reply(
+        sent_mid: int | None,
+        *,
+        target_mid: int | None,
+        mode: str,
+        bubbles: int = 1,
+    ) -> None:
+        target_id, target_name = _target_identity(target_mid)
+        analytics_store.record_event(
+            "assistant_reply",
+            chat_id=update.effective_chat.id,
+            chat_type=update.effective_chat.type,
+            actor_kind="bot",
+            target_user_id=target_id,
+            target_user_name=target_name,
+            message_id=sent_mid,
+            details={"mode": mode, "bubbles": max(1, bubbles)},
+        )
+
+    async def _alert(category: str, message: str, error: BaseException | None = None) -> None:
+        await alerts.notify_owner(
+            context.bot,
+            category=category,
+            message=f"chat={update.effective_chat.id}: {message}",
+            error=error,
+        )
+
     async with httpx.AsyncClient(timeout=600.0) as client:
         if FULL_DEBUG_LOGS:
             llm_diagnostics.log_request(payload_messages, enabled=True)
@@ -362,6 +410,7 @@ async def send_llm_request(
                         histories[key] = []
                         save_history(key)
                     logger.error(f"[red]400:[/] {response.text}")
+                    await _alert("LLM bad request", "API вернул 400, история чата сброшена")
                     await update.message.reply_text("⚠️ История сброшена. Напишите ещё раз.")
                     return
 
@@ -370,6 +419,7 @@ async def send_llm_request(
                     api_failures += 1
                     if api_failures >= MAX_API_RETRIES:
                         await _delete_turn_status()
+                        await _alert("LLM rate limit", "исчерпаны повторы после HTTP 429")
                         await update.message.reply_text("❌ API временно перегружен. Попробуйте позже.")
                         return
                     try:
@@ -393,6 +443,10 @@ async def send_llm_request(
                         await asyncio.sleep(2 ** (api_failures - 1))
                         continue
                     await _delete_turn_status()
+                    await _alert(
+                        "LLM API error",
+                        f"исчерпаны повторы после HTTP {response.status_code}",
+                    )
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
                     return
 
@@ -403,16 +457,35 @@ async def send_llm_request(
                 usage = data.get('usage', {})
 
                 if usage:
-                    llm_diagnostics.record_usage(
+                    total_cost = llm_diagnostics.record_usage(
                         usage,
                         key=key,
                         chat_tokens=chat_tokens,
                         estimate_request_cost=_estimate_request_cost,
                     )
+                    details = usage.get("prompt_tokens_details") or {}
+                    analytics_store.record_llm_usage(
+                        chat_id=update.effective_chat.id,
+                        chat_type=update.effective_chat.type,
+                        user_id=user_id,
+                        user_name=user_name,
+                        provider=str(data.get("provider") or CHAT_PROVIDER),
+                        model=str(data.get("model") or MODEL),
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        cached_tokens=details.get("cached_tokens", 0),
+                        cache_write_tokens=details.get("cache_write_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                        cost_usd=total_cost,
+                    )
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     tool_rounds += 1
                     if tool_rounds > MAX_TOOL_ROUNDS:
                         logger.error(f"❌ Превышен лимит tool-call раундов ({MAX_TOOL_ROUNDS})")
+                        await _alert(
+                            "LLM tool loop",
+                            f"превышен лимит tool-call раундов ({MAX_TOOL_ROUNDS})",
+                        )
                         if turn.status_message:
                             try:
                                 await turn.status_message.delete()
@@ -478,6 +551,11 @@ async def send_llm_request(
                                 sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
                             except Exception as exc:
                                 logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                                await _alert(
+                                    "Telegram delivery",
+                                    "не удалось доставить адресный ответ",
+                                    exc,
+                                )
                                 if turn.reactions_made or turn.stickers_made or turn.voices_made:
                                     await _save_assistant("")
                                 raise ReplyDeliveryError(
@@ -485,10 +563,21 @@ async def send_llm_request(
                                 ) from exc
                             saved = await _save_assistant(reply_text)
                             await _remember_bot_mid(saved, sent_mid)
+                            _record_reply(
+                                sent_mid,
+                                target_mid=reply_mid,
+                                mode="reply",
+                            )
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
                             if turn.reacted or turn.sticker_sent or turn.voice_sent:
                                 await _save_assistant("")  # реакция/стикер/голос, текста нет
+                                if turn.sticker_sent or turn.voice_sent:
+                                    _record_reply(
+                                        None,
+                                        target_mid=reply_mid,
+                                        mode="voice" if turn.voice_sent else "sticker",
+                                    )
                             elif not mentioned:
                                 logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
                             else:
@@ -518,6 +607,11 @@ async def send_llm_request(
                                 f"❌ Не удалось доставить серию сообщений: {exc}",
                                 exc_info=True,
                             )
+                            await _alert(
+                                "Telegram delivery",
+                                "не удалось доставить серию сообщений",
+                                exc,
+                            )
                             if turn.reactions_made or turn.stickers_made or turn.voices_made:
                                 await _save_assistant("")
                             raise ReplyDeliveryError(
@@ -528,6 +622,12 @@ async def send_llm_request(
                             history_text = "\n".join(delivered)
                             saved = await _save_assistant(history_text)
                             await _remember_bot_mid(saved, sent_mid)
+                            _record_reply(
+                                sent_mid,
+                                target_mid=target_mid,
+                                mode="multi",
+                                bubbles=len(delivered),
+                            )
                         elif turn.reactions_made or turn.stickers_made or turn.voices_made:
                             await _save_assistant("")
                         return
@@ -536,6 +636,11 @@ async def send_llm_request(
                     if turn.sticker_sent:
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         await _save_assistant("")
+                        _record_reply(
+                            None,
+                            target_mid=update.message.message_id,
+                            mode="sticker",
+                        )
                         logger.info("🎨 [dim]Ход завершён стикером (без доп. текста)[/]")
                         if turn.status_message:
                             try:
@@ -548,6 +653,11 @@ async def send_llm_request(
                     if turn.voice_sent:
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         await _save_assistant("")
+                        _record_reply(
+                            None,
+                            target_mid=update.message.message_id,
+                            mode="voice",
+                        )
                         logger.info("🔊 [dim]Ход завершён голосовым (без доп. текста)[/]")
                         if turn.status_message:
                             try:
@@ -574,6 +684,12 @@ async def send_llm_request(
                     if turn.reacted or turn.sticker_sent or turn.voice_sent:
                         # Ограничилась реакцией/стикером/голосом — валидный ответ.
                         await _save_assistant("")
+                        if turn.sticker_sent or turn.voice_sent:
+                            _record_reply(
+                                None,
+                                target_mid=update.message.message_id,
+                                mode="voice" if turn.voice_sent else "sticker",
+                            )
                         if turn.status_message:
                             try:
                                 await turn.status_message.delete()
@@ -621,6 +737,11 @@ async def send_llm_request(
                     sent_mid = await _deliver(reply, target_mid, turn.status_message)
                 except Exception as exc:
                     logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                    await _alert(
+                        "Telegram delivery",
+                        "не удалось доставить ответ",
+                        exc,
+                    )
                     if turn.reactions_made or turn.stickers_made or turn.voices_made:
                         await _save_assistant("")
                     raise ReplyDeliveryError(
@@ -628,6 +749,7 @@ async def send_llm_request(
                     ) from exc
                 saved = await _save_assistant(reply)
                 await _remember_bot_mid(saved, sent_mid)
+                _record_reply(sent_mid, target_mid=target_mid, mode="text")
                 return
 
             except ReplyDeliveryError:
@@ -641,6 +763,7 @@ async def send_llm_request(
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
                 await _delete_turn_status()
+                await _alert("LLM connection", "API недоступен после всех повторов")
                 await update.message.reply_text("❌ API недоступен!")
                 return
             except httpx.TimeoutException:
@@ -650,6 +773,7 @@ async def send_llm_request(
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
                 await _delete_turn_status()
+                await _alert("LLM timeout", "таймаут API после всех повторов")
                 await update.message.reply_text("❌ Таймаут.")
                 return
             except Exception as e:
@@ -659,5 +783,6 @@ async def send_llm_request(
                     await asyncio.sleep(2 ** (api_failures - 1))
                     continue
                 await _delete_turn_status()
+                await _alert("LLM failure", "обработка запроса завершилась ошибкой", e)
                 await update.message.reply_text("❌ Ошибка при обработке.")
                 return

@@ -97,7 +97,8 @@ Bandit may report intentional low-severity best-effort exception handling and no
 ## Configuration and deployment
 
 - `config.yaml` is the runtime source of non-secret defaults. Environment variables override secrets and selected deployment paths.
-- `admin_alert_chat_id` is one integer Telegram chat ID or `null`, not a list.
+- The first entry in `allowed_users` is the authenticated owner. Reuse that value through `OWNER_USER_ID`; do not duplicate it in another setting. Only server-generated `[Owner: Name]` metadata may identify the owner, and the owner bypasses user/group allowlists.
+- `admin_alert_chat_id` is one integer Telegram chat ID or `null`, not a list. `null` routes alerts to `OWNER_USER_ID`; a configured ID overrides that destination.
 - Docker uses `BOT_DB_PATH=/data/bot_state.db` and `BOT_LOG_FILE=/data/bot.log`; preserve the mounted `/data` volume for stateful changes.
 - Keep dependency and container-version changes deliberate. Mention migrations or Qdrant embedding-dimension changes prominently in the handoff.
 

@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from telegram.ext import MessageReactionHandler
+from telegram.ext import CallbackQueryHandler, MessageReactionHandler
 
 from berangaria import app as main
 
@@ -56,7 +56,10 @@ def test_message_intake_stays_serialized(monkeypatch):
     assert seen == intake
 
 
-@pytest.mark.parametrize("command", ["start", "clear", "stats", "random", "summarize"])
+@pytest.mark.parametrize(
+    "command",
+    ["start", "clear", "stats", "top", "dashboard", "random", "summarize"],
+)
 def test_documented_commands_are_registered(command, monkeypatch):
     monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
@@ -74,6 +77,18 @@ def test_reaction_handler_is_registered(monkeypatch):
     main.register_handlers(app)
 
     assert any(isinstance(h, MessageReactionHandler) for h in _handlers(app))
+
+
+def test_dashboard_callback_handler_is_registered(monkeypatch):
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
+    app = main.build_telegram_application()
+    main.register_handlers(app)
+
+    assert any(
+        isinstance(handler, CallbackQueryHandler)
+        and handler.callback is main.dashboard_callback
+        for handler in _handlers(app)
+    )
 
 
 def test_build_application_uses_local_bot_api(monkeypatch):

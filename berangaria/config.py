@@ -398,6 +398,13 @@ MAX_MEDIA_ITEMS_IN_CONTEXT = 10  # Максимум медиа-элементо�
 # ========================================
 ALLOWED_USERS = config_yaml.get("allowed_users", [])
 ALLOWED_GROUPS = config_yaml.get("allowed_groups", [])
+# The first allowlisted user is the authenticated owner. This keeps the ID in
+# one source of truth instead of duplicating it in a second setting.
+OWNER_USER_ID = (
+    _as_int(ALLOWED_USERS[0], 0)
+    if isinstance(ALLOWED_USERS, (list, tuple)) and ALLOWED_USERS
+    else 0
+) or None
 
 # ========================================
 # 👀 USER BRIDGE (read-only MTProto → bot messages in groups)
@@ -433,7 +440,7 @@ except ValueError:
 TELEGRAM_API_HASH = (os.environ.get("TELEGRAM_API_HASH") or "").strip()
 USER_BRIDGE_SESSION = (os.environ.get("USER_BRIDGE_SESSION") or "").strip()
 
-# Чат для алертов о критических ошибках (null = выключено)
+# Явный чат для критических алертов; null означает личный чат OWNER_USER_ID.
 _admin_alert_chat_id = config_yaml.get("admin_alert_chat_id", None)
 if _admin_alert_chat_id is None:
     ADMIN_ALERT_CHAT_ID = None

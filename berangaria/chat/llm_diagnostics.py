@@ -60,10 +60,10 @@ def record_usage(
     key: str,
     chat_tokens: dict,
     estimate_request_cost: Callable[..., float],
-) -> None:
-    """Persist token totals and log cache-aware request cost."""
+) -> float:
+    """Update live token totals, log cost, and return that request cost."""
     if not usage:
-        return
+        return 0.0
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
     total_tokens = usage.get("total_tokens", 0)
@@ -87,3 +87,4 @@ def record_usage(
         cache_write_tokens=cache_write_tokens,
     )
     logger.info("💰 Стоимость запроса: [bright_green]$%.6f[/]", total_cost)
+    return total_cost

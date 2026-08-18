@@ -1,15 +1,14 @@
 import logging
 from functools import wraps
 from telegram import Update, ReactionTypeEmoji
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-
-import time
 
 from berangaria.config import (
     ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
-    ALLOWED_USERS, ALLOWED_GROUPS, VISION_MODE, VIDEO_MAX_DURATION_SEC,
+    ALLOWED_USERS, ALLOWED_GROUPS, OWNER_USER_ID, VISION_MODE, VIDEO_MAX_DURATION_SEC,
     VIDEO_MAX_FILE_SIZE_BYTES,
-    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID,
+    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT,
     MAX_BUFFERED_MESSAGES, MAX_BUFFERED_CHARS,
     LOG_MESSAGE_PREVIEW_CHARS,
 )
@@ -18,9 +17,12 @@ from berangaria.core.state import (
     get_history_lock, get_turn_lock, _buffer_lock, touch_activity, save_history,
 )
 from berangaria.core import state
+from berangaria.core import alerts
 from berangaria.chat.llm_client import summarize_history, send_llm_request
 from berangaria.chat import media_handlers
 from berangaria.chat import message_queue
+from berangaria.chat import analytics_ui
+from berangaria.analytics import store as analytics_store
 from berangaria.memory.pipeline import (
     abandon_memory_sources,
     enqueue_memory_source,
@@ -55,6 +57,7 @@ def _queue_runtime() -> message_queue.QueueRuntime:
         max_media_items_in_context=MAX_MEDIA_ITEMS_IN_CONTEXT,
         max_buffered_messages=MAX_BUFFERED_MESSAGES,
         max_buffered_chars=MAX_BUFFERED_CHARS,
+        owner_user_id=OWNER_USER_ID,
         check_access_permissions=_check_access_permissions,
         truncate_at_sentence=truncate_at_sentence,
         build_memory_text=_build_memory_text,
@@ -199,6 +202,25 @@ def admin_required(func):
     
     return wrapper
 
+
+def owner_private_required(func):
+    """Allow a sensitive command only from the authenticated owner's DM."""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message is None:
+            return
+        user_id = update.effective_user.id
+        is_private = update.effective_chat.type == "private"
+        if OWNER_USER_ID is None or user_id != OWNER_USER_ID:
+            logger.info("🚫 [dim]Owner-команда отклонена (user=%s)[/]", user_id)
+            return
+        if not is_private:
+            await update.message.reply_text("Панель владельца доступна только в личном чате со мной.")
+            return
+        return await func(update, context)
+
+    return wrapper
+
 @access_required
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None:
@@ -218,16 +240,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
+            f"/top — лидерборд чата\n"
             f"/summarize — сжатие истории\n"
             f"/random X — изменить шанс случайных ответов"
         )
     else:
+        owner_command = (
+            "\n/dashboard — панель владельца"
+            if update.effective_user.id == OWNER_USER_ID
+            else ""
+        )
         await update.message.reply_text(
             f"👋 Привет, {user_name}!\n\n"
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
+            f"/top — лидерборд чата\n"
             f"/summarize — сжатие истории"
+            f"{owner_command}"
         )
 
 @access_required
@@ -380,6 +410,55 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎲 Шанс случайного ответа: {state.random_reply_chance}%"
     )
 
+
+@access_required
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
+    try:
+        text = analytics_ui.render_top(update.effective_chat.id)
+    except Exception as exc:
+        logger.error("❌ Не удалось построить /top: %s", exc, exc_info=True)
+        await update.message.reply_text("Статистика временно недоступна.")
+        return
+    await update.message.reply_text(text)
+
+
+@owner_private_required
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text, keyboard = analytics_ui.render_dashboard()
+    except Exception as exc:
+        logger.error("❌ Не удалось построить /dashboard: %s", exc, exc_info=True)
+        await update.message.reply_text("Панель временно недоступна.")
+        return
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query is None:
+        return
+    message = query.message
+    user_id = query.from_user.id if query.from_user is not None else None
+    chat_type = getattr(getattr(message, "chat", None), "type", None)
+    if OWNER_USER_ID is None or user_id != OWNER_USER_ID or chat_type != "private":
+        await query.answer("Недоступно", show_alert=True)
+        return
+    page, period = analytics_ui.parse_dashboard_callback(query.data or "")
+    try:
+        text, keyboard = analytics_ui.render_dashboard(page, period)
+    except Exception as exc:
+        logger.error("❌ Не удалось обновить /dashboard: %s", exc, exc_info=True)
+        await query.answer("Статистика временно недоступна", show_alert=True)
+        return
+    await query.answer()
+    try:
+        await query.edit_message_text(text=text, reply_markup=keyboard)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
 @access_required
 @admin_required
 async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -466,6 +545,8 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
 
 def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> bool:
     """Проверяет права доступа к боту для пользователя/группы."""
+    if OWNER_USER_ID is not None and user_id == OWNER_USER_ID:
+        return True
     if is_group and ALLOWED_GROUPS and chat_id not in ALLOWED_GROUPS:
         return False
     if not is_group and ALLOWED_USERS and user_id not in ALLOWED_USERS:
@@ -669,7 +750,8 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = now_local()
     timestamp = f"{now.hour:02d}:{now.minute:02d}"
 
-    parts = [f"[User: {user_name}] [Time: {timestamp}] [Event: {event_text}]"]
+    author_kind = "Owner" if user_id == OWNER_USER_ID else "User"
+    parts = [f"[{author_kind}: {user_name}] [Time: {timestamp}] [Event: {event_text}]"]
     if media_desc:
         parts.append(f"[Image description: {escape_user_text(media_desc)}]")
     content = " ".join(parts)
@@ -738,16 +820,43 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
                 return
             inc = target.setdefault("incoming_reactions", [])
             for e in added:
-                inc.append({"from": name, "emoji": e})
+                inc.append({"from": name, "from_id": mr.user.id, "emoji": e})
             for e in removed:
                 for i, rec in enumerate(inc):
-                    if rec.get("from") == name and rec.get("emoji") == e:
+                    same_person = (
+                        rec.get("from_id") == mr.user.id
+                        or (rec.get("from_id") is None and rec.get("from") == name)
+                    )
+                    if same_person and rec.get("emoji") == e:
                         inc.pop(i)
                         break
             if not inc:
                 target.pop("incoming_reactions", None)
             histories[key] = history
             save_history(key)
+
+    for emoji in added:
+        analytics_store.record_event(
+            "incoming_reaction_added",
+            chat_id=chat_id,
+            chat_type=mr.chat.type,
+            actor_id=mr.user.id,
+            actor_name=name,
+            actor_kind="owner" if mr.user.id == OWNER_USER_ID else "user",
+            message_id=mr.message_id,
+            details={"emoji": emoji},
+        )
+    for emoji in removed:
+        analytics_store.record_event(
+            "incoming_reaction_removed",
+            chat_id=chat_id,
+            chat_type=mr.chat.type,
+            actor_id=mr.user.id,
+            actor_name=name,
+            actor_kind="owner" if mr.user.id == OWNER_USER_ID else "user",
+            message_id=mr.message_id,
+            details={"emoji": emoji},
+        )
 
     if added:
         logger.info(f"💟 [magenta]Реакция на сообщение бота:[/] {' '.join(added)} от {name}")
@@ -771,13 +880,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await media_handlers.handle_voice(update, context, _media_runtime())
 
 
-# Троттлинг алертов админу, чтобы не спамить при серии ошибок
-_last_alert_ts = 0.0
-_ALERT_COOLDOWN_SEC = 60
-
-
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global _last_alert_ts
     logger.error(f"❌ [bright_red]Глобальная ошибка:[/] {context.error}", exc_info=True)
     try:
         if update and update.effective_message:
@@ -785,16 +888,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ [red]Не удалось отправить сообщение об ошибке:[/] {e}")
 
-    # Алерт админу (если настроен и не спамим)
-    if ADMIN_ALERT_CHAT_ID:
-        now = time.time()
-        if now - _last_alert_ts >= _ALERT_COOLDOWN_SEC:
-            _last_alert_ts = now
-            try:
-                err_text = str(context.error)[:500]
-                await context.bot.send_message(
-                    chat_id=ADMIN_ALERT_CHAT_ID,
-                    text=f"⚠️ Ошибка бота:\n{err_text}"
-                )
-            except Exception as e:
-                logger.error(f"❌ [red]Не удалось отправить алерт админу:[/] {e}")
+    await alerts.notify_owner(
+        context.bot,
+        category="Unhandled error",
+        message=str(context.error)[:500],
+        error=context.error,
+    )

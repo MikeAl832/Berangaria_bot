@@ -287,17 +287,26 @@ ceiling still has headroom so overflow does not abort ordinary turns.
 ```yaml
 allowed_users: [1217938322, 1809564460]
 allowed_groups: [-1002263830880]
-admin_alert_chat_id: 1217938322
+admin_alert_chat_id: null
 ```
 
 **Parameters:**
-- `allowed_users`: Telegram user IDs with bot access
+- `allowed_users`: Telegram user IDs with bot access. The first ID is the authenticated owner/creator; it is reused directly and is not duplicated in another setting.
 - `allowed_groups`: Telegram group IDs where bot operates
-- `admin_alert_chat_id`: One Telegram chat ID for throttled critical-error alerts, or `null` to disable alerts. This value is a scalar, not a list.
+- `admin_alert_chat_id`: Optional override for critical-error alerts. With `null`, alerts go to the owner's private chat; set one Telegram chat ID to route them elsewhere. This value is a scalar, not a list.
 
 Get IDs by sending `/start` to the bot with debug mode enabled.
 
 Access is checked before photos, stickers, videos, or audio are downloaded or sent to Gemini, so denied users cannot consume external API quota.
+The owner bypasses user/group allowlists and is represented to the model by a trusted server-generated `[Owner: Name]` tag. User message text cannot create this tag or claim the role.
+
+### Telegram analytics
+
+- `/stats` shows lightweight live context information for the current chat.
+- `/top` is available under the same allowlist rules as `/stats` and shows content-free leaderboards for the current chat.
+- `/dashboard` is available only to the owner and only in the bot's private chat. It shows durable usage, chat-model cost, activity, leaderboards, and critical alerts for 24 hours, 7 days, 30 days, or all recorded time.
+
+Analytics starts after deployment of the feature; old log files and summarized histories are not backfilled. No message text is stored in analytics tables. Chat-model cost is attributed to the user whose buffered turn triggered the request.
 
 ### Cost Tracking
 

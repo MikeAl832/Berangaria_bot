@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from berangaria.analytics import store as analytics_store
 from berangaria.tools import dispatch as tool_handlers
 from berangaria.tools.dispatch import (
     ToolTurn,
@@ -163,6 +164,35 @@ def test_handle_react_strips_fe0f_variation_selector():
     # ❤️ с FE0F должен пройти как каноничный ❤
     asyncio.run(handle_react(turn, payload, upd, ctx, TC, {"emoji": "❤️"}, {}, []))
     assert ctx.bot.reactions == [(555, 1, "❤")]
+
+
+def test_handle_react_attributes_target_user(isolated_db):
+    turn = ToolTurn()
+    update, context, payload = FakeUpdate(mid=1), FakeContext(), []
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 7,
+        "mid": 40,
+        "author_id": 12,
+        "author_name": "Аня",
+    }]
+
+    asyncio.run(handle_react(
+        turn,
+        payload,
+        update,
+        context,
+        TC,
+        {"emoji": "🔥", "id": 7},
+        {7: 40},
+        history,
+    ))
+
+    leaders = analytics_store.get_leaderboards("all", chat_id=555)
+    assert leaders["bot_reactions"] == [
+        {"user_id": 12, "name": "Аня", "value": 1}
+    ]
 
 
 def test_handle_react_rejects_duplicate_on_same_mid():

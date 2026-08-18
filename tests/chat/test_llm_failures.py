@@ -5,6 +5,7 @@ from berangaria.memory import store as memory_store
 import pytest
 from berangaria.core import state
 from berangaria.chat.streaming import StreamedCompletionResponse
+from berangaria.analytics import store as analytics_store
 
 
 class _Response:
@@ -162,6 +163,46 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["role"] == "assistant"
     assert history[-1]["content"] == "потоковый ответ"
     assert history[-1]["mid"] == 99
+
+
+def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path):
+    response = _Response(200, {
+        "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_tokens_details": {"cached_tokens": 80},
+            "cost": 0.000321,
+        },
+    })
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 1,
+        "mid": 10,
+        "author_id": 1,
+        "author_name": "Миша",
+    }]
+    state.histories[key] = history
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    overview = analytics_store.get_overview("all", chat_id=100)
+    assert overview["requests"] == 1
+    assert overview["cost_microusd"] == 321
+    assert overview["assistant_replies"] == 1
+    leaders = analytics_store.get_leaderboards("all", chat_id=100)
+    assert leaders["replies"][0]["user_id"] == 1
+    assert leaders["cost"][0]["value"] == 321
 
 
 def test_terminal_reply_failure_does_not_resend_unanswered_tool_calls(

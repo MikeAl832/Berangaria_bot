@@ -99,7 +99,10 @@ Key settings:
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
 - `memory_search_limit`: facts injected into context
-- `allowed_users` / `allowed_groups`: access control
+- `allowed_users` / `allowed_groups`: access control; the first allowed user is the authenticated owner
+- `admin_alert_chat_id`: optional alert destination override (`null` sends to the owner)
+
+Telegram commands include `/stats` for live context, `/top` for current-chat leaderboards, and an owner-only `/dashboard` in the bot's private chat. Durable analytics contains counters and model usage, never raw message text.
 
 ### 5. Run
 

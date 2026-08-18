@@ -275,6 +275,12 @@ def init_db() -> None:
             "WHERE status='waiting'",
             (time.time(),),
         )
+        # Analytics owns its schema but shares the same SQLite database.  The
+        # local import avoids a module cycle: analytics writes through this
+        # module so tests and BOT_DB_PATH overrides keep one source of truth.
+        from berangaria.analytics import store as analytics_store
+
+        analytics_store.init_schema()
     except Exception as e:
         logger.error(f"❌ Не удалось инициализировать БД {DB_PATH}: {e}")
         # SQLite is the authoritative store for history, runtime settings and

@@ -10,6 +10,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from berangaria.analytics import store as analytics_store
 from berangaria.core import state
 from berangaria.core.state import (
     _buffer_lock,
@@ -37,6 +38,7 @@ class QueueRuntime:
     max_media_items_in_context: int
     max_buffered_messages: int
     max_buffered_chars: int
+    owner_user_id: int | None
     check_access_permissions: Callable[[int, int, bool], bool]
     truncate_at_sentence: Callable[[str, int], str]
     build_memory_text: Callable[..., str]
@@ -75,7 +77,7 @@ async def process_buffered_messages(
     first_msg = messages[0]
     timestamp = first_msg["timestamp"]
     author_kind = first_msg.get("author_kind") or "User"
-    if author_kind not in ("User", "Bot"):
+    if author_kind not in ("User", "Owner", "Bot"):
         author_kind = "User"
     message_parts = [f"[{author_kind}: {user_name}] [Time: {timestamp}]"]
 
@@ -130,6 +132,10 @@ async def process_buffered_messages(
                     "content": message_content,
                     "sid": next_sid,
                     "mid": last_mid,
+                    "author_id": user_id,
+                    "author_name": user_name,
+                    "author_kind": author_kind.lower(),
+                    "created_at": first_msg.get("created_at"),
                 }
             )
             histories[key] = history
@@ -204,7 +210,9 @@ async def queue_message(
             if getattr(update.message, "date", None) is not None
             else time.time()
         ),
-        "author_kind": "User",
+        "author_kind": (
+            "Owner" if user_id == runtime.owner_user_id else "User"
+        ),
     }
     memory_text = runtime.build_memory_text(
         original_text, is_forwarded=forward_info is not None
@@ -221,6 +229,19 @@ async def queue_message(
             ready=False,
         )
     msg_data["memory_source_id"] = memory_source_id
+
+    if original_text or media_description:
+        analytics_store.record_event(
+            "user_message",
+            chat_id=chat_id,
+            chat_type=update.effective_chat.type,
+            actor_id=user_id,
+            actor_name=user_name,
+            actor_kind="owner" if user_id == runtime.owner_user_id else "user",
+            message_id=update.message.message_id,
+            occurred_at=msg_data["created_at"],
+            details={"media_kind": media_kind} if media_kind else None,
+        )
 
     if not text and not media_description:
         runtime.release_memory_sources([memory_source_id])
@@ -310,6 +331,17 @@ async def queue_bridge_bot_message(
         chat_id,
         user_name,
         runtime.log_message_preview(text) or "(media)",
+    )
+    analytics_store.record_event(
+        "user_message",
+        chat_id=chat_id,
+        chat_type=chat_type,
+        actor_id=user_id,
+        actor_name=user_name,
+        actor_kind="bot",
+        message_id=update.message.message_id,
+        occurred_at=msg_data["created_at"],
+        details={"media_kind": media_kind} if media_kind else None,
     )
     await enqueue_buffered(
         buffer_key=buffer_key,
