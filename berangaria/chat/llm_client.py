@@ -19,13 +19,20 @@ from berangaria.config import (
     MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers, apply_chat_routing,
 )
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
-from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, touch_activity, save_history
+from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, save_history
 from berangaria.memory import store as memory_store
 from berangaria.core import state
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, dispatch_tool_call
-from berangaria.chat.streaming import TelegramStreamPreview, stream_chat_completion
-from berangaria.chat import memory_context, reply_delivery, summarization
+from berangaria.chat.streaming import stream_chat_completion
+from berangaria.chat import (
+    assistant_turn,
+    completion_transport,
+    llm_diagnostics,
+    memory_context,
+    reply_delivery,
+    summarization,
+)
 from berangaria.chat.history_rendering import (
     build_sid_map as _build_sid_map,
     extract_plain_text as _extract_plain_text,
@@ -278,29 +285,19 @@ async def send_llm_request(
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
 
     async def _request_completion(client, payload, headers):
-        if not STREAMING_ENABLED:
-            return await client.post(CHAT_API_URL, json=payload, headers=headers)
-
-        preview = TelegramStreamPreview(
-            update,
-            context,
+        runtime = completion_transport.CompletionRuntime(
+            update=update,
+            context=context,
             mentioned=mentioned,
-            status_message=turn.status_message,
-            interval_seconds=STREAM_UPDATE_INTERVAL_SECONDS,
-            min_chars=STREAM_PREVIEW_MIN_CHARS,
+            api_url=CHAT_API_URL,
+            streaming_enabled=STREAMING_ENABLED,
+            update_interval_seconds=STREAM_UPDATE_INTERVAL_SECONDS,
+            preview_min_chars=STREAM_PREVIEW_MIN_CHARS,
+            stream_chat_completion=stream_chat_completion,
         )
-        try:
-            return await stream_chat_completion(
-                client,
-                CHAT_API_URL,
-                payload=payload,
-                headers=headers,
-                on_content=preview.publish,
-            )
-        finally:
-            # Если preview создал групповое сообщение, tool handlers и финальная
-            # доставка должны переиспользовать именно его.
-            turn.status_message = preview.status_message
+        return await completion_transport.request_completion(
+            client, payload, headers, turn, runtime
+        )
 
     async def _delete_turn_status():
         await reply_delivery.delete_turn_status(turn)
@@ -325,68 +322,16 @@ async def send_llm_request(
         )
 
     async def _save_assistant(text: str):
-        """
-        Пишет ход бота в историю. Если за ход были реакции — прикрепляет их
-        к этой же записи (поле reactions), чтобы модель помнила, что среагировала.
-        Реакция-без-текста сохраняется как пустой content + reactions.
-        Дописывает в хвост — префикс не меняется, cache hit сохраняется.
-        Возвращает созданную запись (чтобы потом проставить ей mid) или None.
-        """
-        if (
-            not text
-            and not turn.reactions_made
-            and not turn.stickers_made
-            and not turn.voices_made
-        ):
-            return None
-        entry = {"role": "assistant", "content": text}
-        if turn.reactions_made:
-            entry["reactions"] = list(turn.reactions_made)
-        if turn.stickers_made:
-            entry["stickers"] = list(turn.stickers_made)
-        if turn.voices_made:
-            # Like stickers: empty content + structured field. Spoken words are
-            # rendered only in the system action note (and used in summarization).
-            entry["voices"] = list(turn.voices_made)
-        async with get_history_lock(key):
-            history.append(entry)
-            histories[key] = history
-            touch_activity(key)
-            save_history(key)
-        return entry
+        return await assistant_turn.save_assistant_turn(
+            text, turn=turn, key=key, history=history
+        )
 
     async def _remember_bot_mid(entry, sent_mid):
-        """Проставляет mid отправленного сообщения на assistant-запись — чтобы потом
-        привязать к ней входящие реакции. mid в payload не рендерится → кэш не трогает."""
-        if entry is None or not sent_mid:
-            return
-        async with get_history_lock(key):
-            entry["mid"] = sent_mid
-            save_history(key)
+        await assistant_turn.remember_bot_message_id(entry, sent_mid, key=key)
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         if FULL_DEBUG_LOGS:
-            # В DEBUG режиме показываем полную структуру с содержимым
-            logger.debug("[cyan]" + "=" * 80 + "[/]")
-            logger.debug("[bright_green]📤 ЗАПРОС К МОДЕЛИ:[/]")
-            logger.debug("[cyan]" + "=" * 80 + "[/]")
-            for i, msg in enumerate(payload_messages, 1):
-                role = msg['role']
-                content = str(msg.get('content', ''))
-                
-                # Цвет в зависимости от роли
-                role_color = {
-                    'system': 'magenta',
-                    'user': 'cyan',
-                    'assistant': 'green'
-                }.get(role, 'white')
-                
-                logger.debug(f"\n[yellow][{i}][/] Role: [{role_color}]{role.upper()}[/]")
-                logger.debug(f"Length: [dim]{len(content)} символов[/]")
-                logger.debug(f"[{role_color}]Content:[/]")
-                logger.debug(f"[dim]{content[:2000]}{'...' if len(content) > 2000 else ''}[/]")
-                logger.debug("[dim]" + "-" * 80 + "[/]")
-            logger.debug("[cyan]" + "=" * 80 + "[/]")
+            llm_diagnostics.log_request(payload_messages, enabled=True)
 
         forced_answer_nudge = False  # один раз подтолкнём ответить, если промолчала при прямом обращении
 
@@ -458,28 +403,12 @@ async def send_llm_request(
                 usage = data.get('usage', {})
 
                 if usage:
-                    prompt_tokens = usage.get('prompt_tokens', 0)
-                    completion_tokens = usage.get('completion_tokens', 0)
-                    total_tokens = usage.get('total_tokens', 0)
-                    
-                    prompt_details = usage.get('prompt_tokens_details', {})
-                    cached_tokens = prompt_details.get('cached_tokens', 0)
-                    cache_write_tokens = prompt_details.get('cache_write_tokens', 0)
-                    
-                    chat_tokens[key] = total_tokens
-                    
-                    logger.info(f"📊 Токены: запрос=[cyan]{prompt_tokens}[/] (кэш=[cyan]{cached_tokens}[/]), "
-                                f"ответ=[cyan]{completion_tokens}[/], всего=[bright_green]{total_tokens}[/]")
-
-                    total_cost = _estimate_request_cost(
+                    llm_diagnostics.record_usage(
                         usage,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        cached_tokens=cached_tokens,
-                        cache_write_tokens=cache_write_tokens,
+                        key=key,
+                        chat_tokens=chat_tokens,
+                        estimate_request_cost=_estimate_request_cost,
                     )
-                    logger.info(f"💰 Стоимость запроса: [bright_green]${total_cost:.6f}[/]")
-                
                 if finish_reason == 'tool_calls' and message.get('tool_calls'):
                     tool_rounds += 1
                     if tool_rounds > MAX_TOOL_ROUNDS:
@@ -633,23 +562,9 @@ async def send_llm_request(
                 
                 # В DEBUG показываем полный ответ модели
                 if FULL_DEBUG_LOGS:
-                    logger.debug("[blue]" + "=" * 80 + "[/]")
-                    logger.debug("[bright_green]📥 ОТВЕТ ОТ МОДЕЛИ:[/]")
-                    logger.debug("[blue]" + "=" * 80 + "[/]")
-                    
-                    # Цвет finish_reason
-                    finish_color = {
-                        'stop': 'green',
-                        'length': 'yellow',
-                        'tool_calls': 'cyan'
-                    }.get(finish_reason, 'white')
-                    
-                    logger.debug(f"Finish reason: [{finish_color}]{finish_reason}[/]")
-                    logger.debug(f"Content length: [dim]{len(reply)} символов[/]")
-                    logger.debug("[green]Content:[/]")
-                    logger.debug(f"[bright_green]{reply}[/]")
-                    logger.debug("[blue]" + "=" * 80 + "[/]")
-                
+                    llm_diagnostics.log_response(
+                        reply, finish_reason, enabled=True
+                    )
                 # Увеличиваем счётчик вызовов API
                 api_call_count[key] = api_call_count.get(key, 0) + 1
 

@@ -172,7 +172,7 @@ Vision prompts redesigned for conversational output instead of structured report
 
 ## Logs
 
-Docker writes technical logs to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. Full prompts, replies, memory facts, and vision descriptions are disabled in production by default because they contain private chat data. The file rotates at 10 MB and keeps 5 backups by default.
+Docker writes the full audit stream to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. Production currently includes prompts, replies, memory facts, and vision descriptions by operator choice; the Dozzle endpoint must remain access-controlled. The file rotates at 10 MB and keeps 5 backups by default.
 The production compose stack also runs Dozzle on `127.0.0.1:9999`; host Nginx exposes it at `logs.titlo10.fun` with Basic Auth.
 
 ```bash

@@ -21,7 +21,10 @@ Key modules:
 - `berangaria/chat/handlers.py`: Telegram command/event entry points, access control, and compatibility wrappers.
 - `berangaria/chat/message_queue.py`: message normalization, debounce buffering, history commit, and turn dispatch.
 - `berangaria/chat/media_handlers.py`: photo albums plus photo, video, sticker, and voice processing.
-- `berangaria/chat/llm_client.py`: memory retrieval orchestration, LLM retries, tool rounds, and assistant-turn persistence.
+- `berangaria/chat/llm_client.py`: memory retrieval orchestration, LLM retries, tool rounds, and final turn branching.
+- `berangaria/chat/completion_transport.py`: one streaming or non-streaming provider request and Telegram preview handoff.
+- `berangaria/chat/assistant_turn.py`: confirmed assistant text/actions and Telegram message-ID persistence.
+- `berangaria/chat/llm_diagnostics.py`: full audit payload/response logging plus token and cost reporting.
 - `berangaria/chat/reply_delivery.py`: Telegram HTML/plain delivery, chunking, multi-message bursts, and partial-failure handling.
 - `berangaria/chat/memory_context.py`, `berangaria/chat/summarization.py`: approved-memory context filtering and history compression.
 - `berangaria/chat/history_rendering.py`, `berangaria/chat/reply_formatting.py`: pure history-to-provider rendering and Telegram reply formatting/cleanup helpers.

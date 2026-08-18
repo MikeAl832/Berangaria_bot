@@ -202,7 +202,7 @@ streaming_enabled: true
 stream_update_interval_seconds: 0.8
 stream_preview_min_chars: 12
 debug: false
-full_debug_logs: false
+full_debug_logs: true
 verbose: false
 log_file: bot.log
 log_max_bytes: 10485760
@@ -226,7 +226,7 @@ log_message_preview_chars: 400
 - `stream_update_interval_seconds`: Minimum delay between private Telegram draft updates; clamped to 0.25-5 seconds
 - `stream_preview_min_chars`: Minimum buffered answer length before the first private draft update
 - `debug`: Enable detailed logging
-- `full_debug_logs`: Temporarily write detailed prompts, model replies, memory facts, and vision descriptions to DEBUG logs without enabling DEBUG output in Docker console. These are private chat data; production defaults to `false`.
+- `full_debug_logs`: Write detailed prompts, model replies, memory facts, and vision descriptions to DEBUG logs without enabling DEBUG output in Docker console. These are private chat data; production currently enables this audit stream by operator choice.
 - `verbose`: Super-detailed logs (HTTP, TLS, H2 - includes debug)
 - `log_file`: Local log file path. Docker overrides this to `/data/bot.log` (`./bot_data/bot.log` on the host).
 - `log_max_bytes`: One log file size before rotation. Set `0` to disable rotation.
@@ -625,6 +625,9 @@ Berangaria_bot/
 │   ├── chat/message_queue.py        # Debounce, history commit, turn dispatch
 │   ├── chat/media_handlers.py       # Albums and Telegram media processing
 │   ├── chat/llm_client.py           # OpenRouter chat client
+│   ├── chat/completion_transport.py # Streaming/non-streaming API transport
+│   ├── chat/assistant_turn.py       # Confirmed assistant-turn persistence
+│   ├── chat/llm_diagnostics.py      # Full audit, token, and cost logs
 │   ├── chat/reply_delivery.py        # Final Telegram delivery and chunking
 │   ├── chat/memory_context.py        # Approved-memory query and filtering
 │   ├── chat/summarization.py         # History compression request
