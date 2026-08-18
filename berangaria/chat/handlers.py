@@ -1,5 +1,4 @@
 import logging
-import asyncio
 from functools import wraps
 from telegram import Update, ReactionTypeEmoji
 from telegram.ext import ContextTypes
@@ -12,6 +11,7 @@ from berangaria.config import (
     VIDEO_MAX_FILE_SIZE_BYTES,
     AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT, ADMIN_ALERT_CHAT_ID,
     MAX_BUFFERED_MESSAGES, MAX_BUFFERED_CHARS,
+    LOG_MESSAGE_PREVIEW_CHARS,
 )
 from berangaria.core.state import (
     histories, get_history_key, message_buffer, chat_tokens, api_call_count,
@@ -19,6 +19,8 @@ from berangaria.core.state import (
 )
 from berangaria.core import state
 from berangaria.chat.llm_client import summarize_history, send_llm_request
+from berangaria.chat import media_handlers
+from berangaria.chat import message_queue
 from berangaria.memory.pipeline import (
     abandon_memory_sources,
     enqueue_memory_source,
@@ -34,7 +36,7 @@ from berangaria.media.vision import (
 from berangaria.core.utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
     download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
-    now_local, is_low_signal_user_text, strip_tiktok_urls,
+    now_local, strip_tiktok_urls,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,8 +44,61 @@ logger = logging.getLogger(__name__)
 # Telegram delivers album photos as separate updates with the same media_group_id.
 # Wait after the last photo so we can download them all and describe in one Gemini call.
 ALBUM_GATHER_SECONDS = 1.2
-_album_buffer: dict[str, dict] = {}
-_album_lock = asyncio.Lock()
+_album_buffer = media_handlers.album_buffer
+_album_lock = media_handlers.album_lock
+
+
+def _queue_runtime() -> message_queue.QueueRuntime:
+    """Snapshot queue settings and patchable boundaries for one enqueue call."""
+    return message_queue.QueueRuntime(
+        message_debounce_seconds=MESSAGE_DEBOUNCE_SECONDS,
+        max_media_items_in_context=MAX_MEDIA_ITEMS_IN_CONTEXT,
+        max_buffered_messages=MAX_BUFFERED_MESSAGES,
+        max_buffered_chars=MAX_BUFFERED_CHARS,
+        check_access_permissions=_check_access_permissions,
+        truncate_at_sentence=truncate_at_sentence,
+        build_memory_text=_build_memory_text,
+        extract_forward_info=_extract_forward_info,
+        extract_reply_context=_extract_reply_context,
+        log_message_preview=_log_message_preview,
+        is_bot_mentioned=is_bot_mentioned,
+        should_reply_randomly=should_reply_randomly,
+        enqueue_memory_source=enqueue_memory_source,
+        release_memory_sources=release_memory_sources,
+        abandon_memory_sources=abandon_memory_sources,
+        send_llm_request=send_llm_request,
+        process_buffered_messages=process_buffered_messages,
+    )
+
+
+def _media_runtime() -> media_handlers.MediaRuntime:
+    """Snapshot media dependencies while preserving the existing test seams."""
+    return media_handlers.MediaRuntime(
+        vision_mode=VISION_MODE,
+        album_gather_seconds=ALBUM_GATHER_SECONDS,
+        max_media_items_in_context=MAX_MEDIA_ITEMS_IN_CONTEXT,
+        video_max_duration_sec=VIDEO_MAX_DURATION_SEC,
+        video_max_file_size_bytes=VIDEO_MAX_FILE_SIZE_BYTES,
+        audio_max_duration_sec=AUDIO_MAX_DURATION_SEC,
+        vision_failed_image=VISION_FAILED_IMAGE,
+        check_access_permissions=_check_access_permissions,
+        queue_message=queue_message,
+        download_media_as_base64=download_media_as_base64,
+        download_video_to_file=download_video_to_file,
+        download_audio_to_file=download_audio_to_file,
+        get_video_duration=get_video_duration,
+        describe_image_bytes=describe_image_bytes,
+        describe_images=describe_images,
+        describe_video=describe_video,
+        transcribe_audio=transcribe_audio,
+    )
+
+
+def _log_message_preview(text: str) -> str:
+    """Bound message text written to INFO logs without changing chat content."""
+    if len(text) <= LOG_MESSAGE_PREVIEW_CHARS:
+        return text
+    return f"{text[:LOG_MESSAGE_PREVIEW_CHARS - 3]}..."
 
 
 def truncate_at_sentence(text: str, max_chars: int) -> str:
@@ -245,91 +300,15 @@ async def _discard_pending_buffers(
 
 
 def _album_cache_key(file_unique_ids: list[str]) -> str:
-    """Stable cache key for a multi-image album (order-independent)."""
-    return "album:" + ",".join(sorted(file_unique_ids))
+    return media_handlers.album_cache_key(file_unique_ids)
 
 
 async def _flush_album_after_delay(album_key: str) -> None:
-    """Wait for late album members, then describe all photos in one Gemini call."""
-    try:
-        await asyncio.sleep(ALBUM_GATHER_SECONDS)
-        async with _album_lock:
-            data = _album_buffer.pop(album_key, None)
-        if not data:
-            return
-        await _process_photo_album(data)
-    except asyncio.CancelledError:
-        # Timer restarted — another photo joined the album.
-        pass
-    except Exception as e:
-        logger.error(f"❌ [red]Ошибка обработки альбома:[/] {e}")
+    await media_handlers.flush_album_after_delay(album_key, _media_runtime())
 
 
 async def _process_photo_album(data: dict) -> None:
-    """Download album photos and send one multi-image vision request."""
-    items: list[dict] = data["items"]
-    update = data["update"]
-    context = data["context"]
-    if not items:
-        return
-
-    # Cap matches how many media tags we keep in one buffered turn.
-    items = items[:MAX_MEDIA_ITEMS_IN_CONTEXT]
-    unique_ids = [item["file_unique_id"] for item in items]
-    cache_key = _album_cache_key(unique_ids)
-    captions = [item["caption"] for item in items if item.get("caption")]
-    caption = "\n".join(captions)
-
-    # Prefer the update that carries the caption (Telegram usually puts it on one).
-    for item in items:
-        if item.get("caption") and item.get("update") is not None:
-            update = item["update"]
-            break
-
-    cached = state.get_cached_media_description(cache_key)
-    if cached is not None:
-        logger.info(
-            f"♻️ [dim]Альбом ({len(items)} фото) уже разобран, берём из кэша[/]"
-        )
-        await queue_message(
-            update, context, text=caption,
-            media_description=cached, media_kind="image",
-        )
-        return
-
-    images: list[tuple[bytes, str]] = []
-    for item in items:
-        try:
-            image_bytes, mime = await download_media_as_base64(
-                item["file_id"], context, return_bytes=True
-            )
-            images.append((image_bytes, mime))
-        except Exception as e:
-            logger.error(
-                f"❌ [red]Не удалось скачать фото альбома "
-                f"{item.get('file_unique_id')}:[/] {e}"
-            )
-
-    if not images:
-        image_description = VISION_FAILED_IMAGE
-    else:
-        try:
-            image_description = await describe_images(images, caption=caption)
-        except Exception as e:
-            logger.error(f"❌ [red]Ошибка multi-image vision:[/] {e}")
-            image_description = ""
-        if not image_description:
-            image_description = VISION_FAILED_IMAGE
-        else:
-            state.cache_media_description(cache_key, image_description)
-
-    logger.info(
-        f"🖼️ [dim]Альбом: {len(images)}/{len(items)} фото → 1 Gemini-вызов[/]"
-    )
-    await queue_message(
-        update, context, text=caption,
-        media_description=image_description, media_kind="image",
-    )
+    await media_handlers.process_photo_album(data, _media_runtime())
 
 
 async def _buffer_album_photo(
@@ -338,38 +317,9 @@ async def _buffer_album_photo(
     media_group_id: str,
     caption: str,
 ) -> None:
-    """Accumulate photos of one Telegram album; flush after a short quiet window."""
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    photo = update.message.photo[-1]
-    album_key = f"{chat_id}_{user_id}_{media_group_id}"
-    item = {
-        "file_id": photo.file_id,
-        "file_unique_id": photo.file_unique_id,
-        "caption": caption or "",
-        "update": update,
-    }
-
-    async with _album_lock:
-        if album_key in _album_buffer:
-            entry = _album_buffer[album_key]
-            task = entry.get("task")
-            if task is not None:
-                task.cancel()
-            entry["items"].append(item)
-            # Keep the latest context (bot identity unchanged across the album).
-            entry["context"] = context
-            if caption:
-                entry["update"] = update
-        else:
-            _album_buffer[album_key] = {
-                "items": [item],
-                "update": update,
-                "context": context,
-            }
-        _album_buffer[album_key]["task"] = asyncio.create_task(
-            _flush_album_after_delay(album_key)
-        )
+    await media_handlers.buffer_album_photo(
+        update, context, media_group_id, caption, _media_runtime()
+    )
 
 
 @access_required
@@ -500,96 +450,18 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
 async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool, random_reply: bool):
-    # Эта функция вызывается после задержки
-    async with _buffer_lock:
-        data = message_buffer.get(buffer_key)
-        if not data:
-            return
-
-        messages = data["messages"]
-        del message_buffer[buffer_key]
-
-    # Формируем единое сообщение из буфера
-    first_msg = messages[0]
-    timestamp = first_msg["timestamp"]
-    # User bridge marks other bots as author_kind=Bot so the LLM can tell them apart.
-    author_kind = first_msg.get("author_kind") or "User"
-    if author_kind not in ("User", "Bot"):
-        author_kind = "User"
-
-    message_parts = [f"[{author_kind}: {user_name}] [Time: {timestamp}]"]
-    
-    # Добавляем информацию о пересылке, если она есть
-    if first_msg.get("forward_info"):
-        message_parts.append(f"[{first_msg['forward_info']}]")
-    
-    # Reply context (только для групп, в личке не нужен)
-    if is_group and first_msg["reply_to_name"]:
-        message_parts.append(f"[Reply to: {first_msg['reply_to_name']}]")
-        message_parts.append(f"[Quoted message: {first_msg['reply_to_text']}]")
-
-    # Склеиваем текст из всех сообщений
-    combined_text = "\n".join([m["text"] for m in messages if m["text"]])
-    if combined_text:
-        message_parts.append(f"[Message: {escape_user_text(combined_text)}]")
-    else:
-        message_parts.append(f"[Message: ({'сообщение без текста' if is_group else 'без текста'})]")
-
-    # Добавляем описания медиа (ограничиваем для экономии токенов).
-    # Albums collapse to one description, so the per-item budget is higher than
-    # the old 800-char cap (which assumed up to N separate photo tags).
-    MAX_DESC_CHARS = 1500
-    media_items = [
-        (m.get("media_kind", "image"), m["media_description"])
-        for m in messages if m.get("media_description")
-    ]
-    for kind, desc in media_items[:MAX_MEDIA_ITEMS_IN_CONTEXT]:
-        if kind == "video":
-            tag = "Video description"
-        elif kind == "audio":
-            tag = "Audio description"
-        else:
-            tag = "Image description"
-        # Обрезаем слишком длинные описания по полным предложениям
-        desc_truncated = truncate_at_sentence(desc, MAX_DESC_CHARS)
-        message_parts.append(f"[{tag}: {escape_user_text(desc_truncated)}]")
-    
-    if len(media_items) > MAX_MEDIA_ITEMS_IN_CONTEXT:
-        message_parts.append(f"[+{len(media_items) - MAX_MEDIA_ITEMS_IN_CONTEXT} more media items]")
-
-    message_content = " ".join(message_parts)
-
-    # Полный ход сериализуется по ключу истории. В группе разные пользователи имеют
-    # разные debounce-буферы, но общую историю, поэтому одной history-lock недостаточно:
-    # без turn-lock ответы могли завершаться и записываться не в порядке сообщений.
-    async with get_turn_lock(key):
-        async with get_history_lock(key):
-            if key not in histories:
-                histories[key] = []
-
-            history = histories[key]
-            # Стабильный уникальный номер сообщения для reply по [#N].
-            next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
-            last_mid = messages[-1].get("message_id")
-            history.append({"role": "user", "content": message_content, "sid": next_sid, "mid": last_mid})
-            histories[key] = history
-            touch_activity(key)
-            state.save_history(key)
-
-        if not (mentioned or random_reply):
-            return
-
-        # Ambient на «ок»/голых ссылках без медиа — пустая трата токенов.
-        if random_reply and not mentioned and not media_items and is_low_signal_user_text(combined_text):
-            logger.info(
-                f"🤫 [dim]Ambient пропущен (low-signal):[/] "
-                f"{(combined_text or '')[:60]!r} (ключ={key})"
-            )
-            return
-
-        if mentioned:
-            await update.message.chat.send_action(action="typing")
-        await send_llm_request(update, context, key, history, user_name, user_id, mentioned)
+    await message_queue.process_buffered_messages(
+        buffer_key,
+        update,
+        context,
+        key,
+        is_group,
+        user_id,
+        user_name,
+        mentioned,
+        random_reply,
+        _queue_runtime(),
+    )
 
 
 def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> bool:
@@ -636,93 +508,13 @@ def _extract_reply_context(message) -> tuple[str | None, str | None]:
 
 async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         text: str, media_description: str = None, media_kind: str = None):
-    """
-    Добавляет сообщение в буфер для склейки последовательных сообщений от одного пользователя.
-    Если за MESSAGE_DEBOUNCE_SECONDS не будет новых сообщений, буфер обрабатывается.
-    """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
-    is_group = update.effective_chat.type in ['group', 'supergroup']
-    
-    key = get_history_key(chat_id, not is_group, user_id)
-    buffer_key = f"{chat_id}_{user_id}"
-
-    # Проверка прав доступа (используем общую функцию)
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
-            await update.message.reply_text("Не разговариваю с незнакомцами.")
-        return
-
-    # TikTok-ссылки модели не отдаём: только вырезаем, ничего не подставляем.
-    original_text = text or ""
-    text = strip_tiktok_urls(original_text)
-
-    # Формируем метаданные сообщения
-    now = now_local()
-    timestamp = f"{now.hour:02d}:{now.minute:02d}"
-    reply_to_name, reply_to_text = _extract_reply_context(update.message)
-    forward_info = _extract_forward_info(update.message)
-
-    # Определяем, должен ли бот ответить
-    mentioned, _ = is_bot_mentioned(update, context)
-    random_reply = should_reply_randomly(chat_id) if is_group else False
-    if not is_group:
-        mentioned = True
-
-    msg_data = {
-        "text": text,
-        "media_description": media_description,
-        "media_kind": media_kind,
-        "timestamp": timestamp,
-        "reply_to_name": reply_to_name,
-        "reply_to_text": reply_to_text,
-        "forward_info": forward_info,
-        "message_id": update.message.message_id,
-        "created_at": (
-            update.message.date.timestamp()
-            if getattr(update.message, "date", None) is not None
-            else time.time()
-        ),
-        "author_kind": "User",
-    }
-
-    # Ставим оригинальный текст в очередь до debounce: поздняя правка Telegram
-    # не должна менять уже поставленный источник памяти.
-    memory_text = _build_memory_text(
-        original_text,
-        is_forwarded=forward_info is not None,
-    )
-    memory_source_id = None
-    if memory_text:
-        memory_source_id = enqueue_memory_source(
-            scope=key,
-            text=memory_text,
-            author_name=user_name,
-            author_id=str(user_id),
-            message_id=update.message.message_id,
-            created_at=msg_data["created_at"],
-            ready=False,
-        )
-    msg_data["memory_source_id"] = memory_source_id
-
-    # TikTok-only сообщение по-прежнему не создаёт LLM-ход, но его исходник
-    # получает фоновое окончательное решение и provenance не теряется.
-    if not text and not media_description:
-        release_memory_sources([memory_source_id])
-        return
-
-    await _enqueue_buffered(
-        buffer_key=buffer_key,
-        msg_data=msg_data,
-        update=update,
-        context=context,
-        key=key,
-        is_group=is_group,
-        user_id=user_id,
-        user_name=user_name,
-        mentioned=mentioned,
-        random_reply=random_reply,
+    await message_queue.queue_message(
+        update,
+        context,
+        text,
+        media_description,
+        media_kind,
+        _queue_runtime(),
     )
 
 
@@ -738,98 +530,17 @@ async def queue_bridge_bot_message(
     reply_to_user_id: int | None = None,
     created_at: float | None = None,
 ):
-    """Ingest a group message from another bot (user-bridge path).
-
-    Differences from queue_message:
-    - groups only
-    - never enqueues long-term memory
-    - history author tag is [Bot: ...]
-    - mention uses text + reply_to_user_id (no real Bot API Update entities)
-    """
-    from berangaria.config import BOT_NAMES
-    from berangaria.user_bridge.policy import message_mentions_bot
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "bot"
-    is_group = True
-
-    # Bridge is groups-only; refuse anything else without side effects.
-    chat_type = getattr(update.effective_chat, "type", "supergroup")
-    if chat_type not in ("group", "supergroup"):
-        return
-
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        logger.info(
-            "👀 [dim]User bridge: чат не в allowlist chat=%s[/]", chat_id
-        )
-        return
-
-    original_text = text or ""
-    text = strip_tiktok_urls(original_text)
-
-    now = now_local()
-    timestamp = f"{now.hour:02d}:{now.minute:02d}"
-
-    bot = context.bot
-    bot_id = getattr(bot, "id", None)
-    if bot_id is None:
-        try:
-            me = await bot.get_me()
-            bot_id = me.id
-        except Exception:
-            bot_id = 0
-
-    mentioned = message_mentions_bot(
-        text,
-        bot_id=int(bot_id or 0),
-        bot_username=getattr(bot, "username", None),
-        bot_first_name=getattr(bot, "first_name", None),
+    await message_queue.queue_bridge_bot_message(
+        update,
+        context,
+        text=text,
+        media_description=media_description,
+        media_kind=media_kind,
+        reply_to_name=reply_to_name,
+        reply_to_text=reply_to_text,
         reply_to_user_id=reply_to_user_id,
-        bot_names=BOT_NAMES,
-    )
-    random_reply = should_reply_randomly(chat_id)
-
-    if not text and not media_description:
-        return
-
-    key = get_history_key(chat_id, False, user_id)
-    buffer_key = f"bridge_{chat_id}_{user_id}"
-
-    msg_data = {
-        "text": text,
-        "media_description": media_description,
-        "media_kind": media_kind,
-        "timestamp": timestamp,
-        "reply_to_name": reply_to_name,
-        "reply_to_text": reply_to_text,
-        "forward_info": None,
-        "message_id": update.message.message_id,
-        "created_at": created_at if created_at is not None else time.time(),
-        "author_kind": "Bot",
-        # Explicit: bridge traffic must not create durable memory sources.
-        "memory_source_id": None,
-    }
-
-    log_text = text if len(text) <= 80 else f"{text[:77]}..."
-    logger.info(
-        "👀 [[blue]bridge | %s[/]] [magenta]%s[/]: %s",
-        chat_id,
-        user_name,
-        log_text or "(media)",
-    )
-
-    await _enqueue_buffered(
-        buffer_key=buffer_key,
-        msg_data=msg_data,
-        update=update,
-        context=context,
-        key=key,
-        is_group=is_group,
-        user_id=user_id,
-        user_name=user_name,
-        mentioned=mentioned,
-        random_reply=random_reply,
+        created_at=created_at,
+        runtime=_queue_runtime(),
     )
 
 
@@ -846,77 +557,19 @@ async def _enqueue_buffered(
     mentioned: bool,
     random_reply: bool,
 ):
-    """Shared debounce buffer append used by user and bridge paths."""
-
-    async def wait_and_process(debounce: float | None = None):
-        source_ids: list[int | None] = []
-        try:
-            await asyncio.sleep(
-                MESSAGE_DEBOUNCE_SECONDS if debounce is None else debounce
-            )
-            data = message_buffer.get(buffer_key)
-            if data:
-                source_ids = [
-                    message.get("memory_source_id")
-                    for message in list(data["messages"])
-                ]
-                await process_buffered_messages(
-                    buffer_key, update, context, key, is_group, user_id, user_name,
-                    data["mentioned"], data["random_reply"]
-                )
-                release_memory_sources(source_ids)
-        except asyncio.CancelledError:
-            # Таймер отменён новым сообщением: буфер (а с ним и эти источники)
-            # переходит к новому таймеру, поэтому хоронить их нельзя.
-            pass
-        except Exception:
-            # Ход не дошёл до подтверждённой доставки — памяти из него быть не
-            # должно. Но и оставить источники в 'waiting' нельзя: они блокируют
-            # очередь своей области памяти до перезапуска процесса.
-            abandon_memory_sources(source_ids)
-            raise
-
-    # Добавляем в буфер с блокировкой (все операции атомарны)
-    async with _buffer_lock:
-        if buffer_key in message_buffer:
-            # Отменяем предыдущий таймер
-            message_buffer[buffer_key]["task"].cancel()
-            message_buffer[buffer_key]["messages"].append(msg_data)
-
-            # Обновляем флаги вызова
-            if mentioned:
-                message_buffer[buffer_key]["mentioned"] = True
-            if random_reply:
-                message_buffer[buffer_key]["random_reply"] = True
-
-            # Каждое сообщение перезапускает окно debounce, поэтому непрерывный
-            # поток может расти неограниченно и склеиться в одну гигантскую
-            # запись общей истории — ещё до гейта mentioned. Достигнув бюджета,
-            # окно больше не продлеваем: буфер уходит в обработку немедленно.
-            # Отбрасывать нельзя — осиротеют уже поставленные memory_source_id.
-            buffered = message_buffer[buffer_key]["messages"]
-            buffered_chars = sum(len(item.get("text") or "") for item in buffered)
-            if (
-                len(buffered) >= MAX_BUFFERED_MESSAGES
-                or buffered_chars >= MAX_BUFFERED_CHARS
-            ):
-                logger.info(
-                    f"📦 [dim]Буфер '{buffer_key}' достиг бюджета "
-                    f"({len(buffered)} сообщ., {buffered_chars} симв.) — флашим[/]"
-                )
-                message_buffer[buffer_key]["task"] = asyncio.create_task(
-                    wait_and_process(debounce=0)
-                )
-                return
-        else:
-            message_buffer[buffer_key] = {
-                "messages": [msg_data],
-                "mentioned": mentioned,
-                "random_reply": random_reply,
-            }
-        
-        # Создаём таску внутри блокировки для атомарности
-        message_buffer[buffer_key]["task"] = asyncio.create_task(wait_and_process())
+    await message_queue.enqueue_buffered(
+        buffer_key=buffer_key,
+        msg_data=msg_data,
+        update=update,
+        context=context,
+        key=key,
+        is_group=is_group,
+        user_id=user_id,
+        user_name=user_name,
+        mentioned=mentioned,
+        random_reply=random_reply,
+        runtime=_queue_runtime(),
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE): 
@@ -928,8 +581,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or "ЛС"
     user_text = update.message.text or ""
     
-    # Обрезаем длинные сообщения для INFO режима (в DEBUG будет полное)
-    log_text = user_text if len(user_text) <= 80 else f"{user_text[:77]}..."
+    # INFO preview is bounded independently from the content sent to the bot.
+    log_text = _log_message_preview(user_text)
     logger.info(f"📨 [[blue]{chat_title} | {chat_id} | {chat_type}[/]] [cyan]{update.effective_user.first_name}[/]: {log_text or '(пусто)'}")
 
     if update.effective_user.id == context.bot.id:
@@ -1103,293 +756,19 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
-        return
-
-    if update.effective_user.id == context.bot.id:
-        return
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    is_group = update.effective_chat.type in ['group', 'supergroup']
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
-            await update.message.reply_text("Не разговариваю с незнакомцами.")
-        return
-
-    caption = update.message.caption or ""
-
-    if not VISION_MODE:
-        # Vision выключен — просто пропустим текст подписи (если есть)
-        if caption:
-            await queue_message(update, context, text=caption)
-        return
-
-    # Album: gather by media_group_id, then one multi-image Gemini call.
-    media_group_id = getattr(update.message, "media_group_id", None)
-    if media_group_id:
-        await _buffer_album_photo(update, context, str(media_group_id), caption)
-        return
-
-    image_description = None
-    try:
-        photo = update.message.photo[-1]
-        cached = state.get_cached_media_description(photo.file_unique_id)
-        if cached is not None:
-            logger.info("♻️ [dim]Фото уже разобрано ранее, берём из кэша[/]")
-            image_description = cached
-        else:
-            image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
-            image_description = await describe_image_bytes(image_bytes, mime, caption=caption)
-            if image_description:
-                state.cache_media_description(photo.file_unique_id, image_description)
-    except Exception as e:
-        logger.error(f"❌ [red]Ошибка обработки фото:[/] {e}")
-
-    if not image_description:
-        # Technical failure only — policy blocks already return a non-empty placeholder.
-        image_description = VISION_FAILED_IMAGE
-
-    await queue_message(update, context, text=caption,
-                        media_description=image_description, media_kind="image")
+    await media_handlers.handle_media(update, context, _media_runtime())
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
-        return
-
-    if update.effective_user.id == context.bot.id:
-        return
-
-    caption = update.message.caption or ""
-
-    if not VISION_MODE:
-        if caption:
-            await queue_message(update, context, text=caption)
-        return
-
-    # Telegram отдаёт видео либо как .video, либо как .video_note (кружочки), либо как .animation (gif)
-    video_obj = update.message.video or update.message.video_note or update.message.animation
-    if video_obj is None:
-        return
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    is_group = update.effective_chat.type in ['group', 'supergroup']
-
-    # Проверка доступа (единственная, queue_message также проверит)
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
-            await update.message.reply_text("Не разговариваю с незнакомцами.")
-        return
-
-    # Раннее отсечение по метаданным Telegram (быстрее, чем качать)
-    tg_duration = get_video_duration(video_obj)
-    
-    if tg_duration and tg_duration > VIDEO_MAX_DURATION_SEC:
-        await update.message.reply_text(
-            f"Видео длиннее {VIDEO_MAX_DURATION_SEC} сек — не буду смотреть."
-        )
-        return
-
-    # Предохранитель размера: 20 МБ для cloud API, настраиваемый увеличенный
-    # предел для локального Bot API.
-    if video_obj.file_size and video_obj.file_size > VIDEO_MAX_FILE_SIZE_BYTES:
-        await update.message.reply_text(
-            f"Видео больше настроенного лимита "
-            f"{VIDEO_MAX_FILE_SIZE_BYTES // (1024 * 1024)} МБ — не буду скачивать."
-        )
-        return
-
-    # Проверяем кэш (повторное видео/гифку не качаем и не разбираем заново)
-    cached = state.get_cached_media_description(video_obj.file_unique_id)
-    if cached is not None:
-        logger.info("♻️ [dim]Видео уже разобрано ранее, берём из кэша[/]")
-        await queue_message(update, context, text=caption,
-                            media_description=cached, media_kind="video")
-        return
-
-    video_description = None
-    video_path = None
-
-    try:
-        video_path, mime, _ = await download_video_to_file(
-            video_obj.file_id, context
-        )
-
-        if not video_path:
-            video_description = "(не удалось скачать видео)"
-        else:
-            # describe_video удаляет файл в своём finally блоке.
-            # Длительность берём из метаданных Telegram (download возвращает 0.0)
-            video_description = await describe_video(
-                video_path=video_path, mime=mime,
-                caption=caption, duration=tg_duration
-            )
-            video_path = None  # Файл удалён в describe_video
-    except Exception as e:
-        logger.error(f"❌ [red]Ошибка обработки видео:[/] {e}", exc_info=True)
-        video_description = "(не удалось разобрать видео)"
-    finally:
-        # Гарантия удаления файла, если он не был обработан
-        if video_path:
-            try:
-                import os
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-                    logger.debug(f"🗑️ Удалён временный файл (fallback): {video_path}")
-            except OSError as err:
-                logger.warning(f"⚠️ Не удалось удалить временный файл {video_path}: {err}")
-
-    # Кэшируем только успешный разбор (плейсхолдеры ошибок не кэшируем)
-    if video_description and not video_description.startswith("(не удалось"):
-        state.cache_media_description(video_obj.file_unique_id, video_description)
-
-    await queue_message(update, context, text=caption,
-                        media_description=video_description, media_kind="video")
+    await media_handlers.handle_video(update, context, _media_runtime())
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
-        return
-
-    if update.effective_user.id == context.bot.id:
-        return
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    is_group = update.effective_chat.type in ['group', 'supergroup']
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
-            await update.message.reply_text("Не разговариваю с незнакомцами.")
-        return
-
-    sticker = update.message.sticker
-    if sticker is None:
-        return
-
-    emoji = sticker.emoji or ""
-
-    if not VISION_MODE:
-        # Vision выключен — передаём хотя бы эмодзи стикера как текст
-        await queue_message(update, context, text=(emoji or "(стикер)"))
-        return
-
-    # Анимированные .tgs (Lottie/вектор) Gemini не разбирает как картинку — фолбэк на эмодзи
-    if sticker.is_animated:
-        desc = f"Анимированный стикер с эмодзи {emoji}" if emoji else "Анимированный стикер"
-        await queue_message(update, context, text="",
-                            media_description=desc, media_kind="image")
-        return
-
-    # Проверяем кэш (повторный стикер не разбираем заново)
-    cached = state.get_cached_media_description(sticker.file_unique_id)
-    if cached is not None:
-        logger.info("♻️ [dim]Стикер уже разобран ранее, берём из кэша[/]")
-        await queue_message(update, context, text="",
-                            media_description=cached, media_kind="image")
-        return
-
-    sticker_description = None
-    sticker_kind = "image"
-    hint = f"Это стикер из Telegram с эмодзи {emoji}." if emoji else "Это стикер из Telegram."
-
-    try:
-        if sticker.is_video:
-            # Видео-стикер .webm — разбираем как короткое видео
-            sticker_kind = "video"
-            video_path, mime, duration = await download_video_to_file(sticker.file_id, context)
-            if not video_path:
-                sticker_description = "(не удалось скачать стикер)"
-            else:
-                sticker_description = await describe_video(
-                    video_path=video_path, mime=mime, caption=hint, duration=duration
-                )
-        else:
-            # Статичный стикер .webp — обычная картинка
-            image_bytes, mime = await download_media_as_base64(
-                sticker.file_id, context, return_bytes=True
-            )
-            sticker_description = await describe_image_bytes(image_bytes, mime, caption=hint)
-    except Exception as e:
-        logger.error(f"❌ [red]Ошибка обработки стикера:[/] {e}")
-
-    if not sticker_description:
-        sticker_description = f"Стикер с эмодзи {emoji}" if emoji else "(не удалось разобрать стикер)"
-    elif not sticker_description.startswith("(не удалось"):
-        state.cache_media_description(sticker.file_unique_id, sticker_description)
-
-    await queue_message(update, context, text="",
-                        media_description=sticker_description, media_kind=sticker_kind)
+    await media_handlers.handle_sticker(update, context, _media_runtime())
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
-        return
-
-    if update.effective_user.id == context.bot.id:
-        return
-
-    if not VISION_MODE:
-        return
-
-    audio_obj = update.message.voice or update.message.audio
-    if audio_obj is None:
-        return
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    is_group = update.effective_chat.type in ['group', 'supergroup']
-
-    if not _check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
-            await update.message.reply_text("Не разговариваю с незнакомцами.")
-        return
-
-    # Раннее отсечение слишком длинных аудио по метаданным Telegram
-    duration = get_video_duration(audio_obj)
-    if duration and duration > AUDIO_MAX_DURATION_SEC:
-        await update.message.reply_text(
-            f"Аудио длиннее {AUDIO_MAX_DURATION_SEC} сек — слушать не буду."
-        )
-        return
-
-    caption = update.message.caption or ""
-
-    # Кэш транскрипции (повторное аудио не распознаём заново)
-    transcript = state.get_cached_media_description(audio_obj.file_unique_id)
-
-    if transcript is None:
-        try:
-            await update.message.chat.send_action(action="typing")
-        except Exception:
-            pass
-
-        try:
-            audio_path, mime = await download_audio_to_file(audio_obj.file_id, context)
-            if not audio_path:
-                transcript = ""
-            else:
-                # transcribe_audio удаляет файл в своём finally
-                transcript = await transcribe_audio(audio_path=audio_path, mime=mime, caption=caption)
-        except Exception as e:
-            logger.error(f"❌ [red]Ошибка обработки голосового:[/] {e}", exc_info=True)
-            transcript = ""
-
-        if transcript:
-            state.cache_media_description(audio_obj.file_unique_id, transcript)
-
-    if not transcript:
-        # Не смогли распознать — отдадим хотя бы пометку, чтобы бот не молчал
-        await queue_message(update, context, text="",
-                            media_description="(голосовое сообщение, не удалось распознать)",
-                            media_kind="audio")
-        return
-
-    logger.info(f"🎤 [cyan]Транскрипция:[/] {transcript[:80]}{'...' if len(transcript) > 80 else ''}")
-    # Транскрипт передаём как audio description, чтобы модель понимала что это услышанное
-    await queue_message(update, context, text=caption,
-                        media_description=transcript, media_kind="audio")
+    await media_handlers.handle_voice(update, context, _media_runtime())
 
 
 # Троттлинг алертов админу, чтобы не спамить при серии ошибок

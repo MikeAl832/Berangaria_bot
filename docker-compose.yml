@@ -46,7 +46,9 @@ services:
       - BOT_LOG_FILE=/data/bot.log
       - BOT_LOG_MAX_BYTES=10485760
       - BOT_LOG_BACKUP_COUNT=5
-      - BOT_FULL_DEBUG_LOGS=true
+      # Full prompts/replies contain private chat data. Enable only temporarily
+      # during a targeted investigation, then rotate/delete the resulting logs.
+      - BOT_FULL_DEBUG_LOGS=false
       - QDRANT_HOST=127.0.0.1
       - TELEGRAM_BOT_API_BASE_URL=http://127.0.0.1:8081
       - TELEGRAM_BOT_API_LOCAL_MODE=true

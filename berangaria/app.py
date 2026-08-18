@@ -56,6 +56,17 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+async def _telegram_post_init(_application: Application) -> None:
+    """Emit readiness only after PTB has initialized the Telegram bot.
+
+    ``Application.initialize`` performs the first authenticated Telegram API
+    request.  Keeping the deploy marker in ``main`` made an invalid token or an
+    unreachable Bot API look like a successful start because ``run_polling``
+    had not begun yet.
+    """
+    logger.info("✅ [bright_green]Бот запущен![/]")
+
+
 async def periodic_summarization():
     """Суммаризирует активные чаты в заданные часы (по умолчанию 05:00 и 14:00 МСК)."""
     from berangaria.chat.llm_client import summarize_history
@@ -218,7 +229,11 @@ async def periodic_memory_flush():
 
 def build_telegram_application() -> Application:
     """Build the PTB application for either Telegram cloud or a local Bot API."""
-    builder = Application.builder().token(TELEGRAM_TOKEN)
+    builder = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(_telegram_post_init)
+    )
     if TELEGRAM_BOT_API_BASE_URL:
         builder = builder.base_url(f"{TELEGRAM_BOT_API_BASE_URL}/bot")
         builder = builder.base_file_url(f"{TELEGRAM_BOT_API_BASE_FILE_URL}/bot")
@@ -321,8 +336,6 @@ def main():
     hours_label = ", ".join(f"{h:02d}:00" for h in SUMMARY_HOURS)
     logger.info(f"🕒 Часовой пояс: [yellow]{TIMEZONE_NAME}[/]")
     logger.info(f"📝 Автосуммаризация: [yellow]{hours_label}[/] ({TIMEZONE_NAME})")
-    logger.info("✅ [bright_green]Бот запущен![/]")
-    
     # Запускаем фоновые задачи суммаризации и синхронизации стикеров
     loop = asyncio.get_event_loop()
     summarization_task = loop.create_task(periodic_summarization())

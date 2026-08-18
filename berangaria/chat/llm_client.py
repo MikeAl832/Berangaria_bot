@@ -1,15 +1,13 @@
-import re
 import logging
 import asyncio
-import copy
 import random
 import httpx
 from telegram import Update
-from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from berangaria.config import (
-    CHAT_API_URL, SUMMARY_INTERVAL, VISION_MODE, MAX_CONTEXT_TOKENS,
+    CHAT_API_URL, SUMMARY_INTERVAL as _SUMMARY_INTERVAL, VISION_MODE,
+    MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS,
     PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_PROMPT_CACHE_WRITE,
     PRICE_COMPLETION,
@@ -27,9 +25,27 @@ from berangaria.core import state
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, dispatch_tool_call
 from berangaria.chat.streaming import TelegramStreamPreview, stream_chat_completion
-from berangaria.core.utils import (
-    now_local, is_low_signal_user_text, strip_tiktok_urls, strip_internal_tags,
+from berangaria.chat import memory_context, reply_delivery, summarization
+from berangaria.chat.history_rendering import (
+    build_sid_map as _build_sid_map,
+    extract_plain_text as _extract_plain_text,
+    render_history_for_api as _render_history_for_api,
+    renumber_sids,
 )
+from berangaria.chat.reply_formatting import (
+    clean_reply as _clean_reply,
+    is_parse_error as _is_parse_error,
+    markdown_to_html as _markdown_to_html,
+    split_for_telegram,
+    strip_markdown as _strip_markdown,
+)
+from berangaria.core.utils import now_local
+
+_renumber_sids = renumber_sids
+SUMMARY_INTERVAL = _SUMMARY_INTERVAL
+markdown_to_html = _markdown_to_html
+strip_markdown = _strip_markdown
+_split_for_telegram = split_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -75,58 +91,7 @@ def _estimate_request_cost(
     )
 
 
-class ReplyDeliveryError(RuntimeError):
-    """Финальный ответ не был подтверждён Telegram и ход нельзя коммитить."""
-
-
-def markdown_to_html(text: str) -> str:
-    """
-    Конвертирует базовый Markdown в HTML для Telegram.
-    Поддерживает: жирный, курсив, код, ссылки.
-    """
-    # Экранируем HTML символы
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-    # Блоки кода ```code```
-    text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
-    
-    # Инлайн код `code`
-    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-    
-    # Жирный курсив ***text*** или ___text___
-    # ВАЖНО: тройные ДО двойных/одинарных, иначе ** «съест» *** и сломает разметку
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
-    text = re.sub(r'___(.+?)___', r'<b><i>\1</i></b>', text)
-
-    # Жирный текст **text** или __text__
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
-
-    # Курсив *text* или _text_ (но не внутри слов)
-    text = re.sub(r'(?<!\w)\*(.+?)\*(?!\w)', r'<i>\1</i>', text)
-    text = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', text)
-
-    # Зачёркнутый ~~text~~
-    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
-    
-    # Ссылки [text](url)
-    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
-
-    return text
-
-
-def strip_markdown(text: str) -> str:
-    """
-    Убирает markdown-разметку, оставляя читаемый текст.
-    Используется как фолбэк, если HTML не распарсился Telegram'ом.
-    """
-    text = re.sub(r'```(.*?)```', r'\1', text, flags=re.DOTALL)        # блоки кода
-    text = re.sub(r'`([^`]+)`', r'\1', text)                           # инлайн код
-    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'\1 (\2)', text)       # ссылки → текст (url)
-    text = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', text, flags=re.DOTALL)  # *, **, ***
-    text = re.sub(r'~~(.+?)~~', r'\1', text, flags=re.DOTALL)          # зачёркнутый
-    text = re.sub(r'(?<!\w)_{1,3}(.+?)_{1,3}(?!\w)', r'\1', text, flags=re.DOTALL)  # _, __, ___
-    return text
+ReplyDeliveryError = reply_delivery.ReplyDeliveryError
 
 
 _DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -161,184 +126,6 @@ def _build_system_prompt() -> str:
     return system_prompt
 
 
-def _build_sid_map(history: list) -> dict:
-    """Карта {sid -> telegram message_id} по текущей истории (для reply/react по [#N])."""
-    return {
-        m["sid"]: m.get("mid")
-        for m in history
-        if m.get("role") == "user" and m.get("sid") is not None
-    }
-
-
-def _build_mid_to_sid(history: list) -> dict:
-    """Обратная карта telegram mid → актуальный [#sid] (sid после renumber всегда свежий)."""
-    out = {}
-    for m in history or []:
-        if m.get("role") == "user" and m.get("mid") is not None and m.get("sid") is not None:
-            out[m["mid"]] = m["sid"]
-    return out
-
-
-def _format_reaction_note_part(r: dict, mid_to_sid: dict) -> str:
-    """
-    Текст одной своей реакции для system-ноты.
-    [#N] резолвим по on_mid из живой истории — после суммаризации/renumber
-    номер всегда актуальный; если сообщения уже нет — только цитата.
-    """
-    emoji = r.get("emoji") or ""
-    on = (r.get("on") or "").strip()
-    mid = r.get("on_mid")
-    sid = mid_to_sid.get(mid) if mid is not None else None
-    if sid is not None:
-        if on:
-            return f"{emoji} на [#{sid}] «{on}»"
-        return f"{emoji} на [#{sid}]"
-    if on:
-        return f"{emoji} на «{on}»"
-    return emoji
-
-
-def _render_history_for_api(history: list) -> list:
-    """
-    Готовит копию истории для отправки в API.
-    - В начало каждого user-сообщения подставляет стабильный reply-хэндл [#sid].
-    - Выкидывает служебные ключи (sid/mid), которых не должно быть в payload.
-    Сам тег [#N] нигде не хранится — он живёт только в этой эфемерной копии,
-    поэтому история, память и суммаризация остаются чистыми, а префикс стабилен (cache hit).
-    """
-    mid_to_sid = _build_mid_to_sid(history)
-    out = []
-    for m in history:
-        role = m.get("role")
-        content = m.get("content", "")
-        if isinstance(content, str) and content:
-            content = strip_tiktok_urls(content)
-        sid = m.get("sid")
-        if sid is not None and role == "user":
-            content = f"[#{sid}] {content}"
-
-        # Реакции (свои и входящие) отдаём ОТДЕЛЬНОЙ системной строкой, а не текстом ассистента:
-        # так модель воспринимает это как факт-действие и не начинает печатать «(реакция…)»
-        # в свои реплики. В историю/память/суммарайз попадают только структурные поля,
-        # сама нота эфемерна — живёт лишь в этой копии (как тег [#N]).
-        reactions = m.get("reactions") if role == "assistant" else None          # что бот поставил сам
-        incoming = m.get("incoming_reactions") if role == "assistant" else None  # что поставили ему
-        stickers = m.get("stickers") if role == "assistant" else None            # какие стикеры отправил
-        voices = m.get("voices") if role == "assistant" else None                # голосовые этого хода
-        if reactions or incoming or stickers or voices:
-            # Typed assistant text (if any). Voice words live only in the action
-            # note — same as stickers — so the model does not re-read them as a
-            # normal typed reply plus a weird "you said this aloud" footer.
-            if content and not voices:
-                out.append({"role": "assistant", "content": content})
-            elif content and voices and (reactions or stickers or incoming):
-                # Rare hybrid row: keep non-voice prose if something else is
-                # attached; pure voice turns keep content empty in storage.
-                out.append({"role": "assistant", "content": content})
-            notes = []
-            if reactions:
-                parts = [_format_reaction_note_part(r, mid_to_sid) for r in reactions]
-                notes.append("Ты поставила реакцию " + ", ".join(parts) + ".")
-            if stickers:
-                parts = []
-                for s in stickers:
-                    d = (s.get('desc') or '').strip()
-                    if len(d) > 80:
-                        d = d[:80] + "…"
-                    e = s.get('emotion')
-                    parts.append(f"[{e}] «{d}»" if e else f"«{d}»")
-                notes.append("Ты отправила стикер " + ", ".join(parts) + ".")
-            if voices:
-                # Parallel to stickers: "Ты отправила голосовое [emo] «слова»."
-                parts = []
-                for v in voices:
-                    t = (v.get("text") or "").strip()
-                    if not t and content:
-                        t = content.strip()
-                    if len(t) > 80:
-                        t = t[:80] + "…"
-                    e = v.get("emotion")
-                    parts.append(f"[{e}] «{t}»" if e else f"«{t}»")
-                notes.append("Ты отправила голосовое " + ", ".join(parts) + ".")
-            if incoming:
-                quote = content.strip()
-                quote = (quote[:40] + "…") if len(quote) > 40 else quote
-                who = ", ".join(f"{r.get('emoji', '')} ({r.get('from', 'кто-то')})" for r in incoming)
-                target = f"твоё сообщение «{quote}»" if quote else "твоё сообщение"
-                notes.append(f"На {target} поставили реакции: {who}.")
-            out.append({
-                "role": "system",
-                "content": " ".join(notes) + " (это действия в чате, не текст).",
-            })
-        else:
-            out.append({"role": role, "content": content})
-    return out
-
-
-def _renumber_sids(entries: list) -> None:
-    """
-    Перенумеровывает [#N] у user-сообщений с 1. Вызывается после суммаризации:
-    старые сообщения ушли в резюме, оставшиеся свежие получают новые номера с #1.
-    Бесплатно для кэша, т.к. суммаризация и так перестраивает префикс.
-    """
-    seq = 0
-    for m in entries:
-        if m.get("role") == "user" and m.get("sid") is not None:
-            seq += 1
-            m["sid"] = seq
-
-
-# Плейсхолдеры, которыми модель «проговаривает» молчание вместо пустого ответа.
-# Матчит сообщение целиком: только пунктуация/обёртки, либо короткая мета-фраза тишины.
-_SILENCE_RE = re.compile(
-    r"^[\s.…\-—–·*\"'()]*"
-    r"(?:молчу|молчит|молчание|промолч\w*|ничего\s+не\s+(?:скажу|отвечу)|"
-    r"без\s+комментари\w*|воздержусь|пропущу)?"
-    r"[\s.…\-—–·*\"'()!?]*$",
-    re.IGNORECASE,
-)
-
-
-def _split_for_telegram(text: str, limit: int = 4096) -> list[str]:
-    """Режет текст на куски в пределах лимита Telegram.
-
-    Лимит Telegram считается в UTF-16 code units, а не в символах Python:
-    эмодзи вне BMP занимают две единицы, поэтому нарезка по len() может дать
-    чанк, который Telegram отвергнет. Границы по возможности ставим по строкам
-    и пробелам, чтобы не рвать слово пополам.
-    """
-    def utf16_len(value: str) -> int:
-        return len(value.encode("utf-16-le")) // 2
-
-    if utf16_len(text) <= limit:
-        return [text]
-
-    chunks: list[str] = []
-    rest = text
-    while rest:
-        if utf16_len(rest) <= limit:
-            chunks.append(rest)
-            break
-        # Двоичный поиск максимального префикса, влезающего в лимит.
-        low, high = 1, len(rest)
-        while low < high:
-            mid = (low + high + 1) // 2
-            if utf16_len(rest[:mid]) <= limit:
-                low = mid
-            else:
-                high = mid - 1
-        cut = low
-        window = rest[:cut]
-        for separator in ("\n\n", "\n", " "):
-            position = window.rfind(separator)
-            if position > cut * 0.6:
-                cut = position + len(separator)
-                break
-        chunks.append(rest[:cut].rstrip())
-        rest = rest[cut:].lstrip()
-    return [chunk for chunk in chunks if chunk]
-
-
 def _multi_message_delay_seconds(text: str, *, slept_total: float = 0.0) -> float:
     """Пауза перед следующим bubble: длина + jitter, с общим потолком на ход."""
     remaining = MULTI_MESSAGE_DELAY_TOTAL_CAP - slept_total
@@ -350,311 +137,58 @@ def _multi_message_delay_seconds(text: str, *, slept_total: float = 0.0) -> floa
     return max(0.0, min(delay, remaining))
 
 
-def _is_parse_error(error: BaseException) -> bool:
-    """Отличает ошибку HTML-разметки от любой другой ошибки Telegram.
-
-    Фолбэк на чистый текст осмыслен только когда Telegram отверг саму разметку.
-    Сетевые и неоднозначные ошибки повторять нельзя: сообщение может быть уже
-    создано, и повтор даст дубль.
-    """
-    text = str(error).lower()
-    return "parse" in text or "entity" in text or "entities" in text or "tag" in text
-
-
-def _clean_reply(reply: str) -> str:
-    """Чистит ответ модели от служебных токенов и лишней финальной точки.
-
-    Эмодзи намеренно НЕ вырезаются: промпт отговаривает модель от их использования,
-    но когда эмодзи — сам ответ (огрызок, ответная реакция), он должен пройти.
-    """
-    # Срез служебных тегов общий с streaming-превью (см. utils).
-    reply = strip_internal_tags(reply)
-    if reply.endswith('.') and not reply.endswith('...'):
-        reply = reply[:-1]
-    # Модель иногда «проговаривает» молчание (… / — / «промолчу» / «(молчит)») вместо
-    # пустого ответа. Сводим такие плейсхолдеры к пустой строке → уходит в ветку тишины.
-    if _SILENCE_RE.match(reply):
-        return ''
-    return reply
-
-
-def _extract_plain_text(content) -> str:
-    """
-    Извлекает чистый текст пользователя из сообщения для поиска по памяти.
-    Убирает служебные теги, оставляя только содержимое [Message: ...].
-    """
-    if isinstance(content, list):
-        content = next((p.get('text', '') for p in content if p.get('type') == 'text'), '')
-    if not isinstance(content, str):
-        return ''
-
-    # Ищем [Message: ...] — самый частый случай
-    msg_match = re.search(r'\[Message:\s*(.*?)\]', content, flags=re.DOTALL)
-    if msg_match:
-        return strip_tiktok_urls(msg_match.group(1).strip())
-
-    # Если нет Message, убираем служебные блоки
-    text = re.sub(
-        r'\[(?:Image description|Video description|Context from memory|User|Time|Reply to|Quoted message|Forwarded from [^]]+):(?:[^\[\]]|\[(?!Message:))*?\]',
-        '',
-        content
-    )
-
-    return strip_tiktok_urls(text.strip())
-
-
 def _is_meaningful_memory_query(text: str) -> bool:
-    """Отсекает короткие/служебные/URL-only реплики, которые портят retrieval."""
-    return not is_low_signal_user_text(text, min_alnum=MEMORY_QUERY_MIN_CHARS)
+    return memory_context.is_meaningful_query(
+        text, min_chars=MEMORY_QUERY_MIN_CHARS
+    )
 
 
 def _build_memory_search_query(history: list, user_name: str) -> str:
-    """
-    Берёт последние содержательные user-сообщения вместо слепого поиска по
-    "Ладно" или "(сообщение без текста)".
-    """
-    candidates: list[str] = []
-    for entry in reversed(history or []):
-        if entry.get("role") != "user":
-            continue
-        plain = _extract_plain_text(entry.get("content", ""))
-        if not _is_meaningful_memory_query(plain):
-            continue
-        candidates.append(plain)
-        if len(candidates) >= MEMORY_QUERY_RECENT_MESSAGES:
-            break
-
-    if candidates:
-        return "\n".join(reversed(candidates))[:1000]
-
-    return user_name if _is_meaningful_memory_query(user_name) else ""
-
-
-def _build_memory_relevance_query(history: list, user_name: str) -> str:
-    """Возвращает только последнюю содержательную тему для fail-closed фильтра."""
-    for entry in reversed(history or []):
-        if entry.get("role") != "user":
-            continue
-        plain = _extract_plain_text(entry.get("content", ""))
-        if _is_meaningful_memory_query(plain):
-            return plain[:1000]
-    return user_name if _is_meaningful_memory_query(user_name) else ""
-
-
-_MEMORY_TERM_RE = re.compile(r"[^\W_]{4,}", flags=re.UNICODE)
-_MEMORY_RECALL_RE = re.compile(
-    r"\b(?:что|чего)\s+ты\s+(?:обо?\s+мне|про\s+меня)\s+помни\w*|"
-    r"\bчто\s+ты\s+знаешь\s+(?:обо?\s+мне|про\s+меня)|"
-    r"\b(?:расскажи|напомни)\w*(?:\s+мне)?\s+"
-    r"(?:обо?\s+мне|про\s+меня)",
-    flags=re.IGNORECASE,
-)
-_MEMORY_STOP_WORDS = {
-    "какой", "какая", "какие", "который", "которая", "которые",
-    "меня", "мне", "тебя", "тебе", "твой", "твоя", "свой", "своя",
-    "пользователь", "использует", "сейчас", "сегодня", "просто",
-    "скажи", "назови", "пожалуйста", "about", "what", "which", "user",
-}
-
-
-def _memory_terms(text: str) -> set[str]:
-    return {
-        token
-        for token in _MEMORY_TERM_RE.findall((text or "").casefold())
-        if token not in _MEMORY_STOP_WORDS
-    }
-
-
-def _is_general_memory_recall(query: str) -> bool:
-    return bool(_MEMORY_RECALL_RE.search(query or ""))
-
-
-def _memory_fact_matches_query(fact: str, query: str) -> bool:
-    if not query or _is_general_memory_recall(query):
-        return True
-    fact_terms = _memory_terms(fact)
-    query_terms = _memory_terms(query)
-    return any(
-        fact_term == query_term
-        or (
-            len(fact_term) >= 5
-            and len(query_term) >= 5
-            and fact_term[:5] == query_term[:5]
-        )
-        for fact_term in fact_terms
-        for query_term in query_terms
+    return memory_context.build_search_query(
+        history,
+        user_name,
+        min_chars=MEMORY_QUERY_MIN_CHARS,
+        recent_messages=MEMORY_QUERY_RECENT_MESSAGES,
+        extract_plain_text=_extract_plain_text,
     )
 
 
+def _build_memory_relevance_query(history: list, user_name: str) -> str:
+    return memory_context.build_relevance_query(
+        history,
+        user_name,
+        min_chars=MEMORY_QUERY_MIN_CHARS,
+        extract_plain_text=_extract_plain_text,
+    )
+
+
+_memory_terms = memory_context._memory_terms
+_is_general_memory_recall = memory_context.is_general_recall
+_memory_fact_matches_query = memory_context._fact_matches_query
+
+
 def _approved_memory_recall_results(scope: str) -> dict:
-    """Возвращает только одобренный SQLite-реестр для общего recall-запроса."""
-    facts = state.list_memory_facts(scope)[-MEMORY_SEARCH_LIMIT:]
-    return {
-        "results": [
-            {"id": fact.mem0_id, "memory": fact.fact, "score": 1.0}
-            for fact in facts
-        ]
-    }
+    return memory_context.approved_recall_results(
+        scope, search_limit=MEMORY_SEARCH_LIMIT
+    )
 
 
 def _format_memory_block(mem_results: dict, query: str = "") -> str:
-    """
-    Формирует компактный блок памяти с фильтрацией по релевантности.
-    Возвращает готовый текст или пустую строку.
-    """
-    results = (mem_results or {}).get('results') or []
-    if not results:
-        return ''
-
-    # Сортируем по релевантности
-    results = sorted(results, key=lambda item: item.get('score') or 0.0, reverse=True)
-
-    lines = []
-    total = 0
-    for item in results:
-        if item.get('score', 0.0) < MEMORY_MIN_SCORE:
-            continue
-        fact = (item.get('memory') or '').strip()
-        if not fact:
-            continue
-        if not _memory_fact_matches_query(fact, query):
-            continue
-        line = f"- {fact}"
-        if total + len(line) > MEMORY_MAX_CHARS:
-            break
-        lines.append(line)
-        total += len(line)
-        if len(lines) >= MEMORY_SEARCH_LIMIT:
-            break
-
-    return "\n".join(lines)
+    return memory_context.format_memory_block(
+        mem_results,
+        query,
+        min_score=MEMORY_MIN_SCORE,
+        max_chars=MEMORY_MAX_CHARS,
+        search_limit=MEMORY_SEARCH_LIMIT,
+    )
 
 
-def _count_memory_block_facts(mem_text: str) -> int:
-    """Считает фактически отформатированные строки фактов для логов."""
-    return sum(1 for line in mem_text.splitlines() if line.startswith("- "))
-
-
-def _filter_approved_memory_results(mem_results: dict, scope: str) -> dict:
-    """Fail-closed: сверяет scope, ID и точный текст с SQLite-реестром."""
-    approved = {
-        fact.mem0_id: fact.fact
-        for fact in state.list_memory_facts(scope)
-    }
-    raw_results = (mem_results or {}).get("results") or []
-    results = []
-    seen_ids: set[str] = set()
-    for item in raw_results:
-        if not isinstance(item, dict):
-            continue
-        memory_id = str(item.get("id") or "")
-        memory_text = item.get("memory")
-        if (
-            not memory_id
-            or memory_id in seen_ids
-            or approved.get(memory_id) != memory_text
-        ):
-            continue
-        seen_ids.add(memory_id)
-        results.append(item)
-    return {"results": results}
+_count_memory_block_facts = memory_context.count_memory_block_facts
+_filter_approved_memory_results = memory_context.filter_approved_results
 
 
 async def summarize_history(history: list) -> list:
-    to_summarize = history[:-SUMMARY_INTERVAL]
-    # SID и служебные поля меняем только в независимой копии. При ошибке API
-    # исходная история должна остаться побитово неизменной.
-    keep_recent = copy.deepcopy(history[-SUMMARY_INTERVAL:])
-
-    if not to_summarize:
-        return history
-
-    # Старые сообщения уходят в резюме (их [#N] исчезают), у оставшихся свежих
-    # сбрасываем нумерацию с #1, чтобы номера не росли бесконечно.
-    _renumber_sids(keep_recent)
-
-    # Содержательные реплики + слова из голосовых (content у voice-only пустой,
-    # как у стикеров). Чистые реакции/стикеры без текста в резюме не нужны.
-    summary_lines: list[str] = []
-    for m in to_summarize:
-        role = m.get("role") or "assistant"
-        raw = m.get("content")
-        if isinstance(raw, str) and strip_tiktok_urls(raw).strip():
-            summary_lines.append(f"{role}: {strip_tiktok_urls(raw)}")
-            continue
-        for v in m.get("voices") or []:
-            if not isinstance(v, dict):
-                continue
-            spoken = (v.get("text") or "").strip()
-            if spoken:
-                summary_lines.append(f"{role}: {strip_tiktok_urls(spoken)}")
-    text_to_summarize = "\n".join(summary_lines)
-    if not text_to_summarize.strip():
-        logger.warning("📝 [yellow]Суммаризация пропущена:[/] нет текстового содержимого для сжатия")
-        return history
-
-    # Thinking on (default high effort) — quality of multi-turn compression depends on CoT.
-    # Reasoning tokens share the max_tokens budget with content; too small a budget
-    # yields content=null while reasoning_content is full. Keep a long client timeout
-    # (was 30s → false timeouts under thinking).
-    summary_payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Напиши ТЕХНИЧЕСКОЕ РЕЗЮМЕ диалога на русском:"
-                    "Сожми этот диалог в КРАТКОЕ резюме на русском языке. "
-                    "Пиши ТОЛЬКО суть, без вводных фраз. "
-                    "Обязательно сохрани: имена, цифры, модели (например, RTX 5070 Ti), "
-                    "технические характеристики, решения и важные факты. "
-                    "НЕ пиши 'Пользователь сказал...', 'Собеседник ответил...' — просто перескажи факты."
-                )
-            },
-            {
-                "role": "user",
-                "content": text_to_summarize
-            }
-        ],
-        "max_tokens": 8192,
-        "temperature": 0.3,
-        "top_p": 0.9,
-        "reasoning": {"effort": "high"},
-    }
-    apply_chat_routing(summary_payload)
-
-    try:
-        headers = chat_api_headers()
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(CHAT_API_URL, json=summary_payload, headers=headers)
-            logger.info(f"Ответ сумморизации: [cyan]{response.status_code}[/]")
-            response.raise_for_status()
-            data = response.json()
-            message = (data.get("choices") or [{}])[0].get("message") or {}
-            # content nullable в API. При reasoning и исчерпанном max_tokens сюда
-            # часто null — раньше re.sub(None) давал TypeError → «Ошибка суммаризации».
-            raw = message.get("content")
-            if not isinstance(raw, str) or not raw.strip():
-                reasoning_len = _message_reasoning_len(message)
-                raise ValueError(
-                    "пустой content в ответе суммаризации"
-                    + (f" (есть reasoning, {reasoning_len} символов)" if reasoning_len else "")
-                )
-
-            summary = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-            if not summary:
-                raise ValueError("резюме пустое после очистки thinking-тегов")
-
-            logger.info(f"📝 Резюме истории получено ({len(summary)} символов)")
-
-            if FULL_DEBUG_LOGS:
-                logger.debug(f"Содержание:\n{summary}")
-
-            return [{"role": "user", "content": f"[Previous conversation summary: {summary}]"}] + keep_recent
-
-    except Exception as e:
-        logger.error(f"❌ [red]Ошибка суммаризации:[/] {e}")
-        return history
+    return await summarization.summarize_history(history)
 
 
 async def send_llm_request(
@@ -769,194 +303,26 @@ async def send_llm_request(
             turn.status_message = preview.status_message
 
     async def _delete_turn_status():
-        if turn.status_message is None:
-            return
-        try:
-            await turn.status_message.delete()
-        except Exception:
-            pass
-        finally:
-            turn.status_message = None
+        await reply_delivery.delete_turn_status(turn)
+
+    def _delivery_runtime() -> reply_delivery.DeliveryRuntime:
+        return reply_delivery.DeliveryRuntime(
+            update=update,
+            context=context,
+            clean_reply=_clean_reply,
+            is_parse_error=_is_parse_error,
+            multi_message_delay_seconds=_multi_message_delay_seconds,
+        )
 
     async def _deliver(text: str, target_mid, status_msg):
-        """
-        Отправляет text в чат.
-        target_mid is not None — реплаем на это сообщение; None — обычным сообщением без reply.
-        Переиспользует статусную плашку поиска только если ответ идёт на текущее сообщение.
-        HTML с фолбэком на чистый текст; длинное режет по 4096.
-        Возвращает message_id отправленного ботом сообщения (для привязки входящих реакций)
-        или None. Для длинного ответа — id первого чанка.
-        """
-        reply_html = markdown_to_html(text)
-        reply_plain = strip_markdown(text)
-        chat_id = update.effective_chat.id
-        thread_id = getattr(update.message, "message_thread_id", None)
-
-        # Статусную плашку (она висит реплаем на триггере) можно дописать только
-        # если итоговый ответ адресован тому же триггерному сообщению.
-        if status_msg is not None:
-            if target_mid == update.message.message_id and len(reply_html) <= 4096:
-                try:
-                    await status_msg.edit_text(reply_html, parse_mode="HTML")
-                    return status_msg.message_id  # отредактированная плашка и есть сообщение бота
-                except BadRequest as e:
-                    # Правка идемпотентна (тот же message_id), поэтому сетевую
-                    # ошибку здесь пережить можно — но только не молча: при
-                    # неоднозначном таймауте плашка могла уже стать ответом.
-                    logger.warning(f"⚠️ [yellow]Правка статуса с HTML не прошла:[/] {e}")
-                except Exception as e:
-                    logger.error(
-                        f"❌ [red]Правка статуса оборвалась неоднозначно:[/] {e}"
-                    )
-                    raise ReplyDeliveryError(
-                        "Telegram не подтвердил правку статусного сообщения"
-                    ) from e
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-
-        async def _raw(body: str, html: bool):
-            kw = {"chat_id": chat_id, "text": body}
-            if thread_id is not None:
-                kw["message_thread_id"] = thread_id
-            if target_mid is not None:
-                kw["reply_to_message_id"] = target_mid
-                kw["allow_sending_without_reply"] = True  # если целевое удалено — шлём без реплая
-            if html:
-                kw["parse_mode"] = "HTML"
-            sent = await context.bot.send_message(**kw)
-            return sent.message_id
-
-        if len(reply_html) <= 4096:
-            try:
-                return await _raw(reply_html, True)
-            except BadRequest as e:
-                # Ловим ТОЛЬКО ошибку разметки. Раньше здесь стоял except
-                # Exception, из-за чего TimedOut (дефолтный read_timeout PTB — 5 с)
-                # приводил ко второй отправке уже созданного Telegram сообщения:
-                # пользователь получал ответ дважды, а в историю попадал mid копии.
-                if not _is_parse_error(e):
-                    raise
-                logger.warning(f"⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] {e}")
-                return await _raw(reply_plain, False)
-        else:
-            # Длинный ответ шлём чистым текстом, чтобы не порвать HTML-теги на границе чанка
-            first_mid = None
-            for chunk in _split_for_telegram(reply_plain):
-                kw = {"chat_id": chat_id, "text": chunk}
-                if thread_id is not None:
-                    kw["message_thread_id"] = thread_id
-                if first_mid is None and target_mid is not None:
-                    # Реплай ставим только на первый чанк — остальные идут следом.
-                    kw["reply_to_message_id"] = target_mid
-                    kw["allow_sending_without_reply"] = True
-                try:
-                    sent = await context.bot.send_message(**kw)
-                except Exception as e:
-                    if first_mid is None:
-                        raise
-                    # Часть ответа уже в чате. Рвать ход нельзя: пользователь его
-                    # видел, и повтор с начала дал бы дубль. Сохраняем то, что дошло.
-                    logger.error(
-                        f"❌ [red]Длинный ответ оборвался после первого чанка:[/] {e}"
-                    )
-                    return first_mid
-                if first_mid is None:
-                    first_mid = sent.message_id
-            return first_mid
+        return await reply_delivery.deliver(
+            text, target_mid, status_msg, _delivery_runtime()
+        )
 
     async def _deliver_multi(messages: list[str], target_mid, status_msg):
-        """
-        Шлёт 2+ коротких сообщений с typing и sleep между ними.
-        Reply (если есть) — только на первый bubble; mid для истории — первый.
-        Возвращает (first_mid, delivered_texts) — delivered может быть короче
-        при partial fail после первого send.
-        """
-        cleaned: list[str] = []
-        for raw in messages or []:
-            try:
-                piece = _clean_reply(raw)
-            except Exception:
-                piece = (raw or "").strip()
-            if piece:
-                cleaned.append(piece)
-        if not cleaned:
-            if status_msg is not None:
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
-            return None, []
-
-        if len(cleaned) == 1:
-            mid = await _deliver(cleaned[0], target_mid, status_msg)
-            return mid, cleaned
-
-        # Multi: status banner cannot become "the" reply for a whole series.
-        if status_msg is not None:
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-
-        chat_id = update.effective_chat.id
-        thread_id = getattr(update.message, "message_thread_id", None)
-        first_mid = None
-        delivered: list[str] = []
-        slept_total = 0.0
-
-        for index, text in enumerate(cleaned):
-            if index > 0:
-                delay = _multi_message_delay_seconds(text, slept_total=slept_total)
-                if delay > 0:
-                    try:
-                        await update.message.chat.send_action(action="typing")
-                    except Exception:
-                        pass
-                    await asyncio.sleep(delay)
-                    slept_total += delay
-
-            reply_html = markdown_to_html(text)
-            reply_plain = strip_markdown(text)
-            use_html = len(reply_html) <= 4096
-            body = reply_html if use_html else reply_plain
-
-            async def _send(body: str, html: bool):
-                kw = {"chat_id": chat_id, "text": body}
-                if thread_id is not None:
-                    kw["message_thread_id"] = thread_id
-                if first_mid is None and target_mid is not None:
-                    kw["reply_to_message_id"] = target_mid
-                    kw["allow_sending_without_reply"] = True
-                if html:
-                    kw["parse_mode"] = "HTML"
-                return await context.bot.send_message(**kw)
-
-            try:
-                try:
-                    sent = await _send(body, use_html)
-                except BadRequest as e:
-                    if use_html and _is_parse_error(e):
-                        logger.warning(
-                            f"⚠️ [yellow]HTML multi-bubble не распарсился, plain:[/] {e}"
-                        )
-                        sent = await _send(reply_plain, False)
-                    else:
-                        raise
-            except Exception as e:
-                if first_mid is None:
-                    raise
-                logger.error(
-                    f"❌ [red]Серия сообщений оборвалась после {len(delivered)}:[/] {e}"
-                )
-                return first_mid, delivered
-
-            if first_mid is None:
-                first_mid = sent.message_id
-            delivered.append(text)
-
-        return first_mid, delivered
+        return await reply_delivery.deliver_multi(
+            messages, target_mid, status_msg, _delivery_runtime()
+        )
 
     async def _save_assistant(text: str):
         """

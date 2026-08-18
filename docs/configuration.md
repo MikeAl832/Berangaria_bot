@@ -201,12 +201,13 @@ admin_mode: false
 streaming_enabled: true
 stream_update_interval_seconds: 0.8
 stream_preview_min_chars: 12
-debug: true
-full_debug_logs: true
+debug: false
+full_debug_logs: false
 verbose: false
 log_file: bot.log
 log_max_bytes: 10485760
 log_backup_count: 5
+log_message_preview_chars: 400
 ```
 
 **Parameters:**
@@ -225,11 +226,12 @@ log_backup_count: 5
 - `stream_update_interval_seconds`: Minimum delay between private Telegram draft updates; clamped to 0.25-5 seconds
 - `stream_preview_min_chars`: Minimum buffered answer length before the first private draft update
 - `debug`: Enable detailed logging
-- `full_debug_logs`: Write detailed prompts, model replies, memory facts, and vision descriptions to DEBUG logs without enabling DEBUG output in Docker console.
+- `full_debug_logs`: Temporarily write detailed prompts, model replies, memory facts, and vision descriptions to DEBUG logs without enabling DEBUG output in Docker console. These are private chat data; production defaults to `false`.
 - `verbose`: Super-detailed logs (HTTP, TLS, H2 - includes debug)
 - `log_file`: Local log file path. Docker overrides this to `/data/bot.log` (`./bot_data/bot.log` on the host).
 - `log_max_bytes`: One log file size before rotation. Set `0` to disable rotation.
 - `log_backup_count`: Number of rotated log files to keep.
+- `log_message_preview_chars`: Maximum incoming text preview written to INFO logs (40-2000, default 400). This does not truncate conversation history or model input.
 
 ### Tools: Search and Stickers
 
@@ -441,7 +443,7 @@ Use `/summarize` command to compress chat history immediately.
 **Symptoms:** Bot doesn't remember previous conversations
 
 **Solutions:**
-1. Enable `full_debug_logs` and check memory saves/retrieval
+1. Temporarily enable `full_debug_logs` and check memory saves/retrieval; disable it and rotate the generated logs afterward
 2. Check periodic queue reports for retries or dead-letter sources
 3. Confirm the fact passed extractor, verifier, and deterministic validation
 4. Keep `memory_min_score` at `0.3` unless an audited retrieval benchmark supports a change
@@ -620,7 +622,14 @@ Berangaria_bot/
 │   ├── core/utils.py                # Helper functions
 │   ├── core/logging_setup.py        # Logging configuration
 │   ├── chat/handlers.py             # Telegram event handlers
+│   ├── chat/message_queue.py        # Debounce, history commit, turn dispatch
+│   ├── chat/media_handlers.py       # Albums and Telegram media processing
 │   ├── chat/llm_client.py           # OpenRouter chat client
+│   ├── chat/reply_delivery.py        # Final Telegram delivery and chunking
+│   ├── chat/memory_context.py        # Approved-memory query and filtering
+│   ├── chat/summarization.py         # History compression request
+│   ├── chat/history_rendering.py     # Persisted history → provider messages
+│   ├── chat/reply_formatting.py      # Telegram HTML, cleanup, and chunking
 │   ├── chat/streaming.py            # SSE reconstruction and drafts
 │   ├── memory/pipeline.py           # Strict memory verification pipeline
 │   ├── memory/store.py              # Mem0 initialization

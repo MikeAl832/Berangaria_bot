@@ -45,6 +45,17 @@ class _Context:
     bot = _Bot()
 
 
+def test_log_message_preview_uses_configured_limit(monkeypatch):
+    monkeypatch.setattr(handlers, "LOG_MESSAGE_PREVIEW_CHARS", 400)
+    text = "я" * 500
+
+    preview = handlers._log_message_preview(text)
+
+    assert len(preview) == 400
+    assert preview.endswith("...")
+    assert handlers._log_message_preview("коротко") == "коротко"
+
+
 def test_photo_access_checked_before_media_processing(monkeypatch):
     monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
     update = _Update()

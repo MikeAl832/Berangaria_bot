@@ -32,10 +32,11 @@ Dozzle only sees containers labeled with `dev.berangaria.logs=visible`.
 ## Debug levels
 
 - `debug: false`: keeps Docker console readable.
-- `full_debug_logs: true`: writes detailed prompts, model replies, memory facts, and vision descriptions to `bot_data/bot.log`.
+- `full_debug_logs: false`: production default; does not generate detailed prompts, model replies, memory facts, or vision descriptions.
+- `full_debug_logs: true`: temporary diagnostic mode containing private chat data; rotate/delete its logs after use.
 - `verbose: false`: keeps third-party HTTP/Telegram SDK noise out.
 
-Docker overrides `full_debug_logs` with `BOT_FULL_DEBUG_LOGS=true`.
+Docker keeps the safe default with `BOT_FULL_DEBUG_LOGS=false`.
 
 ## DNS and TLS
 

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from telegram.ext import MessageReactionHandler
 
@@ -94,3 +96,15 @@ def test_build_application_uses_cloud_defaults_without_override(monkeypatch):
     assert app.bot.base_url == "https://api.telegram.org/bottest-token"
     assert app.bot.base_file_url == "https://api.telegram.org/file/bottest-token"
     assert app.bot.local_mode is False
+
+
+def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
+    app = main.build_telegram_application()
+
+    assert app.post_init is main._telegram_post_init
+
+    with caplog.at_level("INFO"):
+        asyncio.run(app.post_init(app))
+
+    assert "Бот запущен" in caplog.text

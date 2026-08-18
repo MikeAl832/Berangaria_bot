@@ -172,7 +172,7 @@ Vision prompts redesigned for conversational output instead of structured report
 
 ## Logs
 
-Docker writes full DEBUG logs to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. The file rotates at 10 MB and keeps 5 backups by default.
+Docker writes technical logs to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. Full prompts, replies, memory facts, and vision descriptions are disabled in production by default because they contain private chat data. The file rotates at 10 MB and keeps 5 backups by default.
 The production compose stack also runs Dozzle on `127.0.0.1:9999`; host Nginx exposes it at `logs.titlo10.fun` with Basic Auth.
 
 ```bash
@@ -203,7 +203,7 @@ Berangaria_bot/
 │   ├── config.py                # config.yaml + env loader, Mem0 config
 │   ├── prompts.py               # SYSTEM_PROMPT, vision suffix, Mem0 instructions
 │   ├── core/                    # state.py, utils.py, paths.py, logging_setup.py
-│   ├── chat/                    # handlers.py, llm_client.py, streaming.py
+│   ├── chat/                    # Telegram entry points, message/media pipelines, LLM orchestration
 │   ├── memory/                  # pipeline.py (durable queue), store.py (Mem0)
 │   ├── media/                   # vision.py + tts.py (Gemini + Fish Audio)
 │   ├── stickers/                # store.py (embeddings + Qdrant search)

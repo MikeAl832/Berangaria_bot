@@ -277,6 +277,10 @@ def init_db() -> None:
         )
     except Exception as e:
         logger.error(f"❌ Не удалось инициализировать БД {DB_PATH}: {e}")
+        # SQLite is the authoritative store for history, runtime settings and
+        # the fail-closed memory queue. Starting without its schema would make
+        # the bot appear healthy while silently losing those guarantees.
+        raise
 
 
 def insert_memory_source(

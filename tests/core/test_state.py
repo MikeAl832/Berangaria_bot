@@ -59,6 +59,16 @@ def test_history_persistence_roundtrip(monkeypatch, tmp_path):
     assert state.histories["private_42"][1]["content"] == "и тебе"
 
 
+def test_init_db_fails_fast_when_schema_cannot_be_created(monkeypatch):
+    def fail_execute(*args, **kwargs):
+        raise OSError("disk is read-only")
+
+    monkeypatch.setattr(state, "_db_execute", fail_execute)
+
+    with pytest.raises(OSError, match="read-only"):
+        state.init_db()
+
+
 def test_history_delete(monkeypatch, tmp_path):
     db_file = tmp_path / "test.db"
     monkeypatch.setattr(state, "DB_PATH", str(db_file))

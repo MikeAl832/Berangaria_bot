@@ -18,8 +18,13 @@ Key modules:
 - `berangaria/core/paths.py`: resolves relative config/db/log paths against the repository root.
 - `berangaria/core/state.py`: shared in-memory state, per-chat locks, and SQLite persistence.
 - `berangaria/core/utils.py`, `berangaria/core/logging_setup.py`: helpers and logging configuration.
-- `berangaria/chat/handlers.py`: Telegram commands, message buffering, media handling, access control, and chat-event handling.
-- `berangaria/chat/llm_client.py`: history rendering, approved-memory retrieval, summarization, LLM retries, tool rounds, reply delivery, and persistence.
+- `berangaria/chat/handlers.py`: Telegram command/event entry points, access control, and compatibility wrappers.
+- `berangaria/chat/message_queue.py`: message normalization, debounce buffering, history commit, and turn dispatch.
+- `berangaria/chat/media_handlers.py`: photo albums plus photo, video, sticker, and voice processing.
+- `berangaria/chat/llm_client.py`: memory retrieval orchestration, LLM retries, tool rounds, and assistant-turn persistence.
+- `berangaria/chat/reply_delivery.py`: Telegram HTML/plain delivery, chunking, multi-message bursts, and partial-failure handling.
+- `berangaria/chat/memory_context.py`, `berangaria/chat/summarization.py`: approved-memory context filtering and history compression.
+- `berangaria/chat/history_rendering.py`, `berangaria/chat/reply_formatting.py`: pure history-to-provider rendering and Telegram reply formatting/cleanup helpers.
 - `berangaria/chat/streaming.py`: OpenAI-compatible SSE reconstruction and throttled private Telegram drafts.
 - `berangaria/memory/pipeline.py`: durable source queue, extraction, independent verification, exact Mem0 indexing, retries, and dead-letter handling.
 - `berangaria/memory/store.py`: retryable Mem0 initialization.

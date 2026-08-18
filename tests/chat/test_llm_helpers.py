@@ -11,6 +11,7 @@ import copy
 import pytest
 
 from berangaria.chat import llm_client
+from berangaria.chat import history_rendering, reply_formatting
 from berangaria.config import (
     CHAT_PROVIDER_PREFERENCES,
     _normalize_chat_provider,
@@ -38,6 +39,16 @@ from berangaria.chat.llm_client import (
 
 
 # ---------- markdown_to_html ----------
+
+
+def test_extracted_helpers_keep_llm_client_compatibility():
+    assert llm_client.markdown_to_html is reply_formatting.markdown_to_html
+    assert llm_client.strip_markdown is reply_formatting.strip_markdown
+    assert llm_client._clean_reply is reply_formatting.clean_reply
+    assert llm_client._render_history_for_api is history_rendering.render_history_for_api
+    assert llm_client._build_sid_map is history_rendering.build_sid_map
+    assert llm_client._renumber_sids is history_rendering.renumber_sids
+    assert llm_client._extract_plain_text is history_rendering.extract_plain_text
 
 def test_markdown_html_escapes_special_chars():
     assert markdown_to_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"

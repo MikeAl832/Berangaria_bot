@@ -369,6 +369,17 @@ FULL_DEBUG_LOGS = DEBUG or _bool_setting("BOT_FULL_DEBUG_LOGS", "full_debug_logs
 LOG_FILE = project_path(_str_setting("BOT_LOG_FILE", "log_file", "bot.log"))
 LOG_MAX_BYTES = _int_setting("BOT_LOG_MAX_BYTES", "log_max_bytes", 10 * 1024 * 1024)
 LOG_BACKUP_COUNT = _int_setting("BOT_LOG_BACKUP_COUNT", "log_backup_count", 5)
+LOG_MESSAGE_PREVIEW_CHARS = max(
+    40,
+    min(
+        _int_setting(
+            "BOT_LOG_MESSAGE_PREVIEW_CHARS",
+            "log_message_preview_chars",
+            400,
+        ),
+        2000,
+    ),
+)
 
 # ========================================
 # 📊 ТЕХНИЧЕСКИЕ КОНСТАНТЫ

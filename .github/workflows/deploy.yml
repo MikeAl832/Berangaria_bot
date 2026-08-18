@@ -144,11 +144,12 @@ jobs:
             # `up -d` returns as soon as containers are created. Under
             # `restart: always` a crash-looping bot still produced a green
             # workflow, so wait for the startup banner from berangaria/app.py.
-            echo "Waiting for the bot to report a successful start..."
+            echo "Waiting for the bot to report a successful Telegram initialization..."
+            ready=0
             for attempt in $(seq 1 30); do
               if docker compose logs bot --since 120s 2>/dev/null | grep -q 'Бот запущен'; then
-                echo "Bot started."
-                exit 0
+                ready=1
+                break
               fi
               if [ "$(docker compose ps -q bot | xargs -r docker inspect -f '{{.State.Restarting}}')" = "true" ]; then
                 echo "Bot container is restarting — deployment failed."
@@ -158,6 +159,28 @@ jobs:
               sleep 4
             done
 
-            echo "Bot did not report a successful start within the timeout."
-            docker compose logs bot --tail 100
-            exit 1
+            if [ "$ready" -ne 1 ]; then
+              echo "Bot did not report a successful start within the timeout."
+              docker compose logs bot --tail 100
+              exit 1
+            fi
+
+            # The marker is emitted after PTB authenticates with Telegram. Keep
+            # watching briefly so a polling bootstrap failure cannot turn a
+            # crash-looping container into a green deployment.
+            bot_id="$(docker compose ps -q bot)"
+            test -n "$bot_id"
+            initial_restarts="$(docker inspect -f '{{.RestartCount}}' "$bot_id")"
+            for attempt in $(seq 1 5); do
+              sleep 4
+              status="$(docker inspect -f '{{.State.Status}}' "$bot_id")"
+              restarting="$(docker inspect -f '{{.State.Restarting}}' "$bot_id")"
+              restart_count="$(docker inspect -f '{{.RestartCount}}' "$bot_id")"
+              if [ "$status" != "running" ] || [ "$restarting" = "true" ] || [ "$restart_count" != "$initial_restarts" ]; then
+                echo "Bot did not remain stable after initialization."
+                docker compose logs bot --tail 100
+                exit 1
+              fi
+            done
+
+            echo "Bot initialized and remained stable."
