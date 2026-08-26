@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `x-ai/grok-4.3` (chat and summarization; `reasoning.effort: none`)
+- **Main LLM**: OpenRouter `x-ai/grok-4.3` (chat and summarization; `reasoning.effort: low`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -242,7 +242,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Grok 4.3 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: none`)
+- **Grok 4.3 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: low`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
 

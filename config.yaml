@@ -2,7 +2,7 @@
 # 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter)
 # ========================================
 # Чат и суммаризация идут на OpenRouter. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
-# Эксперимент: Grok 4.3. Reasoning можно none/low/medium/high (дефолт low); none — дешевле и быстрее.
+# Эксперимент: Grok 4.3. Reasoning: none/low/medium/high (дефолт провайдера low).
 "model": "x-ai/grok-4.3"
 "chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
 # Хостер модели на OpenRouter. auto = сам выбирает (цена+uptime).
@@ -17,7 +17,7 @@
 "generation_params":
   "temperature": 0.8
   "reasoning":
-    "effort": "none"
+    "effort": "low"
 
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.

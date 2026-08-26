@@ -636,10 +636,10 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
     assert cost == expected
 
 
-def test_shipped_chat_model_is_grok_4_3_with_reasoning_off():
+def test_shipped_chat_model_is_grok_4_3_with_low_reasoning():
     assert MODEL == "x-ai/grok-4.3"
     assert GENERATION_PARAMS.get("temperature") == 0.8
-    assert GENERATION_PARAMS.get("reasoning") == {"effort": "none"}
+    assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
 
 
 def test_normalize_chat_provider_accepts_auto_aliases():

@@ -61,7 +61,7 @@ max_reply_tokens: 4096
 generation_params:
   temperature: 0.8
   reasoning:
-    effort: none
+    effort: low
 ```
 
 **Parameters:**
@@ -75,7 +75,7 @@ generation_params:
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
 - `generation_params`: Model sampling parameters. Grok 4.3 accepts `reasoning.effort`
-  (`none` / `low` / `medium` / `high`); shipped chat uses `none`. Summarization still
+  (`none` / `low` / `medium` / `high`); shipped chat uses `low`. Summarization still
   sends `high` on its own request.
 
 OpenRouter drops parameters the upstream model does not support (for example
@@ -444,7 +444,7 @@ Use `/summarize` command to compress chat history immediately.
 
 **Solutions:**
 1. Check cache hit rate in logs (target: 70-90%)
-2. Confirm the shipped `x-ai/grok-4.3` slug and that `generation_params.reasoning.effort` is `none`
+2. Confirm the shipped `x-ai/grok-4.3` slug and that `generation_params.reasoning.effort` is `low`
 3. Reduce `max_context_tokens` if conversations too long
 4. Use `/summarize` to compress long chats
 5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
@@ -518,7 +518,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `x-ai/grok-4.3` is the shipped chat model (`reasoning.effort: none`)
+- OpenRouter `x-ai/grok-4.3` is the shipped chat model (`reasoning.effort: low`)
 
 ## Advanced Configuration
 
