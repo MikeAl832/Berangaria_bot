@@ -124,7 +124,7 @@ CHAT_API_REFERER = _str_setting(
     "https://github.com/MikeAl832/Berangaria_bot",
 )
 CHAT_API_TITLE = _str_setting("CHAT_API_TITLE", "chat_api_title", "Berangaria")
-MODEL = config_yaml.get("model", "openai/gpt-5.6-luna")
+MODEL = config_yaml.get("model", "x-ai/grok-4.6")
 
 
 def _normalize_chat_provider(raw: object) -> str:
@@ -134,7 +134,7 @@ def _normalize_chat_provider(raw: object) -> str:
     if not isinstance(raw, str):
         raise ValueError(
             "chat_provider должен быть строкой: auto или slug провайдера "
-            "(openai, azure, amazon-bedrock)"
+            "(xai, openai, azure, amazon-bedrock)"
         )
     value = raw.strip().lower()
     if value in {"", "auto", "any", "default", "none"}:
@@ -142,7 +142,7 @@ def _normalize_chat_provider(raw: object) -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", value):
         raise ValueError(
             f"Некорректный chat_provider: {raw!r}. "
-            "Используй auto или slug с карточки модели OpenRouter (openai, azure, amazon-bedrock)."
+            "Используй auto или slug с карточки модели OpenRouter (xai, openai, azure, amazon-bedrock)."
         )
     return value
 
@@ -344,7 +344,7 @@ MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 
-# Часовой пояс бота (метки [Time:], CURRENT TIME, автосуммаризация)
+# Часовой пояс бота (метки [Time:], отдельная строка даты в payload, автосуммаризация)
 _tz_name = config_yaml.get("timezone", "Europe/Moscow")
 if not isinstance(_tz_name, str) or not _tz_name.strip():
     _tz_name = "Europe/Moscow"
@@ -455,11 +455,11 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match OpenRouter openai/gpt-5.6-luna at the current 50% discount.
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.10)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.01)
-PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.125)
-PRICE_COMPLETION = config_yaml.get("price_completion", 0.60)
+# Defaults match OpenRouter x-ai/grok-4.6 list prices (no separate cache-write meter).
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 2.00)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.50)
+PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.00)
+PRICE_COMPLETION = config_yaml.get("price_completion", 6.00)
 
 
 def chat_api_headers() -> dict[str, str]:

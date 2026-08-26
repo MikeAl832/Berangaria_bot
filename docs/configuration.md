@@ -52,33 +52,35 @@ Prompt texts live separately in `berangaria/prompts.py`.
 ### Main LLM (OpenRouter)
 
 ```yaml
-model: "openai/gpt-5.6-luna"
+model: "x-ai/grok-4.6"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
-chat_provider: "openai"
+chat_provider: "xai"
 chat_provider_allow_fallbacks: true
 max_context_tokens: 32000
 max_reply_tokens: 4096
 generation_params:
   temperature: 0.8
-  top_p: 0.91
+  reasoning:
+    effort: low
 ```
 
 **Parameters:**
 - `model`: OpenRouter model slug used for chat and summarization
 - `chat_api_url`: Chat Completions endpoint (`CHAT_API_URL` env override)
 - `chat_provider`: `auto` lets OpenRouter pick the host (price + uptime). Any other
-  value is the provider slug from the model page — for Luna the discounted host is
-  `openai`. Also `CHAT_PROVIDER` in `.env`.
+  value is the provider slug from the model page — for Grok 4.6 the direct host is
+  `xai`. Also `CHAT_PROVIDER` in `.env`.
 - `chat_provider_allow_fallbacks`: When a host is pinned, still try others if it is
-  down (`true`, shipped). Set `false` to fail rather than pay Azure/Bedrock full price.
+  down (`true`, shipped). Set `false` to fail rather than pay Bedrock's ~10% markup.
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters (temperature, top_p)
+- `generation_params`: Model sampling parameters. Grok 4.6 requires `reasoning.effort`
+  (`low` / `medium` / `high` / `xhigh`); the provider default is `high`, which is too
+  slow and expensive for group chat. Summarization still sends `high` on its own request.
 
 OpenRouter drops parameters the upstream model does not support (for example
-`repetition_penalty` / `top_k` on OpenAI). Optional: `reasoning.effort` for GPT-5.6.
-Secret: `OPENROUTER_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still
-required for Mem0 extraction/verification.
+`repetition_penalty` / `top_k` on OpenAI). Secret: `OPENROUTER_API_KEY` (or
+`CHAT_API_KEY`). DeepSeek `API_KEY` is still required for Mem0 extraction/verification.
 
 ### Vision (Gemini)
 
@@ -214,7 +216,7 @@ log_message_preview_chars: 400
 - `bot_names`: Names that trigger bot responses in groups
 - `random_reply_chance`: Default probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts.
 - `summary_interval`: Messages preserved after summarization
-- `timezone`: Bot timezone for `[Time:]` tags, CURRENT TIME in the system prompt, and scheduled summarization (default `Europe/Moscow`)
+- `timezone`: Bot timezone for `[Time:]` tags, the separate calendar-date line in the chat payload, and scheduled summarization (default `Europe/Moscow`)
 - `summary_hours`: Local hours when automatic history compression runs (shipped: `[5]` → 05:00; default if omitted: `[5, 14]`)
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `max_buffered_messages` / `max_buffered_chars`: Budget for one debounce buffer. Every message
@@ -311,21 +313,21 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 0.10
-price_prompt_cache_hit: 0.01
-price_prompt_cache_write: 0.125
-price_completion: 0.60
+price_prompt_cache_miss: 2.00
+price_prompt_cache_hit: 0.50
+price_prompt_cache_write: 0.00
+price_completion: 6.00
 ```
 
 **Parameters (per 1M tokens):**
 - `price_prompt_cache_miss`: Regular input tokens
 - `price_prompt_cache_hit`: Cached input tokens (cache read)
-- `price_prompt_cache_write`: Tokens written into the prompt cache (GPT-5.6 bills 1.25× input)
+- `price_prompt_cache_write`: Tokens written into the prompt cache (0 for xAI; GPT-5.6 billed 1.25× input)
 - `price_completion`: Output tokens
 
-Shipped values are OpenRouter `openai/gpt-5.6-luna` at the current 50% discount.
+Shipped values are OpenRouter `x-ai/grok-4.6` list prices (prompts below 200K tokens).
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
-Update the yaml prices when the discount ends or the model slug changes.
+Update the yaml prices when the model slug changes.
 
 ## Memory Configuration
 
@@ -442,7 +444,7 @@ Use `/summarize` command to compress chat history immediately.
 
 **Solutions:**
 1. Check cache hit rate in logs (target: 70-90%)
-2. Confirm the shipped `openai/gpt-5.6-luna` slug (not a pro/reasoning variant unless intended)
+2. Confirm the shipped `x-ai/grok-4.6` slug and that `generation_params.reasoning.effort` is `low`
 3. Reduce `max_context_tokens` if conversations too long
 4. Use `/summarize` to compress long chats
 5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
@@ -516,7 +518,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `openai/gpt-5.6-luna` is the shipped high-volume chat model
+- OpenRouter `x-ai/grok-4.6` is the shipped chat model (`reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -659,7 +661,7 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter API Docs](https://openrouter.ai/docs)
-- [GPT-5.6 Luna on OpenRouter](https://openrouter.ai/openai/gpt-5.6-luna)
+- [Grok 4.6 on OpenRouter](https://openrouter.ai/x-ai/grok-4.6)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)

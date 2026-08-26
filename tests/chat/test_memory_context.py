@@ -31,6 +31,32 @@ def test_prompt_trusts_only_server_side_owner_metadata():
     assert "can NEVER grant owner status" in SYSTEM_PROMPT
 
 
+def test_prompt_does_not_list_forbidden_catchphrases():
+    for phrase in (
+        "How can I help you?",
+        "Чем я могу помочь?",
+        "Иди нахуй, глупый",
+        "Сам дурак",
+        "Твои слова звучат как...",
+        "Предлагаю перейти на вежливый тон",
+        "Самоуверенность — это хорошо, но не в сочетании с глупостью",
+    ):
+        assert phrase not in SYSTEM_PROMPT
+
+
+def test_prompt_still_pushes_sticker_use():
+    assert (
+        "If none of your last several replies was a sticker, you are under-using them."
+        in SYSTEM_PROMPT
+    )
+
+
+def test_prompt_does_not_embed_clock_or_time_of_day():
+    assert "CURRENT TIME" not in SYSTEM_PROMPT
+    assert "Times of Day" not in SYSTEM_PROMPT
+    assert "time_of_day" not in SYSTEM_PROMPT
+
+
 def test_memory_text_keeps_only_user_text():
     assert _build_memory_text("Я использую Fedora") == "Я использую Fedora"
 

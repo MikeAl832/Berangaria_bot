@@ -2,19 +2,22 @@
 # 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter)
 # ========================================
 # Чат и суммаризация идут на OpenRouter. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
-"model": "openai/gpt-5.6-luna"
+# Эксперимент: Grok 4.6. Reasoning нельзя выключить; low — чтобы группа не ждала thinking.
+"model": "x-ai/grok-4.6"
 "chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
-# Хостер модели на OpenRouter. auto = сам выбирает (цена+аptime).
-# Иначе slug с карточки модели: openai (скидка Luna), azure, amazon-bedrock.
-"chat_provider": "openai"
+# Хостер модели на OpenRouter. auto = сам выбирает (цена+uptime).
+# Иначе slug с карточки: xai (прямой SpaceXAI), amazon-bedrock дороже на ~10%.
+"chat_provider": "xai"
 "chat_provider_allow_fallbacks": true     # если выбранный хостер лёг — пробовать остальных
 "max_context_tokens": 32000  # Максимальная история контекста
 "max_reply_tokens": 4096     # Максимальный размер ответа
 
-# Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает
-# (например repetition_penalty / top_k у OpenAI). Можно добавить reasoning: {effort: medium}.
+# Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает.
+# Grok 4.6: reasoning.effort low|medium|high|xhigh (дефолт провайдера — high).
 "generation_params":
   "temperature": 0.8
+  "reasoning":
+    "effort": "low"
 
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.
@@ -106,7 +109,7 @@
 "bot_names": ["Бер", "Ber"]             # Имена на которые откликается бот
 "random_reply_chance": 10                # Шанс случайного ответа в группе (%)
 "summary_interval": 10                   # Сколько сообщений оставить после сжатия истории
-"timezone": "Europe/Moscow"              # Часовой пояс бота (Time-теги, CURRENT TIME, cron суммаризации)
+"timezone": "Europe/Moscow"              # Часовой пояс бота (Time-теги, строка даты в payload, cron суммаризации)
 "summary_hours": [5]                     # Автосуммаризация в эти часы по timezone (сейчас только 05:00 МСК)
 "message_debounce_seconds": 4.0          # Таймаут для склейки последовательных сообщений (секунды)
 "random_reply_cooldown": 10              # Минимальный интервал между случайными ответами (секунды)
@@ -141,9 +144,9 @@
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# openai/gpt-5.6-luna на OpenRouter, текущая скидка 50% (вход $0.10 / кэш $0.01 / выход $0.60).
-# Cache write у GPT-5.6 = 1.25× входа. Если OpenRouter вернул usage.cost — берём его.
-"price_prompt_cache_miss": 0.10          # Обычные входные токены
-"price_prompt_cache_hit": 0.01           # Прочитанные из кэша
-"price_prompt_cache_write": 0.125        # Запись в кэш (1.25× входа)
-"price_completion": 0.60                 # Выходные токены
+# x-ai/grok-4.6 на OpenRouter: вход $2 / кэш $0.50 / выход $6 (ниже 200K prompt).
+# У xAI нет отдельного cache-write тарифа. Если OpenRouter вернул usage.cost — берём его.
+"price_prompt_cache_miss": 2.00          # Обычные входные токены
+"price_prompt_cache_hit": 0.50           # Прочитанные из кэша
+"price_prompt_cache_write": 0.00         # xAI не тарифицирует запись в кэш отдельно
+"price_completion": 6.00                 # Выходные токены

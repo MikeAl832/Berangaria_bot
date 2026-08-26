@@ -14,6 +14,8 @@ from berangaria.chat import llm_client
 from berangaria.chat import history_rendering, reply_formatting
 from berangaria.config import (
     CHAT_PROVIDER_PREFERENCES,
+    GENERATION_PARAMS,
+    MODEL,
     _normalize_chat_provider,
     apply_chat_routing,
 )
@@ -35,6 +37,9 @@ from berangaria.chat.llm_client import (
     _build_memory_search_query,
     _build_memory_relevance_query,
     _approved_memory_recall_results,
+    _build_system_prompt,
+    _build_payload_prefix,
+    _current_date_str,
 )
 
 
@@ -49,6 +54,26 @@ def test_extracted_helpers_keep_llm_client_compatibility():
     assert llm_client._build_sid_map is history_rendering.build_sid_map
     assert llm_client._renumber_sids is history_rendering.renumber_sids
     assert llm_client._extract_plain_text is history_rendering.extract_plain_text
+
+
+def test_system_prompt_prefix_excludes_the_calendar_date():
+    prefix = _build_system_prompt()
+    assert "Today is " not in prefix
+    assert "Times of Day" not in prefix
+    assert "CURRENT TIME" not in prefix
+
+
+def test_payload_prefix_puts_date_in_a_second_system_message():
+    messages = _build_payload_prefix()
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "system"
+    assert messages[0]["content"] == _build_system_prompt()
+    date_line = messages[1]["content"]
+    assert date_line == _current_date_str()
+    assert date_line.startswith("Today is ")
+    assert "Times of Day" not in date_line
+    assert " year." not in date_line
 
 def test_markdown_html_escapes_special_chars():
     assert markdown_to_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
@@ -611,11 +636,18 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
     assert cost == expected
 
 
+def test_shipped_chat_model_is_grok_4_6_with_low_reasoning():
+    assert MODEL == "x-ai/grok-4.6"
+    assert GENERATION_PARAMS.get("temperature") == 0.8
+    assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
+
+
 def test_normalize_chat_provider_accepts_auto_aliases():
     assert _normalize_chat_provider(None) == "auto"
     assert _normalize_chat_provider("AUTO") == "auto"
     assert _normalize_chat_provider(" default ") == "auto"
     assert _normalize_chat_provider("OpenAI") == "openai"
+    assert _normalize_chat_provider("xai") == "xai"
     assert _normalize_chat_provider("amazon-bedrock") == "amazon-bedrock"
     assert _normalize_chat_provider("azure/us") == "azure/us"
 

@@ -108,31 +108,29 @@ _MONTHS = ["January", "February", "March", "April", "May", "June",
            "July", "August", "September", "October", "November", "December"]
 
 
-def _current_time_str() -> str:
-    """Формирует строку с текущей датой и временем суток для системного промпта (МСК)."""
+def _current_date_str() -> str:
+    """Calendar date only. Clock time already sits on each history message as [Time: HH:MM]."""
     now = now_local()
-    time_str = f"Today is {_DAYS[now.weekday()]}, {now.day} {_MONTHS[now.month-1]} {now.year} year. "
-
-    if 5 <= now.hour < 12:
-        time_of_day = "morning"
-    elif 12 <= now.hour < 17:
-        time_of_day = "daytime"
-    elif 17 <= now.hour < 23:
-        time_of_day = "evening"
-    else:
-        time_of_day = "night"
-
-    time_str += f"Times of Day: {time_of_day}."
-    return time_str
+    return (
+        f"Today is {_DAYS[now.weekday()]}, {now.day} "
+        f"{_MONTHS[now.month - 1]} {now.year}."
+    )
 
 
 def _build_system_prompt() -> str:
-    """Собирает полный системный промпт: база + vision (если включён) + текущее время."""
+    """Stable system prefix: personality, rules, optional vision suffix. No date."""
     system_prompt = SYSTEM_PROMPT
     if VISION_MODE:
         system_prompt += VISION_PROMPT_SUFFIX
-    system_prompt += f"\n\n=== CURRENT TIME ===\n{_current_time_str()}\n"
     return system_prompt
+
+
+def _build_payload_prefix() -> list[dict]:
+    """Cached system prompt, then a daily date line that must not sit inside it."""
+    return [
+        {"role": "system", "content": _build_system_prompt()},
+        {"role": "system", "content": _current_date_str()},
+    ]
 
 
 def _multi_message_delay_seconds(text: str, *, slept_total: float = 0.0) -> float:
@@ -213,9 +211,9 @@ async def send_llm_request(
             histories[key] = history
             save_history(key)
 
-    system_prompt = _build_system_prompt()
-    # В payload подставляем reply-хэндлы [#N] (только в копию, история остаётся чистой)
-    payload_messages = [{"role": "system", "content": system_prompt}] + _render_history_for_api(history)
+    # Reply handles [#N] only in the payload copy; persisted history stays clean.
+    # Date is a second system message so the long personality prefix can cache.
+    payload_messages = _build_payload_prefix() + _render_history_for_api(history)
     sid_to_mid = _build_sid_map(history)
 
     try:

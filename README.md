@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `openai/gpt-5.6-luna` (chat and summarization)
+- **Main LLM**: OpenRouter `x-ai/grok-4.6` (chat and summarization; `reasoning.effort: low`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -93,8 +93,8 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: OpenRouter model slug (shipped: `openai/gpt-5.6-luna`)
-- `chat_provider`: `auto` or a host slug from the model page (`openai` = Luna discount)
+- `model`: OpenRouter model slug (shipped: `x-ai/grok-4.6`)
+- `chat_provider`: `auto` or a host slug from the model page (`xai` = SpaceXAI; Bedrock is ~10% more)
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
@@ -224,11 +224,11 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `openai/gpt-5.6-luna` (per 1M tokens, current 50% discount)
-- Regular input: $0.10
-- Cached input: $0.01
-- Cache write: $0.125 (1.25× input)
-- Output: $0.60
+### OpenRouter `x-ai/grok-4.6` (per 1M tokens, prompts below 200K)
+- Regular input: $2.00
+- Cached input: $0.50
+- Cache write: not billed separately by xAI
+- Output: $6.00
 - OpenRouter `usage.cost` is preferred when the provider returns it
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
@@ -242,7 +242,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Luna via OpenRouter**: shipped chat/summarization model — cheap, fast, tool-capable
+- **Grok 4.6 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: low`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
 
