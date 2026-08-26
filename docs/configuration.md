@@ -647,6 +647,7 @@ Rules enforced in code:
 - **no** long-term memory enqueue for bridge traffic
 - history uses `[Bot: name]` (not `[User: …]`)
 - replies / tools stay on Bot API
+- starts after Bot API `initialize` (so the first session is not a reconnect)
 - bridge errors reconnect; they never stop Bot API polling
 
 One-time session: `python scripts/user_bridge_login.py` → put `USER_BRIDGE_SESSION=…`

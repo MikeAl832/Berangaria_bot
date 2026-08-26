@@ -115,6 +115,14 @@ def test_build_application_uses_cloud_defaults_without_override(monkeypatch):
 
 def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
     monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
+    started = {}
+
+    async def _fake_start(application):
+        started["app"] = application
+        return None
+
+    # post_init now boots the user bridge; do not start Telethon from this test.
+    monkeypatch.setattr(main, "start_user_bridge", _fake_start)
     app = main.build_telegram_application()
 
     assert app.post_init is main._telegram_post_init
@@ -123,3 +131,15 @@ def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
         asyncio.run(app.post_init(app))
 
     assert "Бот запущен" in caplog.text
+    assert started["app"] is app
+
+
+def test_post_init_bridge_boot_is_fail_open(monkeypatch):
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
+
+    async def _boom(_application):
+        raise RuntimeError("bridge boot exploded")
+
+    monkeypatch.setattr(main, "start_user_bridge", _boom)
+    app = main.build_telegram_application()
+    asyncio.run(app.post_init(app))

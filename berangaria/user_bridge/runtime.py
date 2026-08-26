@@ -115,6 +115,28 @@ async def _bridge_supervisor(
             pass
 
 
+async def _resolve_our_bot_id(bot: Any) -> Optional[int]:
+    """Best-effort Bot API id for skipping our own messages.
+
+    python-telegram-bot's ``Bot.id`` is a property that raises ``RuntimeError``
+    until ``ExtBot.initialize`` has cached ``get_me``. ``getattr(bot, "id", None)``
+    does not catch that, so treating it as a Telethon crash caused a spurious
+    reconnect on every deploy that started the bridge before ``run_polling``.
+    """
+    try:
+        bot_id = bot.id
+    except Exception:
+        bot_id = None
+    if isinstance(bot_id, int):
+        return bot_id
+    try:
+        me = await bot.get_me()
+        return int(me.id)
+    except Exception as exc:
+        logger.warning("user_bridge: get_me failed (%s) — self-skip limited", exc)
+        return None
+
+
 async def _run_client_once(
     bot: Any,
     *,
@@ -134,14 +156,7 @@ async def _run_client_once(
     session = StringSession(USER_BRIDGE_SESSION)
     client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
-    # Resolve our bot id once for self-skip (best-effort).
-    our_bot_id: Optional[int] = getattr(bot, "id", None)
-    if our_bot_id is None:
-        try:
-            me = await bot.get_me()
-            our_bot_id = me.id
-        except Exception as exc:
-            logger.warning("user_bridge: get_me failed (%s) — self-skip limited", exc)
+    our_bot_id = await _resolve_our_bot_id(bot)
 
     @client.on(events.NewMessage(chats=list(allowed_chat_ids)))
     async def _on_new_message(event) -> None:  # type: ignore[no-untyped-def]
