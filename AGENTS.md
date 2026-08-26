@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter (default `x-ai/grok-4.3`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter (default `x-ai/grok-4.6`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 All runtime code lives in the `berangaria` package; the entry point is `python -m berangaria`.
 Tests under `tests/` mirror the package layout. One-off CLI tools live in `scripts/`.

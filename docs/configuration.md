@@ -52,7 +52,7 @@ Prompt texts live separately in `berangaria/prompts.py`.
 ### Main LLM (OpenRouter)
 
 ```yaml
-model: "x-ai/grok-4.3"
+model: "x-ai/grok-4.6"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 chat_provider: "xai"
 chat_provider_allow_fallbacks: true
@@ -325,7 +325,7 @@ price_completion: 2.50
 - `price_prompt_cache_write`: Tokens written into the prompt cache (0 for xAI; GPT-5.6 billed 1.25× input)
 - `price_completion`: Output tokens
 
-Shipped values are OpenRouter `x-ai/grok-4.3` list prices (prompts below 200K tokens).
+Shipped values are OpenRouter `x-ai/grok-4.6` list prices (prompts below 200K tokens).
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
 Update the yaml prices when the model slug changes.
 
@@ -444,7 +444,7 @@ Use `/summarize` command to compress chat history immediately.
 
 **Solutions:**
 1. Check cache hit rate in logs (target: 70-90%)
-2. Confirm the shipped `x-ai/grok-4.3` slug and that `generation_params.reasoning.effort` is `low`
+2. Confirm the shipped `x-ai/grok-4.6` slug and that `generation_params.reasoning.effort` is `low`
 3. Reduce `max_context_tokens` if conversations too long
 4. Use `/summarize` to compress long chats
 5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
@@ -518,7 +518,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `x-ai/grok-4.3` is the shipped chat model (`reasoning.effort: low`)
+- OpenRouter `x-ai/grok-4.6` is the shipped chat model (`reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -661,7 +661,7 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter API Docs](https://openrouter.ai/docs)
-- [Grok 4.3 on OpenRouter](https://openrouter.ai/x-ai/grok-4.3)
+- [Grok 4.6 on OpenRouter](https://openrouter.ai/x-ai/grok-4.6)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)
