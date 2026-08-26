@@ -1,4 +1,5 @@
 import asyncio
+import copy
 
 from berangaria.chat import llm_client
 from berangaria.memory import store as memory_store
@@ -126,14 +127,28 @@ def test_api_400_persists_cleared_history(monkeypatch, tmp_path):
 
 
 def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_path):
+    reasoning_details = [{
+        "type": "reasoning.encrypted",
+        "data": "opaque-state",
+        "id": "reasoning-1",
+        "format": "xai-responses-v1",
+        "index": 0,
+    }]
+    payloads = []
+
     async def fake_stream(client, url, *, payload, headers, on_content):
+        payloads.append(copy.deepcopy(payload))
         await on_content("потоковый ответ")
         return StreamedCompletionResponse(
             status_code=200,
             data={
                 "choices": [{
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": "потоковый ответ"},
+                    "message": {
+                        "role": "assistant",
+                        "content": "потоковый ответ",
+                        "reasoning_details": reasoning_details,
+                    },
                 }],
                 "usage": {},
             },
@@ -149,7 +164,13 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
     state.init_db()
     key = "private_1"
-    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 1,
+        "mid": 10,
+        "provider_sent": False,
+    }]
     state.histories[key] = history
     state.chat_tokens.pop(key, None)
     bot = _SuccessfulBot()
@@ -162,7 +183,22 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert bot.messages[0]["text"] == "потоковый ответ"
     assert history[-1]["role"] == "assistant"
     assert history[-1]["content"] == "потоковый ответ"
+    assert history[-1]["reasoning_details"] == reasoning_details
+    assert history[-1]["reasoning_details"] is not reasoning_details
     assert history[-1]["mid"] == 99
+    assert history[0]["provider_sent"] is True
+    assert history[-1]["provider_sent"] is False
+    assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
+
+    state.histories.clear()
+    state.load_all_histories()
+    restored = state.histories[key][-1]
+    assert restored["reasoning_details"] == reasoning_details
+    assert llm_client._render_history_for_api([restored]) == [{
+        "role": "assistant",
+        "content": "потоковый ответ",
+        "reasoning_details": reasoning_details,
+    }]
 
 
 def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path):
@@ -473,3 +509,102 @@ def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path)
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
     assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
+
+
+def test_streamed_reasoning_details_are_echoed_after_search(monkeypatch, tmp_path):
+    from berangaria.tools import dispatch as tool_handlers
+
+    reasoning_details = [
+        {
+            "type": "reasoning.summary",
+            "summary": "Нужно проверить актуальный курс.",
+            "id": "reasoning-summary-1",
+            "format": "xai-responses-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.encrypted",
+            "data": "encrypted-part",
+            "id": "reasoning-encrypted-1",
+            "format": "xai-responses-v1",
+            "index": 1,
+        },
+    ]
+    responses = [
+        StreamedCompletionResponse(
+            status_code=200,
+            data={
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_details": reasoning_details,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": '{"query":"курс евро"}',
+                            },
+                        }],
+                    },
+                }],
+                "usage": {},
+            },
+        ),
+        StreamedCompletionResponse(
+            status_code=200,
+            data={
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ответ"},
+                }],
+                "usage": {},
+            },
+        ),
+    ]
+    payloads = []
+
+    async def fake_stream(client, url, *, payload, headers, on_content=None):
+        payloads.append(copy.deepcopy(payload))
+        return responses[len(payloads) - 1]
+
+    monkeypatch.setattr(
+        tool_handlers,
+        "web_search",
+        lambda query, max_results=5, timelimit=None, region="ru-ru": (
+            "1. факт\nтекст\nhttps://e.com"
+        ),
+    )
+    monkeypatch.setattr(
+        llm_client.httpx,
+        "AsyncClient",
+        _client_returning(_Response(500)),
+    )
+    monkeypatch.setattr(llm_client, "stream_chat_completion", fake_stream)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", True)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: курс евро]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    assert len(payloads) == 2
+    continuation = payloads[1]["messages"]
+    assistant = next(
+        message
+        for message in continuation
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant["reasoning_details"] == reasoning_details
+    assert "reasoning_content" not in assistant
+    assert any(message.get("role") == "tool" for message in continuation)
+    assert payloads[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE

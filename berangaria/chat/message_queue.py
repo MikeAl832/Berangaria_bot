@@ -136,6 +136,7 @@ async def process_buffered_messages(
                     "author_name": user_name,
                     "author_kind": author_kind.lower(),
                     "created_at": first_msg.get("created_at"),
+                    "provider_sent": False,
                 }
             )
             histories[key] = history

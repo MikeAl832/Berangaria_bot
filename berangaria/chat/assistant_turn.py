@@ -1,5 +1,6 @@
 """Persist the assistant side of a confirmed Telegram turn."""
 
+import copy
 from typing import Any
 
 from berangaria.core.state import (
@@ -16,8 +17,9 @@ async def save_assistant_turn(
     turn: Any,
     key: str,
     history: list,
+    provider_message: dict | None = None,
 ) -> dict | None:
-    """Append text and structured chat actions to persisted history."""
+    """Append delivered text, actions, and opaque provider reasoning state."""
     if (
         not text
         and not turn.reactions_made
@@ -26,13 +28,32 @@ async def save_assistant_turn(
     ):
         return None
 
-    entry = {"role": "assistant", "content": text}
+    entry = {
+        "role": "assistant",
+        "content": text,
+        # A freshly delivered Telegram reply has not appeared in a provider
+        # request yet. Incoming reactions may still be attached to this row
+        # without changing any prefix the provider could have cached.
+        "provider_sent": False,
+    }
     if turn.reactions_made:
         entry["reactions"] = list(turn.reactions_made)
     if turn.stickers_made:
         entry["stickers"] = list(turn.stickers_made)
     if turn.voices_made:
         entry["voices"] = list(turn.voices_made)
+
+    if isinstance(provider_message, dict):
+        reasoning_details = provider_message.get("reasoning_details")
+        if isinstance(reasoning_details, list) and reasoning_details:
+            entry["reasoning_details"] = copy.deepcopy(reasoning_details)
+        else:
+            reasoning_content = provider_message.get("reasoning_content")
+            reasoning = provider_message.get("reasoning")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                entry["reasoning_content"] = reasoning_content
+            elif isinstance(reasoning, str) and reasoning:
+                entry["reasoning"] = reasoning
 
     async with get_history_lock(key):
         history.append(entry)

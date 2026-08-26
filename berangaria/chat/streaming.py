@@ -66,8 +66,9 @@ async def stream_chat_completion(
 ) -> StreamedCompletionResponse:
     """Consume OpenAI-compatible SSE and rebuild a normal chat-completion response.
 
-    Only cumulative ``delta.content`` is exposed to ``on_content``. Reasoning and
-    tool-call arguments are retained for API continuity but never sent to preview.
+    Only cumulative ``delta.content`` is exposed to ``on_content``. Structured
+    reasoning, legacy reasoning text, and tool-call arguments are retained for API
+    continuity but never sent to preview.
     """
     stream_payload = dict(payload)
     stream_payload["stream"] = True
@@ -88,11 +89,13 @@ async def stream_chat_completion(
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        reasoning_details: list[dict[str, Any]] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason = ""
         done_received = False
         role = "assistant"
         usage: dict[str, Any] = {}
+        response_meta: dict[str, Any] = {}
 
         async for raw_line in response.aiter_lines():
             line = raw_line.strip()
@@ -110,6 +113,9 @@ async def stream_chat_completion(
 
             if event.get("usage"):
                 usage = event["usage"]
+            for field in ("id", "model", "provider"):
+                if event.get(field) is not None:
+                    response_meta[field] = event[field]
 
             choices = event.get("choices") or []
             if not choices:
@@ -123,6 +129,14 @@ async def stream_chat_completion(
             reasoning_text = _delta_reasoning_text(delta)
             if reasoning_text:
                 reasoning_parts.append(reasoning_text)
+            detail_chunks = delta.get("reasoning_details")
+            if isinstance(detail_chunks, list):
+                # OpenRouter requires the complete structured sequence to be echoed
+                # back unmodified during tool use. Streaming chunks are already in
+                # provider order, so concatenate them instead of merging by index.
+                reasoning_details.extend(
+                    detail for detail in detail_chunks if isinstance(detail, dict)
+                )
             if delta.get("content"):
                 content_parts.append(delta["content"])
                 if on_content is not None:
@@ -146,7 +160,11 @@ async def stream_chat_completion(
             "role": role,
             "content": "".join(content_parts),
         }
-        if reasoning_parts:
+        if reasoning_details:
+            # Special summarized/encrypted reasoning must keep its structured form.
+            # Do not duplicate the flattened legacy string in the next tool request.
+            message["reasoning_details"] = reasoning_details
+        elif reasoning_parts:
             message["reasoning_content"] = "".join(reasoning_parts)
         if tool_calls:
             message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
@@ -155,6 +173,7 @@ async def stream_chat_completion(
             status_code=200,
             headers=response_headers,
             data={
+                **response_meta,
                 "choices": [{"finish_reason": finish_reason, "message": message}],
                 "usage": usage,
             },

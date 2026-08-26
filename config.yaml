@@ -8,7 +8,8 @@
 # Хостер модели на OpenRouter. auto = сам выбирает (цена+uptime).
 # Иначе slug с карточки: xai (прямой SpaceXAI), amazon-bedrock дороже на ~10%.
 "chat_provider": "xai"
-"chat_provider_allow_fallbacks": true     # если выбранный хостер лёг — пробовать остальных
+"chat_provider_fallbacks": ["amazon-bedrock"] # разрешённые запасные хостеры без provider.order (он ломает sticky cache)
+"chat_provider_allow_fallbacks": true     # если xai лёг — пробовать разрешённые fallback-хостеры
 "max_context_tokens": 32000               # Максимальная история контекста
 "max_reply_tokens": 4096                  # Максимальный размер ответа
 

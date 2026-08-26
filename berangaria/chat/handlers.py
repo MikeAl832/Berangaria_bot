@@ -764,7 +764,15 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 histories[key] = []
             history = histories[key]
             next_sid = max((m.get("sid", 0) for m in history), default=0) + 1
-            history.append({"role": "user", "content": content, "sid": next_sid, "mid": msg.message_id})
+            history.append(
+                {
+                    "role": "user",
+                    "content": content,
+                    "sid": next_sid,
+                    "mid": msg.message_id,
+                    "provider_sent": False,
+                }
+            )
             histories[key] = history
             touch_activity(key)
             state.save_history(key)
@@ -774,13 +782,80 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_llm_request(update, context, key, history, user_name, user_id, True)
 
 
+def _record_incoming_reaction_change(
+    history: list,
+    *,
+    target_mid: int,
+    actor_name: str,
+    actor_id: int,
+    added: list[str],
+    removed: list[str],
+) -> bool:
+    """Record a reaction without changing an already-rendered prompt prefix."""
+    target = next(
+        (
+            message
+            for message in history
+            if message.get("role") == "assistant"
+            and message.get("mid") == target_mid
+        ),
+        None,
+    )
+    if target is None:
+        return False
+
+    # Missing means legacy data. Treat it as already sent: changing such a row
+    # could invalidate a provider-side prompt cache created before this field
+    # existed.
+    if target.get("provider_sent", True) is not False:
+        raw_quote = target.get("content")
+        quote = raw_quote.strip() if isinstance(raw_quote, str) else ""
+        if len(quote) > 40:
+            quote = quote[:40] + "…"
+        history.append(
+            {
+                "role": "event",
+                "event_kind": "incoming_reaction",
+                "actor_name": actor_name,
+                "actor_id": actor_id,
+                "target_mid": target_mid,
+                "target_excerpt": quote,
+                "added": list(added),
+                "removed": list(removed),
+                "provider_sent": False,
+            }
+        )
+        return True
+
+    incoming = target.setdefault("incoming_reactions", [])
+    for emoji in added:
+        incoming.append(
+            {"from": actor_name, "from_id": actor_id, "emoji": emoji}
+        )
+    for emoji in removed:
+        for index, reaction in enumerate(incoming):
+            same_person = (
+                reaction.get("from_id") == actor_id
+                or (
+                    reaction.get("from_id") is None
+                    and reaction.get("from") == actor_name
+                )
+            )
+            if same_person and reaction.get("emoji") == emoji:
+                incoming.pop(index)
+                break
+    if not incoming:
+        target.pop("incoming_reactions", None)
+    return True
+
+
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Пассивно фиксирует реакции, которые ставят на сообщения САМОГО бота.
-    Ничего не отправляет — лишь дописывает структурное поле incoming_reactions
-    к assistant-записи (найденной по mid), чтобы бот «узнал» о реакции при следующем
-    своём ходе. Сама заметка рендерится эфемерно в _render_history_for_api,
-    мимо суммаризации и памяти.
+    До первой отправки assistant-записи провайдеру дописывает реакцию рядом с
+    ней. После отправки не меняет прошлое и добавляет отдельное событие в хвост,
+    сохраняя кэшируемый префикс. Обе формы рендерятся только для chat API, мимо
+    суммаризации и памяти.
     """
     mr = update.message_reaction
     if mr is None or mr.user is None:
@@ -811,27 +886,16 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
             history = histories.get(key)
             if not history:
                 return
-            target = next(
-                (m for m in history
-                 if m.get("role") == "assistant" and m.get("mid") == mr.message_id),
-                None,
+            changed = _record_incoming_reaction_change(
+                history,
+                target_mid=mr.message_id,
+                actor_name=name,
+                actor_id=mr.user.id,
+                added=added,
+                removed=removed,
             )
-            if target is None:
+            if not changed:
                 return
-            inc = target.setdefault("incoming_reactions", [])
-            for e in added:
-                inc.append({"from": name, "from_id": mr.user.id, "emoji": e})
-            for e in removed:
-                for i, rec in enumerate(inc):
-                    same_person = (
-                        rec.get("from_id") == mr.user.id
-                        or (rec.get("from_id") is None and rec.get("from") == name)
-                    )
-                    if same_person and rec.get("emoji") == e:
-                        inc.pop(i)
-                        break
-            if not inc:
-                target.pop("incoming_reactions", None)
             histories[key] = history
             save_history(key)
 

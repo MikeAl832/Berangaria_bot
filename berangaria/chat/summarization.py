@@ -118,6 +118,7 @@ async def summarize_history(history: list) -> list:
                 {
                     "role": "user",
                     "content": f"[Previous conversation summary: {summary}]",
+                    "provider_sent": False,
                 }
             ] + keep_recent
     except Exception as error:

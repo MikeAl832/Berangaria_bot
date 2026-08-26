@@ -109,6 +109,75 @@ def test_stream_aggregates_content_without_previewing_reasoning():
     assert client.request[2]["json"]["stream_options"] == {"include_usage": True}
 
 
+def test_stream_preserves_structured_reasoning_for_tool_continuity():
+    detail_chunks = [
+        {
+            "type": "reasoning.summary",
+            "summary": "Нужно проверить актуальный курс.",
+            "id": "reasoning-summary-1",
+            "format": "xai-responses-v1",
+            "index": 0,
+        },
+        {
+            "type": "reasoning.encrypted",
+            "data": "encrypted-part",
+            "id": "reasoning-encrypted-1",
+            "format": "xai-responses-v1",
+            "index": 1,
+        },
+        {
+            "type": "reasoning.text",
+            "text": "Вызываю поиск.",
+            "signature": "sig-1",
+            "id": "reasoning-text-1",
+            "format": "xai-responses-v1",
+            "index": 2,
+        },
+    ]
+    response = _StreamResponse([
+        _event({
+            "id": "generation-1",
+            "model": "x-ai/grok-4.6",
+            "provider": "xai",
+            "choices": [{"delta": {
+            "role": "assistant",
+            "reasoning": "плоская копия, которую не надо дублировать",
+            "reasoning_details": detail_chunks[:2],
+        }}]}),
+        _event({"choices": [{"delta": {
+            "reasoning_details": detail_chunks[2:],
+            "tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"query":"курс"}'},
+            }],
+        }, "finish_reason": "tool_calls"}]}),
+        "data: [DONE]",
+    ])
+    previews = []
+
+    async def on_content(text):
+        previews.append(text)
+
+    result = asyncio.run(stream_chat_completion(
+        _Client(response),
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={"model": "x-ai/grok-4.6", "messages": []},
+        headers={"Authorization": "Bearer test"},
+        on_content=on_content,
+    ))
+
+    message = result.json()["choices"][0]["message"]
+    assert result.json()["id"] == "generation-1"
+    assert result.json()["model"] == "x-ai/grok-4.6"
+    assert result.json()["provider"] == "xai"
+    assert message["reasoning_details"] == detail_chunks
+    assert "reasoning_content" not in message
+    assert message["tool_calls"][0]["function"]["name"] == "web_search"
+    assert previews == []
+
+
 def test_stream_reassembles_tool_call_arguments():
     response = _StreamResponse([
         _event({"choices": [{"delta": {"tool_calls": [{

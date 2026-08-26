@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import hashlib
 import random
 import httpx
 from telegram import Update
@@ -117,6 +118,12 @@ def _current_date_str() -> str:
     )
 
 
+def _chat_session_id(history_key: str) -> str:
+    """Stable opaque OpenRouter sticky-routing key for one persisted chat scope."""
+    digest = hashlib.sha256(str(history_key).encode("utf-8")).hexdigest()
+    return f"berangaria-{digest}"
+
+
 def _build_system_prompt() -> str:
     """Stable system prefix: personality, rules, optional vision suffix. No date."""
     system_prompt = SYSTEM_PROMPT
@@ -196,6 +203,25 @@ _filter_approved_memory_results = memory_context.filter_approved_results
 
 async def summarize_history(history: list) -> list:
     return await summarization.summarize_history(history)
+
+
+async def _mark_history_sent_to_provider(history: list, *, key: str) -> None:
+    """Persist the first provider-send boundary for newly created history rows."""
+    async with get_history_lock(key):
+        pending = [
+            message for message in history if message.get("provider_sent") is False
+        ]
+        if not pending:
+            return
+        for message in pending:
+            message["provider_sent"] = True
+        histories[key] = history
+        if not save_history(key):
+            for message in pending:
+                message["provider_sent"] = False
+            raise RuntimeError(
+                "не удалось сохранить границу отправки истории провайдеру"
+            )
 
 
 async def send_llm_request(
@@ -321,9 +347,13 @@ async def send_llm_request(
             messages, target_mid, status_msg, _delivery_runtime()
         )
 
-    async def _save_assistant(text: str):
+    async def _save_assistant(text: str, *, provider_message: dict | None = None):
         return await assistant_turn.save_assistant_turn(
-            text, turn=turn, key=key, history=history
+            text,
+            turn=turn,
+            key=key,
+            history=history,
+            provider_message=provider_message,
         )
 
     async def _remember_bot_mid(entry, sent_mid):
@@ -375,6 +405,11 @@ async def send_llm_request(
             error=error,
         )
 
+    # From this point on the exact rendered history may reach the provider. Mark
+    # explicit new rows before network I/O so an ambiguous timeout cannot make a
+    # possibly cached prefix mutable again.
+    await _mark_history_sent_to_provider(history, key=key)
+
     async with httpx.AsyncClient(timeout=600.0) as client:
         if FULL_DEBUG_LOGS:
             llm_diagnostics.log_request(payload_messages, enabled=True)
@@ -391,6 +426,7 @@ async def send_llm_request(
 
             payload = apply_chat_routing({
                 "model": MODEL,
+                "session_id": _chat_session_id(key),
                 "messages": payload_messages,
                 "max_tokens": MAX_REPLY_TOKENS,
                 "tools": TOOLS,
@@ -462,13 +498,29 @@ async def send_llm_request(
                         estimate_request_cost=_estimate_request_cost,
                     )
                     details = usage.get("prompt_tokens_details") or {}
+                    provider_name = str(data.get("provider") or CHAT_PROVIDER)
+                    model_name = str(data.get("model") or MODEL)
+                    prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
+                    cached_tokens = max(0, int(details.get("cached_tokens", 0) or 0))
+                    cache_ratio = (
+                        (cached_tokens / prompt_tokens) * 100
+                        if prompt_tokens
+                        else 0.0
+                    )
+                    logger.info(
+                        "🧭 Маршрут: provider=%s model=%s session=%s cache=%.1f%%",
+                        provider_name,
+                        model_name,
+                        payload["session_id"][-12:],
+                        cache_ratio,
+                    )
                     analytics_store.record_llm_usage(
                         chat_id=update.effective_chat.id,
                         chat_type=update.effective_chat.type,
                         user_id=user_id,
                         user_name=user_name,
-                        provider=str(data.get("provider") or CHAT_PROVIDER),
-                        model=str(data.get("model") or MODEL),
+                        provider=provider_name,
+                        model=model_name,
                         prompt_tokens=usage.get("prompt_tokens", 0),
                         cached_tokens=details.get("cached_tokens", 0),
                         cache_write_tokens=details.get("cache_write_tokens", 0),
@@ -745,7 +797,7 @@ async def send_llm_request(
                     raise ReplyDeliveryError(
                         "Telegram не подтвердил доставку ответа"
                     ) from exc
-                saved = await _save_assistant(reply)
+                saved = await _save_assistant(reply, provider_message=message)
                 await _remember_bot_mid(saved, sent_mid)
                 _record_reply(sent_mid, target_mid=target_mid, mode="text")
                 return

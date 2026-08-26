@@ -13,10 +13,12 @@ import pytest
 from berangaria.chat import llm_client
 from berangaria.chat import history_rendering, reply_formatting
 from berangaria.config import (
+    CHAT_PROVIDER_FALLBACKS,
     CHAT_PROVIDER_PREFERENCES,
     GENERATION_PARAMS,
     MODEL,
     _normalize_chat_provider,
+    _normalize_chat_provider_list,
     apply_chat_routing,
 )
 from berangaria import config as bot_config
@@ -158,6 +160,44 @@ def test_render_prepends_sid_to_user():
 def test_render_plain_assistant_untouched():
     hist = [{"role": "assistant", "content": "ответ"}]
     assert _render_history_for_api(hist) == [{"role": "assistant", "content": "ответ"}]
+
+
+def test_render_plain_assistant_preserves_structured_reasoning():
+    reasoning_details = [{
+        "type": "reasoning.encrypted",
+        "data": "opaque-state",
+        "id": "reasoning-1",
+        "format": "xai-responses-v1",
+        "index": 0,
+    }]
+    hist = [{
+        "role": "assistant",
+        "content": "ответ",
+        "reasoning_details": reasoning_details,
+        "reasoning_content": "flattened duplicate",
+    }]
+
+    rendered = _render_history_for_api(hist)
+
+    assert rendered == [{
+        "role": "assistant",
+        "content": "ответ",
+        "reasoning_details": reasoning_details,
+    }]
+    assert rendered[0]["reasoning_details"] is not reasoning_details
+
+
+def test_render_plain_assistant_preserves_legacy_reasoning_content():
+    hist = [{
+        "role": "assistant",
+        "content": "ответ",
+        "reasoning_content": "opaque legacy state",
+    }]
+    assert _render_history_for_api(hist) == [{
+        "role": "assistant",
+        "content": "ответ",
+        "reasoning_content": "opaque legacy state",
+    }]
 
 
 def test_render_assistant_reaction_becomes_system_note():
@@ -553,6 +593,7 @@ def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     assert history == before
     assert result[0]["role"] == "user"
     assert result[0]["content"].startswith("[Previous conversation summary:")
+    assert result[0]["provider_sent"] is False
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
     assert captured["url"] == llm_client.CHAT_API_URL
@@ -659,6 +700,18 @@ def test_normalize_chat_provider_rejects_junk():
         _normalize_chat_provider(["openai"])
 
 
+def test_normalize_chat_provider_list_accepts_yaml_and_env_shapes():
+    assert _normalize_chat_provider_list(["xai", "amazon-bedrock", "xai"]) == [
+        "xai",
+        "amazon-bedrock",
+    ]
+    assert _normalize_chat_provider_list("xai, amazon-bedrock") == [
+        "xai",
+        "amazon-bedrock",
+    ]
+    assert _normalize_chat_provider_list(None) == []
+
+
 def test_apply_chat_routing_omits_provider_in_auto(monkeypatch):
     monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", None)
     payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
@@ -666,7 +719,29 @@ def test_apply_chat_routing_omits_provider_in_auto(monkeypatch):
 
 
 def test_apply_chat_routing_pins_openai(monkeypatch):
-    prefs = {"order": ["openai"], "allow_fallbacks": True}
+    prefs = {
+        "only": ["openai", "azure"],
+        "sort": "price",
+        "allow_fallbacks": True,
+    }
     monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", prefs)
     payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
     assert payload["provider"] == prefs
+
+
+def test_shipped_provider_routing_keeps_sticky_cache_compatible():
+    assert CHAT_PROVIDER_FALLBACKS == ["amazon-bedrock"]
+    assert CHAT_PROVIDER_PREFERENCES == {
+        "only": ["xai", "amazon-bedrock"],
+        "sort": "price",
+        "allow_fallbacks": True,
+    }
+    assert "order" not in CHAT_PROVIDER_PREFERENCES
+
+
+def test_chat_session_id_is_stable_opaque_and_scope_specific():
+    first = llm_client._chat_session_id("group_-100")
+    assert first == llm_client._chat_session_id("group_-100")
+    assert first != llm_client._chat_session_id("private_100")
+    assert "group_-100" not in first
+    assert len(first) <= 256

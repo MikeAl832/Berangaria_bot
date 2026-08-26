@@ -147,8 +147,37 @@ def _normalize_chat_provider(raw: object) -> str:
     return value
 
 
+def _normalize_chat_provider_list(raw: object) -> list[str]:
+    """Normalize a YAML list or comma-separated env override of provider slugs."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        values = raw
+    else:
+        raise ValueError(
+            "chat_provider_fallbacks должен быть списком или строкой slug через запятую"
+        )
+
+    providers: list[str] = []
+    for raw_value in values:
+        provider = _normalize_chat_provider(raw_value)
+        if provider == "auto":
+            continue
+        if provider not in providers:
+            providers.append(provider)
+    return providers
+
+
 CHAT_PROVIDER = _normalize_chat_provider(
     os.environ.get("CHAT_PROVIDER", config_yaml.get("chat_provider", "auto"))
+)
+CHAT_PROVIDER_FALLBACKS = _normalize_chat_provider_list(
+    os.environ.get(
+        "CHAT_PROVIDER_FALLBACKS",
+        config_yaml.get("chat_provider_fallbacks", []),
+    )
 )
 CHAT_PROVIDER_ALLOW_FALLBACKS = _bool_setting(
     "CHAT_PROVIDER_ALLOW_FALLBACKS", "chat_provider_allow_fallbacks", True
@@ -156,8 +185,18 @@ CHAT_PROVIDER_ALLOW_FALLBACKS = _bool_setting(
 if CHAT_PROVIDER == "auto":
     CHAT_PROVIDER_PREFERENCES: dict[str, object] | None = None
 else:
+    allowed_providers = [CHAT_PROVIDER]
+    if CHAT_PROVIDER_ALLOW_FALLBACKS:
+        allowed_providers.extend(
+            provider
+            for provider in CHAT_PROVIDER_FALLBACKS
+            if provider not in allowed_providers
+        )
     CHAT_PROVIDER_PREFERENCES = {
-        "order": [CHAT_PROVIDER],
+        # `provider.order` disables OpenRouter's sticky prompt-cache routing.
+        # An allowlist preserves the chosen hosts while leaving stickiness active.
+        "only": allowed_providers,
+        "sort": "price",
         "allow_fallbacks": CHAT_PROVIDER_ALLOW_FALLBACKS,
     }
 

@@ -4,12 +4,18 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `x-ai/grok-4.6` (chat and summarization; `reasoning.effort: low`)
+- **Main LLM**: OpenRouter `x-ai/grok-4.6` (chat and summarization; `temperature: 1.0`, `reasoning.effort: low`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
 - **Vector Store**: Qdrant (local Docker container)
 - **Memory**: SQLite durable verification queue + Mem0/Qdrant approved-fact index
+
+The Grok 4.6 system prompt is deliberately compact and uncensored. It gives the strong
+chat model positive direction toward wit, jokes, banter, and equal-participant behavior
+without weak-model catchphrase bans, anti-swearing rules, or step-by-step personality
+cookbooks. Security, metadata, memory, web-trust, and terminal-tool invariants remain
+explicit.
 
 ## Key Features
 
@@ -17,7 +23,9 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 - **Multi-modal understanding**: images, videos, stickers, voice messages, and audio
 - **Fact-checking by default**: the system prompt treats built-in knowledge as undated gossip. Any reply resting on a number, date, name or a checkable claim someone else made goes through `web_search` first — including before the bot corrects or mocks anyone. Opinions, jokes and anything about the chat itself are explicitly excluded, the search is capped per turn, and the mechanics stay invisible in the reply.
 - **Stickers as first-class replies**: when the answer is mostly emotion, the bot sends a sticker instead of typing it. Reactions acknowledge, stickers reply — the prompt now states that tiebreaker instead of leaving the two tools competing for the same situations.
-- **Telegram reactions** via function calling for natural emoji responses
+- **Telegram reactions** via function calling for natural emoji responses; reactions from
+  users are attached to a new unsent reply when safe, otherwise appended as timeline
+  events so an already-cached conversation prefix is never rewritten
 - **Optional voice notes** via Fish Audio TTS (`send_voice`) — rare deadpan spoken replies when the model chooses the tool
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
@@ -94,7 +102,9 @@ Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for deta
 
 Key settings:
 - `model`: OpenRouter model slug (shipped: `x-ai/grok-4.6`)
-- `chat_provider`: `auto` or a host slug from the model page (`xai` = SpaceXAI; Bedrock is ~10% more)
+- `chat_provider`: primary OpenRouter host (`xai` = SpaceXAI); `chat_provider_fallbacks`
+  is the allowlist of backup hosts (shipped: `amazon-bedrock`, ~10% more)
+- `generation_params`: normal Grok 4.6 chat ships at `temperature: 1.0` and `reasoning.effort: low`; factual tool continuations use `factual_temperature` separately
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
@@ -242,7 +252,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Grok 4.3 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: low`)
+- **Grok 4.6 via OpenRouter**: shipped chat/summarization model (`temperature: 1.0`, `reasoning.effort: low`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
 
@@ -269,6 +279,10 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **High costs**: 
 - Check cache hit rate in logs (should be 70-90% after warmup)
+- Keep a stable `session_id` per chat and avoid `provider.order`, which disables
+  OpenRouter sticky cache routing; the shipped client does both automatically
+- Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
+  appends those reactions after the cached prefix automatically
 - Confirm `OPENROUTER_API_KEY` is set and the `model` slug is still discounted if costs jump
 - Monitor token usage with `/stats` command
 

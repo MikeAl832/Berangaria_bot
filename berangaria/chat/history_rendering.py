@@ -1,5 +1,6 @@
 """Pure conversion between persisted chat history and provider messages."""
 
+import copy
 import re
 
 from berangaria.core.utils import strip_tiktok_urls
@@ -37,12 +38,62 @@ def _format_reaction_note_part(reaction: dict, mid_to_sid: dict) -> str:
     return f"{emoji} на «{quote}»" if quote else emoji
 
 
+def _render_assistant_message(message: dict, content: str) -> dict:
+    """Rebuild one assistant message with provider state kept out of display text."""
+    rendered = {"role": "assistant", "content": content}
+    reasoning_details = message.get("reasoning_details")
+    if isinstance(reasoning_details, list) and reasoning_details:
+        rendered["reasoning_details"] = copy.deepcopy(reasoning_details)
+        return rendered
+
+    reasoning_content = message.get("reasoning_content")
+    reasoning = message.get("reasoning")
+    if isinstance(reasoning_content, str) and reasoning_content:
+        rendered["reasoning_content"] = reasoning_content
+    elif isinstance(reasoning, str) and reasoning:
+        rendered["reasoning"] = reasoning
+    return rendered
+
+
+def _render_history_event(message: dict) -> dict | None:
+    """Convert one structured timeline event into ephemeral provider context."""
+    if message.get("event_kind") != "incoming_reaction":
+        return None
+
+    actor_name = message.get("actor_name") or "кто-то"
+    quote = (message.get("target_excerpt") or "").strip()
+    target = f"твоё сообщение «{quote}»" if quote else "твоё сообщение"
+    changes = []
+    added = [str(emoji) for emoji in message.get("added") or [] if emoji]
+    removed = [str(emoji) for emoji in message.get("removed") or [] if emoji]
+    if added:
+        changes.append("добавлены " + ", ".join(added))
+    if removed:
+        changes.append("убраны " + ", ".join(removed))
+    if not changes:
+        return None
+
+    return {
+        "role": "system",
+        "content": (
+            f"Реакции от {actor_name} на {target}: {'; '.join(changes)}. "
+            "(это действие в чате, не текст)."
+        ),
+    }
+
+
 def render_history_for_api(history: list) -> list:
     """Render persisted history into an ephemeral provider payload."""
     mid_to_sid = _build_mid_to_sid(history)
     output = []
     for message in history:
         role = message.get("role")
+        if role == "event":
+            rendered_event = _render_history_event(message)
+            if rendered_event is not None:
+                output.append(rendered_event)
+            continue
+
         content = message.get("content", "")
         if isinstance(content, str) and content:
             content = strip_tiktok_urls(content)
@@ -55,13 +106,16 @@ def render_history_for_api(history: list) -> list:
         stickers = message.get("stickers") if role == "assistant" else None
         voices = message.get("voices") if role == "assistant" else None
         if not (reactions or incoming or stickers or voices):
-            output.append({"role": role, "content": content})
+            if role == "assistant":
+                output.append(_render_assistant_message(message, content))
+            else:
+                output.append({"role": role, "content": content})
             continue
 
         if content and not voices:
-            output.append({"role": "assistant", "content": content})
+            output.append(_render_assistant_message(message, content))
         elif content and voices and (reactions or stickers or incoming):
-            output.append({"role": "assistant", "content": content})
+            output.append(_render_assistant_message(message, content))
 
         notes = []
         if reactions:

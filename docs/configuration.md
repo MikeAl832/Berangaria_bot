@@ -55,6 +55,7 @@ Prompt texts live separately in `berangaria/prompts.py`.
 model: "x-ai/grok-4.6"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 chat_provider: "xai"
+chat_provider_fallbacks: ["amazon-bedrock"]
 chat_provider_allow_fallbacks: true
 max_context_tokens: 32000
 max_reply_tokens: 4096
@@ -68,19 +69,49 @@ generation_params:
 - `model`: OpenRouter model slug used for chat and summarization
 - `chat_api_url`: Chat Completions endpoint (`CHAT_API_URL` env override)
 - `chat_provider`: `auto` lets OpenRouter pick the host (price + uptime). Any other
-  value is the provider slug from the model page — for Grok 4.3 the direct host is
+  value is the provider slug from the model page — for Grok 4.6 the direct host is
   `xai`. Also `CHAT_PROVIDER` in `.env`.
-- `chat_provider_allow_fallbacks`: When a host is pinned, still try others if it is
-  down (`true`, shipped). Set `false` to fail rather than pay Bedrock's ~10% markup.
+- `chat_provider_fallbacks`: Allowed backup provider slugs (YAML list or comma-separated
+  `CHAT_PROVIDER_FALLBACKS`; shipped: `amazon-bedrock`). The primary plus these backups
+  are sent as `provider.only`, sorted by price, so `xai` remains primary without using
+  `provider.order`, which disables OpenRouter sticky prompt-cache routing.
+- `chat_provider_allow_fallbacks`: Include the configured backup hosts when the primary
+  is unavailable (`true`, shipped). Set `false` to restrict routing to `chat_provider`.
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters. Grok 4.3 accepts `reasoning.effort`
-  (`none` / `low` / `medium` / `high`); shipped chat uses `low`. Summarization still
-  sends `high` on its own request.
+- `generation_params`: Model sampling parameters. Grok 4.6 accepts `reasoning.effort`
+  (`low` / `medium` / `high` / `xhigh`) and cannot disable reasoning. Shipped chat uses
+  `temperature: 1.0` with `low`; summarization still sends `high` on its own request.
+
+`temperature: 1.0` is intentional: it is the project's preferred native sampling point
+for Grok 4.6, retaining intelligence while giving normal conversation more wit and
+variation. Do not lower it as a generic anti-hallucination measure. Turns that actually
+used `web_search` or `read_url` are cooled separately by `factual_temperature`.
+
+The shipped system prompt is likewise intentionally compact and uncensored. Do not add
+back exhaustive forbidden-phrase lists, anti-swearing/anti-insult rules, or step-by-step
+personality recipes for weaker models. Preserve the explicit security, metadata, memory,
+web-trust, and terminal-tool contracts while directing style positively through wit,
+banter, and jokes.
 
 OpenRouter drops parameters the upstream model does not support (for example
 `repetition_penalty` / `top_k` on OpenAI). Secret: `OPENROUTER_API_KEY` (or
 `CHAT_API_KEY`). DeepSeek `API_KEY` is still required for Mem0 extraction/verification.
+
+Each chat request also carries a deterministic, opaque `session_id` derived from the
+persisted history key. It contains no raw Telegram ID and keeps one conversation on a
+sticky OpenRouter endpoint. Completed assistant `reasoning_details` (or the legacy
+reasoning string when structured details are unavailable) are stored with the confirmed
+history turn and echoed back unmodified. They are never sent to Telegram, memory
+extraction, or the summarizer. Provider cache entries may still be evicted after an idle
+period; a cold request affects price and latency, not the conversation context.
+
+Persisted history also records whether each new row has crossed its first provider-send
+boundary. A user reaction is stored beside a newly delivered assistant reply until that
+reply is first sent back to the provider. Reactions to older or legacy replies become
+structured events at the history tail instead, leaving the previously rendered prompt
+prefix byte-for-byte unchanged. These event records are rendered as ephemeral system
+context and are excluded from long-term memory and summarization.
 
 ### Vision (Gemini)
 
@@ -245,7 +276,7 @@ multi_message_max_chars: 280
 multi_message_max_total_chars: 900
 multi_message_delay_min: 0.4
 multi_message_delay_max: 2.0
-multi_message_delay_total_cap: 5.0
+multi_message_delay_total_cap: 8.0
 sticker_enabled: true
 sticker_min_score: 0.25
 sticker_top_k: 8
@@ -313,16 +344,16 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 1.25
-price_prompt_cache_hit: 0.20
+price_prompt_cache_miss: 2.00
+price_prompt_cache_hit: 0.50
 price_prompt_cache_write: 0.00
-price_completion: 2.50
+price_completion: 6.00
 ```
 
 **Parameters (per 1M tokens):**
 - `price_prompt_cache_miss`: Regular input tokens
 - `price_prompt_cache_hit`: Cached input tokens (cache read)
-- `price_prompt_cache_write`: Tokens written into the prompt cache (0 for xAI; GPT-5.6 billed 1.25× input)
+- `price_prompt_cache_write`: Tokens written into the prompt cache (0 for the shipped xAI route; other providers may bill cache writes separately)
 - `price_completion`: Output tokens
 
 Shipped values are OpenRouter `x-ai/grok-4.6` list prices (prompts below 200K tokens).
@@ -443,11 +474,14 @@ Use `/summarize` command to compress chat history immediately.
 **Symptoms:** Unexpected OpenRouter charges
 
 **Solutions:**
-1. Check cache hit rate in logs (target: 70-90%)
+1. Check cache hit rate in logs (target: 70-90%); occasional cold requests after idle
+   eviction are normal
 2. Confirm the shipped `x-ai/grok-4.6` slug and that `generation_params.reasoning.effort` is `low`
-3. Reduce `max_context_tokens` if conversations too long
-4. Use `/summarize` to compress long chats
-5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
+3. Confirm requests retain their stable `session_id` and do not reintroduce
+   `provider.order`
+4. Reduce `max_context_tokens` if conversations are too long
+5. Use `/summarize` to compress long chats
+6. Re-check OpenRouter discount / `price_*` yaml if the promo ended
 
 ### Poor Memory Recall
 
@@ -518,7 +552,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `x-ai/grok-4.6` is the shipped chat model (`reasoning.effort: low`)
+- OpenRouter `x-ai/grok-4.6` is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -662,6 +696,7 @@ Berangaria_bot/
 
 - [OpenRouter API Docs](https://openrouter.ai/docs)
 - [Grok 4.6 on OpenRouter](https://openrouter.ai/x-ai/grok-4.6)
+- [Grok 4.6 on xAI](https://docs.x.ai/developers/grok-4-6)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)
