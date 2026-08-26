@@ -15,7 +15,7 @@
 # Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает.
 # Grok 4.6: reasoning.effort low|medium|high|xhigh (дефолт провайдера — high).
 "generation_params":
-  "temperature": 0.8
+  "temperature": 1.0
   "reasoning":
     "effort": "low"
 

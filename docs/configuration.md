@@ -59,7 +59,7 @@ chat_provider_allow_fallbacks: true
 max_context_tokens: 32000
 max_reply_tokens: 4096
 generation_params:
-  temperature: 0.8
+  temperature: 1.0
   reasoning:
     effort: low
 ```

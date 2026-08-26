@@ -45,10 +45,33 @@ def test_prompt_does_not_list_forbidden_catchphrases():
 
 
 def test_prompt_still_pushes_sticker_use():
-    assert (
-        "If none of your last several replies was a sticker, you are under-using them."
-        in SYSTEM_PROMPT
-    )
+    assert "Stickers are a normal, frequent reply" in SYSTEM_PROMPT
+    assert "under-using them" not in SYSTEM_PROMPT
+
+
+def test_prompt_does_not_force_one_liners_or_wit_xor_wisdom():
+    assert "1–3 short sentences" not in SYSTEM_PROMPT
+    assert "wit, not wisdom" not in SYSTEM_PROMPT
+    assert "Playful suspicion" not in SYSTEM_PROMPT
+    assert "Prefer short." in SYSTEM_PROMPT
+
+
+def test_prompt_does_not_ban_swearing_or_insults():
+    assert "never stoop to insults" not in SYSTEM_PROMPT
+    assert "never flat insults" not in SYSTEM_PROMPT
+    assert "not as filler" not in SYSTEM_PROMPT
+    assert "Swear naturally, including Russian мат" in SYSTEM_PROMPT
+
+
+def test_prompt_drops_dumb_model_cookbooks():
+    assert "YOUR GENDER IS STRICTLY FEMALE" not in SYSTEM_PROMPT
+    assert "feminine forms" in SYSTEM_PROMPT
+    assert "Always finish your thoughts" not in SYSTEM_PROMPT
+    assert "WHEN TO USE ONLY REACTION" not in SYSTEM_PROMPT
+    assert "GULLIBILITY" not in SYSTEM_PROMPT
+    assert "ROAST RULE" not in SYSTEM_PROMPT
+    assert "SELF-CALIBRATION" not in SYSTEM_PROMPT
+    assert "CRITICAL RULE:" not in SYSTEM_PROMPT
 
 
 def test_prompt_does_not_embed_clock_or_time_of_day():

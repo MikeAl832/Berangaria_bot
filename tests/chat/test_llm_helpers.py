@@ -638,7 +638,7 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
 
 def test_shipped_chat_model_is_grok_4_6_with_low_reasoning():
     assert MODEL == "x-ai/grok-4.6"
-    assert GENERATION_PARAMS.get("temperature") == 0.8
+    assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
 
 
