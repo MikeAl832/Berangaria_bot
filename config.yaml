@@ -9,8 +9,8 @@
 # Иначе slug с карточки: xai (прямой SpaceXAI), amazon-bedrock дороже на ~10%.
 "chat_provider": "xai"
 "chat_provider_allow_fallbacks": true     # если выбранный хостер лёг — пробовать остальных
-"max_context_tokens": 32000  # Максимальная история контекста
-"max_reply_tokens": 4096     # Максимальный размер ответа
+"max_context_tokens": 32000               # Максимальная история контекста
+"max_reply_tokens": 4096                  # Максимальный размер ответа
 
 # Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает.
 # Grok 4.6: reasoning.effort low|medium|high|xhigh (дефолт провайдера — high).
@@ -22,9 +22,9 @@
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.
 "factual_temperature": 0.4
-"streaming_enabled": true                  # Потоковые ответы чат-модели и Telegram preview
-"stream_update_interval_seconds": 0.8      # Не чаще одного обновления preview за этот интервал
-"stream_preview_min_chars": 12             # Не показывать первые слишком короткие обрывки ответа
+"streaming_enabled": true                 # Потоковые ответы чат-модели и Telegram preview
+"stream_update_interval_seconds": 0.8     # Не чаще одного обновления preview за этот интервал
+"stream_preview_min_chars": 12            # Не показывать первые слишком короткие обрывки ответа
 
 # ========================================
 # 👁️ VISION (Распознавание картинок/видео)
@@ -53,7 +53,7 @@
 "memory_flush_interval_seconds": 900     # Периодический retry SQLite-очереди памяти
 "memory_query_min_chars": 12             # Минимальная содержательная длина query для поиска по памяти
 "memory_query_recent_messages": 3        # Сколько последних содержательных сообщений объединять для memory search
-"memory_queue_batch_size": 20             # Сколько сообщений-источников проверять за один проход
+"memory_queue_batch_size": 20            # Сколько сообщений-источников проверять за один проход
 "memory_waiting_max_age_seconds": 1800   # Через сколько секунд зависший в waiting источник хоронится
 "memory_source_retention_seconds": 2592000  # Сколько хранить завершённые строки очереди источников (30 дней)
 "max_buffered_messages": 30              # Потолок склейки debounce-буфера по числу сообщений
@@ -106,7 +106,7 @@
 # ========================================
 # ⚙️ ПОВЕДЕНИЕ БОТА
 # ========================================
-"bot_names": ["Бер", "Ber"]             # Имена на которые откликается бот
+"bot_names": ["Бер", "Ber"]              # Имена на которые откликается бот
 "random_reply_chance": 10                # Шанс случайного ответа в группе (%)
 "summary_interval": 10                   # Сколько сообщений оставить после сжатия истории
 "timezone": "Europe/Moscow"              # Часовой пояс бота (Time-теги, строка даты в payload, cron суммаризации)
@@ -120,12 +120,12 @@
 "log_file": "bot.log"                    # Путь к файлу логов при локальном запуске; Docker переопределяет на /data/bot.log
 "log_max_bytes": 10485760                # Размер одного файла лога до ротации (10 МБ)
 "log_backup_count": 5                    # Сколько архивных файлов лога хранить
-"log_message_preview_chars": 400          # Сколько символов входящего текста показывать в INFO-логе
+"log_message_preview_chars": 400         # Сколько символов входящего текста показывать в INFO-логе
 
 # ========================================
 # 🔐 ДОСТУП (Telegram ID)
 # ========================================
-"allowed_users": [1217938322, 1809564460]  # Первый ID — владелец/создатель бота
+"allowed_users": [1217938322, 1809564460] # Первый ID — владелец/создатель бота
 "allowed_groups": [-1002263830880]
 "admin_alert_chat_id": null              # null = личка owner; укажи chat id для другого места
 
