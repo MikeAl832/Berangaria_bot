@@ -57,6 +57,13 @@ def test_prompt_does_not_embed_clock_or_time_of_day():
     assert "time_of_day" not in SYSTEM_PROMPT
 
 
+def test_prompt_forbids_faking_multi_bubbles_with_blank_lines():
+    assert "Never fake a messenger burst with a blank line" in SYSTEM_PROMPT
+    assert "two or more beats" in SYSTEM_PROMPT
+    assert "Cap is 5 bubbles" in SYSTEM_PROMPT
+    assert 'send_messages(["…", "…"])' in SYSTEM_PROMPT
+
+
 def test_memory_text_keeps_only_user_text():
     assert _build_memory_text("Я использую Fedora") == "Я использую Fedora"
 

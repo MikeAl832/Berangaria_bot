@@ -124,7 +124,7 @@ CHAT_API_REFERER = _str_setting(
     "https://github.com/MikeAl832/Berangaria_bot",
 )
 CHAT_API_TITLE = _str_setting("CHAT_API_TITLE", "chat_api_title", "Berangaria")
-MODEL = config_yaml.get("model", "x-ai/grok-4.6")
+MODEL = config_yaml.get("model", "x-ai/grok-4.3")
 
 
 def _normalize_chat_provider(raw: object) -> str:
@@ -310,7 +310,7 @@ WEB_SEARCH_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("web_search_max_per
 # 💬 MULTI-MESSAGE REPLIES (send_messages)
 # ========================================
 # Caps for the terminal send_messages tool: natural short bursts, not spam.
-MULTI_MESSAGE_MAX = max(2, min(_as_int(config_yaml.get("multi_message_max", 3), 3), 5))
+MULTI_MESSAGE_MAX = max(2, min(_as_int(config_yaml.get("multi_message_max", 5), 5), 5))
 MULTI_MESSAGE_MAX_CHARS = max(
     40, min(_as_int(config_yaml.get("multi_message_max_chars", 280), 280), 1000)
 )
@@ -455,11 +455,11 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match OpenRouter x-ai/grok-4.6 list prices (no separate cache-write meter).
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 2.00)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.50)
+# Defaults match OpenRouter x-ai/grok-4.3 list prices (no separate cache-write meter).
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 1.25)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.20)
 PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.00)
-PRICE_COMPLETION = config_yaml.get("price_completion", 6.00)
+PRICE_COMPLETION = config_yaml.get("price_completion", 2.50)
 
 
 def chat_api_headers() -> dict[str, str]:

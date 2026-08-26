@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `x-ai/grok-4.6` (chat and summarization; `reasoning.effort: low`)
+- **Main LLM**: OpenRouter `x-ai/grok-4.3` (chat and summarization; `reasoning.effort: none`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -93,7 +93,7 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: OpenRouter model slug (shipped: `x-ai/grok-4.6`)
+- `model`: OpenRouter model slug (shipped: `x-ai/grok-4.3`)
 - `chat_provider`: `auto` or a host slug from the model page (`xai` = SpaceXAI; Bedrock is ~10% more)
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
@@ -224,11 +224,11 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `x-ai/grok-4.6` (per 1M tokens, prompts below 200K)
-- Regular input: $2.00
-- Cached input: $0.50
+### OpenRouter `x-ai/grok-4.3` (per 1M tokens, prompts below 200K)
+- Regular input: $1.25
+- Cached input: $0.20
 - Cache write: not billed separately by xAI
-- Output: $6.00
+- Output: $2.50
 - OpenRouter `usage.cost` is preferred when the provider returns it
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
@@ -242,7 +242,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Grok 4.6 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: low`)
+- **Grok 4.3 via OpenRouter**: shipped chat/summarization model (`reasoning.effort: none`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
 

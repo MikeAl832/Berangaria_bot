@@ -587,7 +587,7 @@ async def send_llm_request(
                                     pass
                         return
 
-                    # send_messages — terminal burst (2–3 short bubbles + typing pauses).
+                    # send_messages — terminal burst (2–5 short bubbles + typing pauses).
                     if turn.pending_messages:
                         messages = list(turn.pending_messages)
                         turn.pending_messages = None

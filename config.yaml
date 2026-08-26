@@ -2,8 +2,8 @@
 # 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter)
 # ========================================
 # Чат и суммаризация идут на OpenRouter. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
-# Эксперимент: Grok 4.6. Reasoning нельзя выключить; low — чтобы группа не ждала thinking.
-"model": "x-ai/grok-4.6"
+# Эксперимент: Grok 4.3. Reasoning можно none/low/medium/high (дефолт low); none — дешевле и быстрее.
+"model": "x-ai/grok-4.3"
 "chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
 # Хостер модели на OpenRouter. auto = сам выбирает (цена+uptime).
 # Иначе slug с карточки: xai (прямой SpaceXAI), amazon-bedrock дороже на ~10%.
@@ -13,11 +13,11 @@
 "max_reply_tokens": 4096                  # Максимальный размер ответа
 
 # Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает.
-# Grok 4.6: reasoning.effort low|medium|high|xhigh (дефолт провайдера — high).
+# Grok 4.3: reasoning.effort none|low|medium|high (дефолт провайдера — low).
 "generation_params":
   "temperature": 0.8
   "reasoning":
-    "effort": "low"
+    "effort": "none"
 
 # Temperature for factual answers after a search / link read (lower = fewer hallucinations).
 # Applied only after web_search/read_url — stickers and reactions no longer trigger it.
@@ -95,12 +95,12 @@
 # ========================================
 # 💬 MULTI-MESSAGE (send_messages tool)
 # ========================================
-"multi_message_max": 3                   # Max bubbles per burst (min 2 enforced in code)
+"multi_message_max": 5                   # Max bubbles per burst (min 2 enforced in code)
 "multi_message_max_chars": 280           # Max characters per bubble
-"multi_message_max_total_chars": 600     # Max total characters across the burst
+"multi_message_max_total_chars": 900     # Max total characters across the burst
 "multi_message_delay_min": 0.4           # Min pause between bubbles (seconds)
 "multi_message_delay_max": 2.0           # Max pause between bubbles (seconds)
-"multi_message_delay_total_cap": 5.0     # Cap on sum of all inter-bubble pauses
+"multi_message_delay_total_cap": 8.0     # Cap on sum of all inter-bubble pauses
 "multi_message_chars_per_sec": 28.0      # Scales pause by message length (typing feel)
 
 # ========================================
@@ -144,9 +144,9 @@
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# x-ai/grok-4.6 на OpenRouter: вход $2 / кэш $0.50 / выход $6 (ниже 200K prompt).
+# x-ai/grok-4.3 на OpenRouter: вход $1.25 / кэш $0.20 / выход $2.50 (ниже 200K prompt).
 # У xAI нет отдельного cache-write тарифа. Если OpenRouter вернул usage.cost — берём его.
-"price_prompt_cache_miss": 2.00          # Обычные входные токены
-"price_prompt_cache_hit": 0.50           # Прочитанные из кэша
+"price_prompt_cache_miss": 1.25          # Обычные входные токены
+"price_prompt_cache_hit": 0.20           # Прочитанные из кэша
 "price_prompt_cache_write": 0.00         # xAI не тарифицирует запись в кэш отдельно
-"price_completion": 6.00                 # Выходные токены
+"price_completion": 2.50                 # Выходные токены

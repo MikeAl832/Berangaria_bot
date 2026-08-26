@@ -52,7 +52,7 @@ Prompt texts live separately in `berangaria/prompts.py`.
 ### Main LLM (OpenRouter)
 
 ```yaml
-model: "x-ai/grok-4.6"
+model: "x-ai/grok-4.3"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 chat_provider: "xai"
 chat_provider_allow_fallbacks: true
@@ -61,22 +61,22 @@ max_reply_tokens: 4096
 generation_params:
   temperature: 0.8
   reasoning:
-    effort: low
+    effort: none
 ```
 
 **Parameters:**
 - `model`: OpenRouter model slug used for chat and summarization
 - `chat_api_url`: Chat Completions endpoint (`CHAT_API_URL` env override)
 - `chat_provider`: `auto` lets OpenRouter pick the host (price + uptime). Any other
-  value is the provider slug from the model page — for Grok 4.6 the direct host is
+  value is the provider slug from the model page — for Grok 4.3 the direct host is
   `xai`. Also `CHAT_PROVIDER` in `.env`.
 - `chat_provider_allow_fallbacks`: When a host is pinned, still try others if it is
   down (`true`, shipped). Set `false` to fail rather than pay Bedrock's ~10% markup.
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters. Grok 4.6 requires `reasoning.effort`
-  (`low` / `medium` / `high` / `xhigh`); the provider default is `high`, which is too
-  slow and expensive for group chat. Summarization still sends `high` on its own request.
+- `generation_params`: Model sampling parameters. Grok 4.3 accepts `reasoning.effort`
+  (`none` / `low` / `medium` / `high`); shipped chat uses `none`. Summarization still
+  sends `high` on its own request.
 
 OpenRouter drops parameters the upstream model does not support (for example
 `repetition_penalty` / `top_k` on OpenAI). Secret: `OPENROUTER_API_KEY` (or
@@ -240,9 +240,9 @@ log_message_preview_chars: 400
 ```yaml
 factual_temperature: 0.4
 web_search_max_per_turn: 2
-multi_message_max: 3
+multi_message_max: 5
 multi_message_max_chars: 280
-multi_message_max_total_chars: 600
+multi_message_max_total_chars: 900
 multi_message_delay_min: 0.4
 multi_message_delay_max: 2.0
 multi_message_delay_total_cap: 5.0
@@ -264,7 +264,7 @@ sticker_index_version: 3
   (10/min in `berangaria/tools/web.py`) is process-global, so one runaway turn would otherwise
   break search for every chat. On overflow the tool returns a refusal telling the model to answer
   with what it already has.
-- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–3 short
+- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–5 short
   Telegram bubbles with `typing` between them). Delays scale with bubble length and are capped by
   `multi_message_delay_total_cap`. Mutex with `reply_to_message` and `send_sticker`.
 - `sticker_min_score`: Vector-score floor for sticker search. Below it a sticker is not offered.
@@ -313,10 +313,10 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 2.00
-price_prompt_cache_hit: 0.50
+price_prompt_cache_miss: 1.25
+price_prompt_cache_hit: 0.20
 price_prompt_cache_write: 0.00
-price_completion: 6.00
+price_completion: 2.50
 ```
 
 **Parameters (per 1M tokens):**
@@ -325,7 +325,7 @@ price_completion: 6.00
 - `price_prompt_cache_write`: Tokens written into the prompt cache (0 for xAI; GPT-5.6 billed 1.25× input)
 - `price_completion`: Output tokens
 
-Shipped values are OpenRouter `x-ai/grok-4.6` list prices (prompts below 200K tokens).
+Shipped values are OpenRouter `x-ai/grok-4.3` list prices (prompts below 200K tokens).
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
 Update the yaml prices when the model slug changes.
 
@@ -444,7 +444,7 @@ Use `/summarize` command to compress chat history immediately.
 
 **Solutions:**
 1. Check cache hit rate in logs (target: 70-90%)
-2. Confirm the shipped `x-ai/grok-4.6` slug and that `generation_params.reasoning.effort` is `low`
+2. Confirm the shipped `x-ai/grok-4.3` slug and that `generation_params.reasoning.effort` is `none`
 3. Reduce `max_context_tokens` if conversations too long
 4. Use `/summarize` to compress long chats
 5. Re-check OpenRouter discount / `price_*` yaml if the promo ended
@@ -518,7 +518,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `x-ai/grok-4.6` is the shipped chat model (`reasoning.effort: low`)
+- OpenRouter `x-ai/grok-4.3` is the shipped chat model (`reasoning.effort: none`)
 
 ## Advanced Configuration
 
@@ -661,7 +661,7 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter API Docs](https://openrouter.ai/docs)
-- [Grok 4.6 on OpenRouter](https://openrouter.ai/x-ai/grok-4.6)
+- [Grok 4.3 on OpenRouter](https://openrouter.ai/x-ai/grok-4.3)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)

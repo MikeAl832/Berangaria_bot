@@ -437,7 +437,7 @@ def sanitize_multi_messages(raw) -> list[str] | str:
         str — human-readable причина отказа (для tool result).
     """
     if not isinstance(raw, list):
-        return "messages должен быть массивом строк (2–3 коротких сообщения)."
+        return "messages должен быть массивом строк (2–5 коротких сообщений)."
 
     cleaned: list[str] = []
     total = 0
