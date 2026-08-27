@@ -1,6 +1,8 @@
 import asyncio
+from types import SimpleNamespace
 
 from berangaria.chat import handlers
+from berangaria.core import state
 
 
 class _ForbiddenMediaMessage:
@@ -83,3 +85,18 @@ def test_owner_bypasses_user_and_group_allowlists(monkeypatch):
     assert handlers._check_access_permissions(-100, 2, True)
     assert not handlers._check_access_permissions(100, 3, False)
     assert not handlers._check_access_permissions(-100, 3, True)
+
+
+def test_group_media_invalidates_older_ambient_candidate(monkeypatch):
+    monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-100])
+    stale_token = state.record_group_activity(-100)
+    update = SimpleNamespace(
+        message=SimpleNamespace(),
+        effective_chat=SimpleNamespace(id=-100, type="supergroup"),
+        effective_user=SimpleNamespace(id=2),
+    )
+    context = SimpleNamespace(bot=SimpleNamespace(id=999))
+
+    handlers._record_incoming_media_activity(update, context)
+
+    assert not state.is_latest_group_activity(-100, stale_token)

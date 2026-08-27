@@ -79,7 +79,7 @@ def test_bridge_queue_no_memory_and_bot_author(monkeypatch, isolated_db):
         llm_calls.append(args)
 
     monkeypatch.setattr(handlers, "send_llm_request", _fake_llm)
-    monkeypatch.setattr(handlers, "should_reply_randomly", lambda chat_id: False)
+    monkeypatch.setattr(handlers, "should_reply_randomly", lambda *args: False)
 
     update = _Update(text="hey Ber whats up")
     context = SimpleNamespace(bot=_Bot())
@@ -109,6 +109,7 @@ def test_bridge_queue_no_memory_and_bot_author(monkeypatch, isolated_db):
     assert content.startswith("[Bot: OtherBot]")
     assert "[Message: hey Ber whats up]" in content
     assert llm_calls, "mention of Ber should trigger LLM"
+    assert -1002263830880 in state.bot_presence_started_at
 
 
 def test_bridge_queue_refuses_non_allowed_group(monkeypatch, isolated_db):
@@ -131,7 +132,7 @@ def test_bridge_queue_skips_memory_on_text_only_bot_chat(monkeypatch, isolated_d
     """Even with text that looks like a personal fact, no memory source."""
     monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-1002263830880])
     monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
-    monkeypatch.setattr(handlers, "should_reply_randomly", lambda chat_id: False)
+    monkeypatch.setattr(handlers, "should_reply_randomly", lambda *args: False)
 
     # No mention / no random → still history, no LLM required.
     update = _Update(text="I live in Paris forever")

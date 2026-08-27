@@ -347,7 +347,10 @@ def main():
     memory_store.initialize_memory(attempts=10, delay_seconds=2.0)
     runtime_settings = state.load_runtime_settings(default_random_reply_chance=RANDOM_REPLY_CHANCE)
     loaded_chats = state.load_all_histories()
-    logger.info(f"⚙️ [green]Runtime-настройки загружены:[/] random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]")
+    logger.info(
+        "⚙️ [green]Runtime-настройки загружены:[/] "
+        f"base_random_reply_chance=[yellow]{runtime_settings.random_reply_chance}%[/]"
+    )
     logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
 
     if TELEGRAM_BOT_API_BASE_URL:
@@ -359,7 +362,9 @@ def main():
     app = build_telegram_application()
     register_handlers(app)
 
-    logger.info(f"🎲 Шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]")
+    logger.info(
+        f"🎲 Базовый шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]"
+    )
     logger.info(f"🧠 Чат-модель: [cyan]{MODEL}[/] ([magenta]{CHAT_API_URL}[/])")
     if CHAT_PROVIDER == "auto":
         logger.info("🧭 OpenRouter provider: [cyan]auto[/]")

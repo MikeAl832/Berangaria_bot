@@ -236,7 +236,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Ответить на моё сообщение (reply)\n"
             f"• Написать @{context.bot.username}\n"
             f"• Назвать меня {context.bot.first_name}\n\n"
-            f"🎲 Шанс случайного ответа: {state.random_reply_chance}%\n"
+            f"🎲 Базовый шанс случайного ответа: {state.random_reply_chance}%\n"
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
@@ -272,7 +272,10 @@ async def random_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text(f"Текущий шанс: {state.random_reply_chance}%\nИспользуйте: /random 0-100")
+        await update.message.reply_text(
+            f"Текущий базовый шанс: {state.random_reply_chance}%\n"
+            "Фактический шанс зависит от активности чата. Используйте: /random 0-100"
+        )
         return
 
     try:
@@ -282,7 +285,7 @@ async def random_chance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         saved_chance = state.set_random_reply_chance(new_chance)
-        await update.message.reply_text(f"✅ Шанс изменён на {saved_chance}%")
+        await update.message.reply_text(f"✅ Базовый шанс изменён на {saved_chance}%")
 
     except ValueError:
         await update.message.reply_text("Укажите число от 0 до 100")
@@ -407,7 +410,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Сообщений в истории: {msg_count}\n"
         f"Токенов (с учетом системного промпта): {token_count}/{MAX_CONTEXT_TOKENS}\n"
         f"Вызовов API: {api_call_count.get(key, 0)}\n"
-        f"🎲 Шанс случайного ответа: {state.random_reply_chance}%"
+        f"🎲 Базовый шанс случайного ответа: {state.random_reply_chance}%"
     )
 
 
@@ -528,7 +531,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
-async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool, random_reply: bool):
+async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool):
     await message_queue.process_buffered_messages(
         buffer_key,
         update,
@@ -538,7 +541,6 @@ async def process_buffered_messages(buffer_key: str, update: Update, context: Co
         user_id,
         user_name,
         mentioned,
-        random_reply,
         _queue_runtime(),
     )
 
@@ -636,7 +638,6 @@ async def _enqueue_buffered(
     user_id: int,
     user_name: str,
     mentioned: bool,
-    random_reply: bool,
 ):
     await message_queue.enqueue_buffered(
         buffer_key=buffer_key,
@@ -648,7 +649,6 @@ async def _enqueue_buffered(
         user_id=user_id,
         user_name=user_name,
         mentioned=mentioned,
-        random_reply=random_reply,
         runtime=_queue_runtime(),
     )
 
@@ -726,6 +726,9 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not _check_access_permissions(chat_id, user_id, is_group):
         return
+
+    # Событие означает, что чат не пустует, и отменяет более ранний ambient-кандидат.
+    state.record_group_activity(chat_id)
 
     # Описываем событие
     media_desc = None
@@ -865,10 +868,6 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     is_group = mr.chat.type in ['group', 'supergroup']
     key = get_history_key(chat_id, not is_group, mr.user.id)
 
-    history = histories.get(key)
-    if not history:
-        return
-
     def _emojis(reaction_tuple):
         return [r.emoji for r in (reaction_tuple or []) if isinstance(r, ReactionTypeEmoji)]
 
@@ -878,6 +877,15 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     removed = [e for e in old_e if e not in new_e]
     if not added and not removed:
         return  # изменились только кастом/платные реакции — нам нечего записывать
+
+    if is_group:
+        # Даже реакция на человеческую реплику, которую мы не пишем в prompt,
+        # означает: сообщение не осталось без внимания.
+        state.record_group_activity(chat_id)
+
+    history = histories.get(key)
+    if not history:
+        return
 
     name = mr.user.first_name
     async with get_turn_lock(key):
@@ -928,19 +936,35 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         logger.info(f"🚫 [dim]Сняли реакцию с сообщения бота:[/] {' '.join(removed)} ({name})")
 
 
+def _record_incoming_media_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сразу отменяет старый ambient-кандидат, пока медиа ещё анализируется."""
+    message = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if message is None or chat is None or user is None or user.id == context.bot.id:
+        return
+    is_group = chat.type in ["group", "supergroup"]
+    if is_group and _check_access_permissions(chat.id, user.id, True):
+        state.record_group_activity(chat.id)
+
+
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _record_incoming_media_activity(update, context)
     await media_handlers.handle_media(update, context, _media_runtime())
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _record_incoming_media_activity(update, context)
     await media_handlers.handle_video(update, context, _media_runtime())
 
 
 async def handle_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _record_incoming_media_activity(update, context)
     await media_handlers.handle_sticker(update, context, _media_runtime())
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _record_incoming_media_activity(update, context)
     await media_handlers.handle_voice(update, context, _media_runtime())
 
 

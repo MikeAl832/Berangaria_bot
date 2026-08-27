@@ -46,7 +46,7 @@ class QueueRuntime:
     extract_reply_context: Callable[[Any], tuple[str | None, str | None]]
     log_message_preview: Callable[[str], str]
     is_bot_mentioned: Callable[..., tuple[bool, str]]
-    should_reply_randomly: Callable[[int], bool]
+    should_reply_randomly: Callable[..., bool]
     enqueue_memory_source: Callable[..., int]
     release_memory_sources: Callable[[list[int | None]], Any]
     abandon_memory_sources: Callable[[list[int | None]], Any]
@@ -63,7 +63,6 @@ async def process_buffered_messages(
     user_id: int,
     user_name: str,
     mentioned: bool,
-    random_reply: bool,
     runtime: QueueRuntime,
 ) -> None:
     """Commit one debounce buffer to history and optionally run an LLM turn."""
@@ -122,6 +121,7 @@ async def process_buffered_messages(
             if key not in histories:
                 histories[key] = []
             history = histories[key]
+            previous_history = list(history)
             next_sid = max(
                 (message.get("sid", 0) for message in history), default=0
             ) + 1
@@ -143,25 +143,36 @@ async def process_buffered_messages(
             touch_activity(key)
             state.save_history(key)
 
-        if not (mentioned or random_reply):
-            return
-        if (
-            random_reply
-            and not mentioned
-            and not media_items
-            and is_low_signal_user_text(combined_text)
-        ):
-            logger.info(
-                "🤫 [dim]Ambient пропущен (low-signal):[/] %r (ключ=%s)",
-                (combined_text or "")[:60],
-                key,
-            )
-            return
+        if not mentioned:
+            # Не тратим вероятность/cooldown на мусорную реплику: этот gate
+            # должен сработать раньше случайного выбора и тем более LLM-вызова.
+            if not media_items and is_low_signal_user_text(combined_text):
+                logger.info(
+                    "🤫 [dim]Ambient пропущен (low-signal):[/] %r (ключ=%s)",
+                    (combined_text or "")[:60],
+                    key,
+                )
+                return
+
+            activity_token = messages[-1].get("group_activity_token")
+            current_created_at = messages[-1].get("created_at")
+            if not runtime.should_reply_randomly(
+                update.effective_chat.id,
+                activity_token,
+                previous_history,
+                current_created_at,
+            ):
+                return
+
         if mentioned:
             await update.message.chat.send_action(action="typing")
         await runtime.send_llm_request(
             update, context, key, history, user_name, user_id, mentioned
         )
+        if is_group and mentioned:
+            # Только подтверждённый LLM-ход означает, что Бер действительно
+            # «зашла в чат». Ошибка до доставки не включает presence boost.
+            state.mark_bot_present(update.effective_chat.id)
 
 
 async def queue_message(
@@ -193,9 +204,12 @@ async def queue_message(
     forward_info = runtime.extract_forward_info(update.message)
 
     mentioned, _ = runtime.is_bot_mentioned(update, context)
-    random_reply = runtime.should_reply_randomly(chat_id) if is_group else False
     if not is_group:
         mentioned = True
+
+    group_activity_token = (
+        state.record_group_activity(chat_id) if is_group else None
+    )
 
     msg_data = {
         "text": text,
@@ -214,6 +228,7 @@ async def queue_message(
         "author_kind": (
             "Owner" if user_id == runtime.owner_user_id else "User"
         ),
+        "group_activity_token": group_activity_token,
     }
     memory_text = runtime.build_memory_text(
         original_text, is_forwarded=forward_info is not None
@@ -257,7 +272,6 @@ async def queue_message(
         user_id=user_id,
         user_name=user_name,
         mentioned=mentioned,
-        random_reply=random_reply,
         runtime=runtime,
     )
 
@@ -308,7 +322,7 @@ async def queue_bridge_bot_message(
         reply_to_user_id=reply_to_user_id,
         bot_names=BOT_NAMES,
     )
-    random_reply = runtime.should_reply_randomly(chat_id)
+    group_activity_token = state.record_group_activity(chat_id)
     if not text and not media_description:
         return
 
@@ -326,6 +340,7 @@ async def queue_bridge_bot_message(
         "created_at": created_at if created_at is not None else time.time(),
         "author_kind": "Bot",
         "memory_source_id": None,
+        "group_activity_token": group_activity_token,
     }
     logger.info(
         "👀 [[blue]bridge | %s[/]] [magenta]%s[/]: %s",
@@ -354,7 +369,6 @@ async def queue_bridge_bot_message(
         user_id=user_id,
         user_name=user_name,
         mentioned=mentioned,
-        random_reply=random_reply,
         runtime=runtime,
     )
 
@@ -370,7 +384,6 @@ async def enqueue_buffered(
     user_id: int,
     user_name: str,
     mentioned: bool,
-    random_reply: bool,
     runtime: QueueRuntime,
 ) -> None:
     """Atomically append to a debounce buffer and schedule its flush."""
@@ -396,7 +409,6 @@ async def enqueue_buffered(
                     user_id,
                     user_name,
                     data["mentioned"],
-                    data["random_reply"],
                 )
                 runtime.release_memory_sources(source_ids)
         except asyncio.CancelledError:
@@ -411,8 +423,6 @@ async def enqueue_buffered(
             message_buffer[buffer_key]["messages"].append(msg_data)
             if mentioned:
                 message_buffer[buffer_key]["mentioned"] = True
-            if random_reply:
-                message_buffer[buffer_key]["random_reply"] = True
 
             buffered = message_buffer[buffer_key]["messages"]
             buffered_chars = sum(
@@ -436,7 +446,6 @@ async def enqueue_buffered(
             message_buffer[buffer_key] = {
                 "messages": [msg_data],
                 "mentioned": mentioned,
-                "random_reply": random_reply,
             }
         message_buffer[buffer_key]["task"] = asyncio.create_task(
             wait_and_process()

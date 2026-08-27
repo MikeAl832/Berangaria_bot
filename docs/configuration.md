@@ -230,6 +230,10 @@ message_debounce_seconds: 4.0
 max_buffered_messages: 30
 max_buffered_chars: 20000
 random_reply_cooldown: 10
+random_reply_recent_window_seconds: 120
+random_reply_idle_target_seconds: 600
+random_reply_presence_seconds: 600
+random_reply_presence_multiplier: 2.0
 admin_mode: false
 streaming_enabled: true
 stream_update_interval_seconds: 0.8
@@ -245,7 +249,7 @@ log_message_preview_chars: 400
 
 **Parameters:**
 - `bot_names`: Names that trigger bot responses in groups
-- `random_reply_chance`: Default probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts.
+- `random_reply_chance`: Base probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts. The effective probability is calculated before an LLM call as `base × idle_factor × presence_factor / (1 + 0.5 × recent_turns)`. `idle_factor` grows linearly from `0.1` to `3.0` as the gap since the previous group turn approaches `random_reply_idle_target_seconds`. After Ber successfully answers an explicit mention/reply, `presence_factor` starts at `random_reply_presence_multiplier` and linearly decays to `1.0`. A candidate is discarded when a newer message, group event, or emoji reaction arrives during the debounce window. Values `0` and `100` retain their explicit off/on meaning after these activity and cooldown gates.
 - `summary_interval`: Messages preserved after summarization
 - `timezone`: Bot timezone for `[Time:]` tags, the separate calendar-date line in the chat payload, and scheduled summarization (default `Europe/Moscow`)
 - `summary_hours`: Local hours when automatic history compression runs (shipped: `[5]` → 05:00; default if omitted: `[5, 14]`)
@@ -254,6 +258,10 @@ log_message_preview_chars: 400
   restarts the debounce window, so without a budget a continuous stream merges into a single
   unbounded history entry. On reaching either limit the buffer is flushed instead of extended.
 - `random_reply_cooldown`: Minimum interval between random replies (seconds)
+- `random_reply_recent_window_seconds`: Window used to count recent group turns. Dense human conversation lowers the effective chance.
+- `random_reply_idle_target_seconds`: Gap at which the idle multiplier reaches its maximum of `3.0` (30% with the shipped 10% base).
+- `random_reply_presence_seconds`: How long the temporary post-ping presence boost decays. `0` disables this boost.
+- `random_reply_presence_multiplier`: Effective-chance multiplier immediately after Ber successfully responds to a group ping. It decays linearly to `1.0` during the presence window.
 - `admin_mode`: Restrict management commands to group admins
 - `streaming_enabled`: Enable chat-model SSE and private-chat Telegram draft previews; group chats receive one final message
 - `stream_update_interval_seconds`: Minimum delay between private Telegram draft updates; clamped to 0.25-5 seconds

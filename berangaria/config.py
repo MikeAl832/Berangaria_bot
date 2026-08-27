@@ -381,6 +381,34 @@ RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
 MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
+RANDOM_REPLY_RECENT_WINDOW_SECONDS = max(
+    1.0,
+    min(
+        _as_float(config_yaml.get("random_reply_recent_window_seconds", 120), 120),
+        3600.0,
+    ),
+)
+RANDOM_REPLY_IDLE_TARGET_SECONDS = max(
+    RANDOM_REPLY_RECENT_WINDOW_SECONDS,
+    min(
+        _as_float(config_yaml.get("random_reply_idle_target_seconds", 600), 600),
+        86400.0,
+    ),
+)
+RANDOM_REPLY_PRESENCE_SECONDS = max(
+    0.0,
+    min(
+        _as_float(config_yaml.get("random_reply_presence_seconds", 600), 600),
+        86400.0,
+    ),
+)
+RANDOM_REPLY_PRESENCE_MULTIPLIER = max(
+    1.0,
+    min(
+        _as_float(config_yaml.get("random_reply_presence_multiplier", 2.0), 2.0),
+        5.0,
+    ),
+)
 ADMIN_MODE = config_yaml.get("admin_mode", False)
 
 # Часовой пояс бота (метки [Time:], отдельная строка даты в payload, автосуммаризация)

@@ -24,6 +24,16 @@ histories: Dict[str, HistoryList] = {}
 # Тайм-ауты для рандомных ответов
 random_reply_cooldown: Dict[int, float] = {}
 
+# Версия последней человеческой активности в группе. Каждый новый message/event
+# получает монотонный token; ambient-кандидат отвечает только если к моменту
+# debounce он всё ещё последний. Это отсекает встревания, когда собеседник уже
+# успел ответить или поставить реакцию.
+group_activity_versions: Dict[int, int] = {}
+
+# Момент последнего успешного ответа Бер на явный групповой пинг. Состояние
+# намеренно только runtime: после рестарта бот снова считается «не в комнате».
+bot_presence_started_at: Dict[int, float] = {}
+
 DEFAULT_RANDOM_REPLY_CHANCE = 10
 MEMORY_SOURCE_MAX_ATTEMPTS = 5
 _MEMORY_SCOPE_RE = re.compile(r"^(?:private|group)_-?\d+$")
@@ -86,6 +96,32 @@ class MemoryFactWrite:
 
 # Изменяемый шанс случайного ответа (для команды /random)
 random_reply_chance: int = DEFAULT_RANDOM_REPLY_CHANCE  # загружается из config/БД при старте
+
+
+def record_group_activity(chat_id: int) -> int:
+    """Регистрирует групповую активность и возвращает token этой активности."""
+    token = group_activity_versions.get(chat_id, 0) + 1
+    group_activity_versions[chat_id] = token
+    return token
+
+
+def is_latest_group_activity(chat_id: int, token: int | None) -> bool:
+    """True, если после token в группе не было новой наблюдаемой активности."""
+    return token is not None and group_activity_versions.get(chat_id) == token
+
+
+def mark_bot_present(chat_id: int, *, now: float | None = None) -> None:
+    """Начинает или продлевает окно присутствия после успешного ответа на пинг."""
+    bot_presence_started_at[chat_id] = time.monotonic() if now is None else now
+
+
+def get_bot_presence_age(chat_id: int, *, now: float | None = None) -> float | None:
+    """Возвращает возраст текущего runtime-окна присутствия в секундах."""
+    started_at = bot_presence_started_at.get(chat_id)
+    if started_at is None:
+        return None
+    current = time.monotonic() if now is None else now
+    return max(0.0, current - started_at)
 
 # Последнее известное количество токенов для чата (из API)
 chat_tokens: Dict[str, int] = {}

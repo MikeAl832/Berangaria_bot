@@ -5,15 +5,37 @@ import base64
 import os
 import tempfile
 import logging
+import math
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Tuple, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
-from berangaria.config import BOT_NAMES, RANDOM_REPLY_COOLDOWN, BOT_TZ, SUMMARY_HOURS
+from berangaria.config import (
+    BOT_NAMES,
+    RANDOM_REPLY_COOLDOWN,
+    RANDOM_REPLY_IDLE_TARGET_SECONDS,
+    RANDOM_REPLY_PRESENCE_MULTIPLIER,
+    RANDOM_REPLY_PRESENCE_SECONDS,
+    RANDOM_REPLY_RECENT_WINDOW_SECONDS,
+    BOT_TZ,
+    SUMMARY_HOURS,
+)
 from berangaria.core.state import random_reply_cooldown
 from berangaria.core import state
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RandomReplyProbability:
+    """Рассчитанный шанс и сигналы, которые на него повлияли."""
+
+    chance: float
+    gap_seconds: float | None
+    recent_turns: int
+    presence_multiplier: float
+    presence_age_seconds: float | None
 
 # URL в тексте (для отсечения «голых» ссылок из ambient/Mem0)
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -155,13 +177,153 @@ def get_bot_real_name(context: ContextTypes.DEFAULT_TYPE) -> str:
     """Возвращает имя бота из Telegram."""
     return context.bot.first_name
 
-def should_reply_randomly(chat_id: int) -> bool:
-    """Определяет, должен ли бот ответить случайно в группе."""
+def calculate_random_reply_probability(
+    history: list[dict],
+    *,
+    current_created_at: float | None,
+    base_chance: int,
+    presence_age_seconds: float | None = None,
+) -> RandomReplyProbability:
+    """Рассчитывает ambient-шанс по паузе и плотности недавнего разговора.
+
+    Формула сохраняет ``base_chance`` как операторскую базу::
+
+        P = base * idle_factor * presence_factor / (1 + 0.5 * recent_turns)
+        idle_factor = 0.1 + 2.9 * min(gap / idle_target, 1)
+
+    Быстрый человеческий диалог одновременно получает маленький idle_factor и
+    штраф за число недавних реплик. После длинной тишины recent_turns равен нулю,
+    а шанс доходит до 3x базы. После успешного ответа на пинг presence_factor
+    начинается с настроенного boost и линейно затухает до 1. Для 0 и 100
+    сохраняется явный смысл команды ``/random``: всегда выключено либо всегда
+    включено (после остальных gates).
+    """
+    try:
+        presence_age = (
+            float(presence_age_seconds)
+            if presence_age_seconds is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        presence_age = None
+    if presence_age is not None and (
+        not math.isfinite(presence_age) or presence_age < 0
+    ):
+        presence_age = None
+
+    presence_multiplier = 1.0
+    if (
+        presence_age is not None
+        and RANDOM_REPLY_PRESENCE_SECONDS > 0
+        and presence_age < RANDOM_REPLY_PRESENCE_SECONDS
+    ):
+        remaining = 1.0 - presence_age / RANDOM_REPLY_PRESENCE_SECONDS
+        presence_multiplier += (
+            RANDOM_REPLY_PRESENCE_MULTIPLIER - 1.0
+        ) * remaining
+
+    if base_chance <= 0:
+        return RandomReplyProbability(
+            0.0,
+            None,
+            0,
+            presence_multiplier,
+            presence_age,
+        )
+
+    try:
+        current = float(current_created_at) if current_created_at is not None else None
+    except (TypeError, ValueError):
+        current = None
+    if current is not None and not math.isfinite(current):
+        current = None
+
+    prior_times: list[float] = []
+    if current is not None:
+        for entry in history:
+            if entry.get("role") != "user":
+                continue
+            try:
+                created_at = float(entry.get("created_at"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(created_at) and created_at <= current:
+                prior_times.append(created_at)
+
+    gap_seconds = None
+    recent_turns = 0
+    if prior_times:
+        gap_seconds = max(0.0, current - max(prior_times))
+        recent_turns = sum(
+            0.0 <= current - created_at <= RANDOM_REPLY_RECENT_WINDOW_SECONDS
+            for created_at in prior_times
+        )
+
+    if base_chance >= 100:
+        chance = 100.0
+    elif gap_seconds is None:
+        # Legacy history may not have timestamps. Unknown activity must not be
+        # mistaken for a ten-minute silence, so fall back to the configured base.
+        chance = min(100.0, base_chance * presence_multiplier)
+    else:
+        idle_progress = min(gap_seconds / RANDOM_REPLY_IDLE_TARGET_SECONDS, 1.0)
+        idle_factor = 0.1 + 2.9 * idle_progress
+        density_factor = 1.0 / (1.0 + 0.5 * recent_turns)
+        chance = min(
+            100.0,
+            base_chance
+            * idle_factor
+            * density_factor
+            * presence_multiplier,
+        )
+
+    return RandomReplyProbability(
+        chance,
+        gap_seconds,
+        recent_turns,
+        presence_multiplier,
+        presence_age,
+    )
+
+
+def should_reply_randomly(
+    chat_id: int,
+    activity_token: int | None,
+    history: list[dict],
+    current_created_at: float | None,
+) -> bool:
+    """Решает до LLM-вызова, заслуживает ли последняя реплика ambient-ответа."""
+    if not state.is_latest_group_activity(chat_id, activity_token):
+        logger.debug(
+            "🤫 Ambient пропущен: после кандидата появилась новая активность (chat=%s)",
+            chat_id,
+        )
+        return False
+
     last_reply = random_reply_cooldown.get(chat_id, 0)
-    current_time = time.time()
+    current_time = time.monotonic()
     if current_time - last_reply < RANDOM_REPLY_COOLDOWN:
         return False
-    if random.randint(1, 100) <= state.random_reply_chance:
+
+    probability = calculate_random_reply_probability(
+        history,
+        current_created_at=current_created_at,
+        base_chance=state.random_reply_chance,
+        presence_age_seconds=state.get_bot_presence_age(chat_id, now=current_time),
+    )
+    selected = random.random() * 100 < probability.chance
+    logger.debug(
+        "🎲 Ambient-фильтр: chance=%.2f%% base=%s%% gap=%s recent=%s "
+        "presence=%.2fx selected=%s chat=%s",
+        probability.chance,
+        state.random_reply_chance,
+        "unknown" if probability.gap_seconds is None else f"{probability.gap_seconds:.1f}s",
+        probability.recent_turns,
+        probability.presence_multiplier,
+        selected,
+        chat_id,
+    )
+    if selected:
         random_reply_cooldown[chat_id] = current_time
         return True
     return False

@@ -167,7 +167,7 @@ Vision prompts redesigned for conversational output instead of structured report
 - **History preservation** as `[Previous conversation summary: ...]` message
 - **Message debouncing** (4 seconds) to merge rapid consecutive messages from same user
 - **Smart media handling**: descriptions truncated at sentence boundaries (max 1500 chars/item; albums are one combined description)
-- **Random reply system**: system-level instructions for natural spontaneous responses
+- **Activity-aware random replies**: the configured base chance is reduced during human dialogue, boosted after long silence or a recent direct ping, and evaluated before any LLM call
 - **Time-aware context**: 3+ hour gaps treated as new conversations
 - **Streaming delivery**: OpenRouter SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted
 
@@ -179,7 +179,7 @@ Vision prompts redesigned for conversational output instead of structured report
 | `/clear` | Clear chat history | All/Admin* |
 | `/stats` | Token usage statistics | All |
 | `/summarize` | Compress conversation | All/Admin* |
-| `/random <0-100>` | Set random reply chance | All/Admin* |
+| `/random <0-100>` | Set base random reply chance | All/Admin* |
 
 \* When `admin_mode: true` in config
 
@@ -293,10 +293,12 @@ Set `debug: true` in config.yaml for detailed logging:
 - Ensure bot restarted after recent updates
 
 **Random replies too frequent/rare**:
-- Adjust with `/random <0-100>` command
+- Adjust the base with `/random <0-100>`; the effective chance is activity-aware
 - `/random` changes are saved in `bot_data/bot_state.db` and survive container restarts
-- Check cooldown settings in config.yaml
-- Verify `random_reply_chance` and `random_reply_cooldown`
+- Check the cooldown and dynamic activity windows in `config.yaml`
+- Verify `random_reply_chance`, `random_reply_cooldown`,
+  `random_reply_recent_window_seconds`, and `random_reply_idle_target_seconds`
+  plus `random_reply_presence_seconds` / `random_reply_presence_multiplier`
 
 **Media descriptions cut off**:
 - Descriptions auto-truncate at sentence boundaries (800 chars)

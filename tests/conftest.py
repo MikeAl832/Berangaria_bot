@@ -26,6 +26,8 @@ _STATE_DICTS = (
     "last_activity",
     "media_description_cache",
     "random_reply_cooldown",
+    "group_activity_versions",
+    "bot_presence_started_at",
     "_history_locks",
     "_turn_locks",
 )
