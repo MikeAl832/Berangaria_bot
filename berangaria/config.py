@@ -4,7 +4,6 @@ Secrets come only from the environment (.env or docker compose env_file);
 everything else is set in config.yaml at the repository root.
 """
 import os
-import re
 
 import yaml
 from zoneinfo import ZoneInfo
@@ -88,11 +87,6 @@ TELEGRAM_BOT_API_LOCAL_MODE = _as_bool(
     bool(TELEGRAM_BOT_API_BASE_URL),
 )
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
-# Chat/summarization go through OpenRouter. Mem0 extraction stays on DeepSeek.
-CHAT_API_KEY = (
-    os.environ.get("OPENROUTER_API_KEY", "")
-    or os.environ.get("CHAT_API_KEY", "")
-).strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Fish Audio TTS (optional — voice notes via send_voice). Prefer FISH_API_KEY.
 FISH_API_KEY = (
@@ -101,111 +95,30 @@ FISH_API_KEY = (
 ).strip()
 FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
 
+# ========================================
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (прямой xAI chat + DeepSeek Mem0)
+# ========================================
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+CHAT_API_URL = _str_setting(
+    "CHAT_API_URL",
+    "chat_api_url",
+    "https://api.x.ai/v1/chat/completions",
+)
+MODEL = config_yaml.get("model", "grok-4.6")
+CHAT_API_KEY = (
+    os.environ.get("XAI_API_KEY", "")
+    or os.environ.get("CHAT_API_KEY", "")
+).strip()
+
 # Валидация обязательных API ключей
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
 if not DEEPSEEK_API_KEY:
     raise ValueError("API_KEY (DeepSeek) не установлен в .env файле!")
 if not CHAT_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY (чат) не установлен в .env файле!")
-
-# ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter chat + DeepSeek Mem0)
-# ========================================
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-CHAT_API_URL = _str_setting(
-    "CHAT_API_URL",
-    "chat_api_url",
-    "https://openrouter.ai/api/v1/chat/completions",
-)
-CHAT_API_REFERER = _str_setting(
-    "CHAT_API_REFERER",
-    "chat_api_referer",
-    "https://github.com/MikeAl832/Berangaria_bot",
-)
-CHAT_API_TITLE = _str_setting("CHAT_API_TITLE", "chat_api_title", "Berangaria")
-MODEL = config_yaml.get("model", "x-ai/grok-4.6")
+    raise ValueError("XAI_API_KEY (чат) не установлен в .env файле!")
 
 
-def _normalize_chat_provider(raw: object) -> str:
-    """``auto`` or an OpenRouter provider slug from the model card (``openai``, ``azure``)."""
-    if raw is None:
-        return "auto"
-    if not isinstance(raw, str):
-        raise ValueError(
-            "chat_provider должен быть строкой: auto или slug провайдера "
-            "(xai, openai, azure, amazon-bedrock)"
-        )
-    value = raw.strip().lower()
-    if value in {"", "auto", "any", "default", "none"}:
-        return "auto"
-    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", value):
-        raise ValueError(
-            f"Некорректный chat_provider: {raw!r}. "
-            "Используй auto или slug с карточки модели OpenRouter (xai, openai, azure, amazon-bedrock)."
-        )
-    return value
-
-
-def _normalize_chat_provider_list(raw: object) -> list[str]:
-    """Normalize a YAML list or comma-separated env override of provider slugs."""
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        values = raw.split(",")
-    elif isinstance(raw, (list, tuple)):
-        values = raw
-    else:
-        raise ValueError(
-            "chat_provider_fallbacks должен быть списком или строкой slug через запятую"
-        )
-
-    providers: list[str] = []
-    for raw_value in values:
-        provider = _normalize_chat_provider(raw_value)
-        if provider == "auto":
-            continue
-        if provider not in providers:
-            providers.append(provider)
-    return providers
-
-
-CHAT_PROVIDER = _normalize_chat_provider(
-    os.environ.get("CHAT_PROVIDER", config_yaml.get("chat_provider", "auto"))
-)
-CHAT_PROVIDER_FALLBACKS = _normalize_chat_provider_list(
-    os.environ.get(
-        "CHAT_PROVIDER_FALLBACKS",
-        config_yaml.get("chat_provider_fallbacks", []),
-    )
-)
-CHAT_PROVIDER_ALLOW_FALLBACKS = _bool_setting(
-    "CHAT_PROVIDER_ALLOW_FALLBACKS", "chat_provider_allow_fallbacks", True
-)
-if CHAT_PROVIDER == "auto":
-    CHAT_PROVIDER_PREFERENCES: dict[str, object] | None = None
-else:
-    allowed_providers = [CHAT_PROVIDER]
-    if CHAT_PROVIDER_ALLOW_FALLBACKS:
-        allowed_providers.extend(
-            provider
-            for provider in CHAT_PROVIDER_FALLBACKS
-            if provider not in allowed_providers
-        )
-    CHAT_PROVIDER_PREFERENCES = {
-        # `provider.order` disables OpenRouter's sticky prompt-cache routing.
-        # An allowlist preserves the chosen hosts while leaving stickiness active.
-        "only": allowed_providers,
-        "sort": "price",
-        "allow_fallbacks": CHAT_PROVIDER_ALLOW_FALLBACKS,
-    }
-
-
-def apply_chat_routing(payload: dict) -> dict:
-    """Attach OpenRouter provider routing when the operator pinned a host."""
-    if CHAT_PROVIDER_PREFERENCES:
-        payload["provider"] = CHAT_PROVIDER_PREFERENCES
-    return payload
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
 MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
@@ -522,27 +435,21 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match OpenRouter x-ai/grok-4.6 list prices (no separate cache-write meter).
+# Defaults match xAI grok-4.6 list prices (no separate cache-write meter).
 PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 2.00)
 PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.50)
 PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.00)
 PRICE_COMPLETION = config_yaml.get("price_completion", 6.00)
 
 
-def chat_api_headers(*, include_router_metadata: bool = False) -> dict[str, str]:
-    """OpenAI-compatible headers for the chat/summarization provider."""
+def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
+    """xAI Chat Completions headers. ``x-grok-conv-id`` pins one cache replica."""
     headers = {
         "Authorization": f"Bearer {CHAT_API_KEY}",
         "Content-Type": "application/json",
     }
-    if CHAT_API_REFERER:
-        headers["HTTP-Referer"] = CHAT_API_REFERER
-    if CHAT_API_TITLE:
-        headers["X-Title"] = CHAT_API_TITLE
-    if include_router_metadata:
-        # Additive, content-free routing diagnostics. This exposes the selected
-        # endpoint/region and fallback attempts without logging prompt data.
-        headers["X-OpenRouter-Metadata"] = "enabled"
+    if session_id:
+        headers["x-grok-conv-id"] = session_id
     return headers
 
 # ========================================

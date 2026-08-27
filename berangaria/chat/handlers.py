@@ -490,7 +490,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("📝 Создаю краткое содержание диалога...")
 
         try:
-            new_history = await summarize_history(history)
+            new_history = await summarize_history(history, key=key)
 
             if new_history is history:
                 await status_msg.edit_text("❌ Не удалось создать резюме.")

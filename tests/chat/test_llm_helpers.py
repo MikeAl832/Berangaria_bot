@@ -8,18 +8,12 @@
 import asyncio
 import copy
 
-import pytest
-
 from berangaria.chat import llm_client
 from berangaria.chat import history_rendering, reply_formatting
 from berangaria.config import (
-    CHAT_PROVIDER_FALLBACKS,
-    CHAT_PROVIDER_PREFERENCES,
+    CHAT_API_URL,
     GENERATION_PARAMS,
     MODEL,
-    _normalize_chat_provider,
-    _normalize_chat_provider_list,
-    apply_chat_routing,
 )
 from berangaria import config as bot_config
 from berangaria.core import state
@@ -79,12 +73,16 @@ def test_payload_prefix_puts_date_in_a_second_system_message():
     assert " year." not in date_line
 
 
-def test_chat_headers_enable_router_metadata_only_when_requested():
+def test_chat_headers_send_xai_conv_id():
     regular = bot_config.chat_api_headers()
-    diagnostic = bot_config.chat_api_headers(include_router_metadata=True)
+    pinned = bot_config.chat_api_headers(session_id="berangaria-abc")
 
-    assert "X-OpenRouter-Metadata" not in regular
-    assert diagnostic["X-OpenRouter-Metadata"] == "enabled"
+    assert "x-grok-conv-id" not in regular
+    assert pinned["x-grok-conv-id"] == "berangaria-abc"
+    assert "X-OpenRouter-Metadata" not in pinned
+    assert "x-session-id" not in pinned
+    assert "HTTP-Referer" not in pinned
+    assert "X-Title" not in pinned
 
 def test_markdown_html_escapes_special_chars():
     assert markdown_to_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
@@ -651,7 +649,7 @@ def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     history = _summary_history(12)
     before = copy.deepcopy(history)
 
-    result = asyncio.run(llm_client.summarize_history(history))
+    result = asyncio.run(llm_client.summarize_history(history, key="private_1"))
 
     assert result is not history
     assert history == before
@@ -661,8 +659,11 @@ def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
     assert captured["url"] == llm_client.CHAT_API_URL
-    assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
-    assert captured["headers"]["X-Title"] == "Berangaria"
+    assert captured["headers"]["Authorization"] == "Bearer test-xai-key"
+    assert "X-Title" not in captured["headers"]
+    assert captured["headers"]["x-grok-conv-id"] == llm_client._chat_session_id(
+        "private_1"
+    )
     assert captured["payload"]["model"] == llm_client.MODEL
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert "thinking" not in captured["payload"]
@@ -670,10 +671,8 @@ def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     assert captured["payload"]["max_tokens"] == 8192
     assert "top_k" not in captured["payload"]
     assert captured["timeout"] == 120.0
-    if CHAT_PROVIDER_PREFERENCES:
-        assert captured["payload"]["provider"] == CHAT_PROVIDER_PREFERENCES
-    else:
-        assert "provider" not in captured["payload"]
+    assert "provider" not in captured["payload"]
+    assert "session_id" not in captured["payload"]
 
 
 def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
@@ -742,65 +741,10 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
 
 
 def test_shipped_chat_model_is_grok_4_6_with_low_reasoning():
-    assert MODEL == "x-ai/grok-4.6"
+    assert MODEL == "grok-4.6"
+    assert "api.x.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
-
-
-def test_normalize_chat_provider_accepts_auto_aliases():
-    assert _normalize_chat_provider(None) == "auto"
-    assert _normalize_chat_provider("AUTO") == "auto"
-    assert _normalize_chat_provider(" default ") == "auto"
-    assert _normalize_chat_provider("OpenAI") == "openai"
-    assert _normalize_chat_provider("xai") == "xai"
-    assert _normalize_chat_provider("amazon-bedrock") == "amazon-bedrock"
-    assert _normalize_chat_provider("azure/us") == "azure/us"
-
-
-def test_normalize_chat_provider_rejects_junk():
-    with pytest.raises(ValueError):
-        _normalize_chat_provider("openai; drop")
-    with pytest.raises(ValueError):
-        _normalize_chat_provider(["openai"])
-
-
-def test_normalize_chat_provider_list_accepts_yaml_and_env_shapes():
-    assert _normalize_chat_provider_list(["xai", "amazon-bedrock", "xai"]) == [
-        "xai",
-        "amazon-bedrock",
-    ]
-    assert _normalize_chat_provider_list("xai, amazon-bedrock") == [
-        "xai",
-        "amazon-bedrock",
-    ]
-    assert _normalize_chat_provider_list(None) == []
-
-
-def test_apply_chat_routing_omits_provider_in_auto(monkeypatch):
-    monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", None)
-    payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
-    assert "provider" not in payload
-
-
-def test_apply_chat_routing_pins_openai(monkeypatch):
-    prefs = {
-        "only": ["openai", "azure"],
-        "sort": "price",
-        "allow_fallbacks": True,
-    }
-    monkeypatch.setattr(bot_config, "CHAT_PROVIDER_PREFERENCES", prefs)
-    payload = apply_chat_routing({"model": "openai/gpt-5.6-luna"})
-    assert payload["provider"] == prefs
-
-
-def test_shipped_provider_routing_keeps_sticky_cache_compatible():
-    assert CHAT_PROVIDER_FALLBACKS == ["amazon-bedrock"]
-    assert CHAT_PROVIDER_PREFERENCES == {
-        "only": ["xai", "amazon-bedrock"],
-        "sort": "price",
-        "allow_fallbacks": True,
-    }
-    assert "order" not in CHAT_PROVIDER_PREFERENCES
 
 
 def test_chat_session_id_is_stable_opaque_and_scope_specific():

@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `x-ai/grok-4.6` (chat and summarization; `temperature: 1.0`, `reasoning.effort: low`)
+- **Main LLM**: direct xAI `grok-4.6` (chat and summarization; `temperature: 1.0`, `reasoning.effort: low`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -41,7 +41,7 @@ explicit.
 
 - Python 3.10+
 - Docker (for Qdrant)
-- OpenRouter API key (chat and summarization)
+- xAI API key (chat and summarization)
 - DeepSeek API key (strict memory extraction/verification)
 - Google Gemini API key (for vision and embeddings)
 - Telegram bot token
@@ -70,7 +70,7 @@ Create `.env` file:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-OPENROUTER_API_KEY=your_openrouter_api_key
+XAI_API_KEY=your_xai_api_key
 API_KEY=your_deepseek_api_key
 GEMINI_API_KEY=your_gemini_api_key
 # Optional: Fish Audio TTS for send_voice tool
@@ -92,7 +92,7 @@ limit to be processed.
 
 API keys:
 - Telegram: [@BotFather](https://t.me/botfather)
-- OpenRouter: [openrouter.ai/keys](https://openrouter.ai/keys)
+- xAI: [console.x.ai](https://console.x.ai)
 - DeepSeek: [platform.deepseek.com](https://platform.deepseek.com)
 - Gemini: [aistudio.google.com](https://aistudio.google.com)
 
@@ -101,9 +101,9 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: OpenRouter model slug (shipped: `x-ai/grok-4.6`)
-- `chat_provider`: primary OpenRouter host (`xai` = SpaceXAI); `chat_provider_fallbacks`
-  is the allowlist of backup hosts (shipped: `amazon-bedrock`, ~10% more)
+- `model`: chat model (shipped: `grok-4.6` on `https://api.x.ai/v1/chat/completions`)
+- `chat_api_url`: xAI Completions endpoint; each chat sends `x-grok-conv-id` so Grok
+  prompt cache pins to one server
 - `generation_params`: normal Grok 4.6 chat ships at `temperature: 1.0` and `reasoning.effort: low`; factual tool continuations use `factual_temperature` separately
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
@@ -169,7 +169,7 @@ Vision prompts redesigned for conversational output instead of structured report
 - **Smart media handling**: descriptions truncated at sentence boundaries (max 1500 chars/item; albums are one combined description)
 - **Activity-aware random replies**: the configured base chance is reduced during human dialogue, boosted after long silence or a recent direct ping, and evaluated before any LLM call
 - **Time-aware context**: 3+ hour gaps treated as new conversations
-- **Streaming delivery**: OpenRouter SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted
+- **Streaming delivery**: SSE content is previewed through native drafts in private chats; groups wait for one final answer so an ambiguous Telegram timeout cannot leave a duplicate partial message. Reasoning and tool arguments remain private, and only the final answer is persisted
 
 ## Commands
 
@@ -234,12 +234,12 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `x-ai/grok-4.6` (per 1M tokens, prompts below 200K)
+### xAI `grok-4.6` (per 1M tokens, prompts below 200K)
 - Regular input: $2.00
 - Cached input: $0.50
 - Cache write: not billed separately by xAI
 - Output: $6.00
-- OpenRouter `usage.cost` is preferred when the provider returns it
+- Provider `usage.cost` is preferred when the response includes it
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
 - Regular input: $0.14
@@ -252,9 +252,9 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Grok 4.6 via OpenRouter**: shipped chat/summarization model (`temperature: 1.0`, `reasoning.effort: low`)
+- **Grok 4.6**: shipped chat/summarization model on xAI (`temperature: 1.0`, `reasoning.effort: low`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
-- Swap `model` in `config.yaml` to any other OpenRouter slug without code changes
+- **Gemini**: vision and embeddings only
 
 ## Debug Mode
 
@@ -279,16 +279,14 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **High costs**: 
 - Check cache hit rate in logs (should be 70-90% after warmup)
-- Keep a stable `session_id` per chat and avoid `provider.order`, which disables
-  OpenRouter sticky cache routing; the shipped client does both automatically
+- Confirm `XAI_API_KEY` is set and chat requests send a stable `x-grok-conv-id` per
+  conversation; without that header xAI routes each turn to a different replica and
+  cache reads collapse from ~97% to 0%
 - Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
   appends those reactions after the cached prefix automatically
 - Telegram cleanup is display-only: persisted `provider_messages` replay the exact raw
   assistant/tool transcript, including punctuation and tool results, while `content`
   remains the text the user actually received
-- Check the `🛰️ OpenRouter` line beside token usage for endpoint, region, fallback attempt,
-  or context-compression drift when cache reads unexpectedly collapse
-- Confirm `OPENROUTER_API_KEY` is set and the `model` slug is still discounted if costs jump
 - Monitor token usage with `/stats` command
 
 **Bot uses emojis in text**:

@@ -12,7 +12,6 @@ from berangaria.config import (
     FULL_DEBUG_LOGS,
     MODEL,
     SUMMARY_INTERVAL,
-    apply_chat_routing,
     chat_api_headers,
 )
 from berangaria.core.utils import strip_tiktok_urls
@@ -33,7 +32,9 @@ def _message_reasoning_len(message: dict) -> int:
     return 0
 
 
-async def summarize_history(history: list) -> list:
+async def summarize_history(
+    history: list, *, session_id: str | None = None
+) -> list:
     """Compress older entries while leaving the live history untouched on failure."""
     to_summarize = history[:-SUMMARY_INTERVAL]
     keep_recent = copy.deepcopy(history[-SUMMARY_INTERVAL:])
@@ -85,12 +86,13 @@ async def summarize_history(history: list) -> list:
         "top_p": 0.9,
         "reasoning": {"effort": "high"},
     }
-    apply_chat_routing(payload)
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                CHAT_API_URL, json=payload, headers=chat_api_headers()
+                CHAT_API_URL,
+                json=payload,
+                headers=chat_api_headers(session_id=session_id),
             )
             logger.info("Ответ сумморизации: [cyan]%s[/]", response.status_code)
             response.raise_for_status()

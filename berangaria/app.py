@@ -42,8 +42,7 @@ from berangaria.config import (
     MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
     MEMORY_SOURCE_RETENTION_SECONDS,
     SUMMARY_HOURS, TIMEZONE_NAME,
-    STREAMING_ENABLED, MODEL, CHAT_API_URL, CHAT_PROVIDER,
-    CHAT_PROVIDER_ALLOW_FALLBACKS,
+    STREAMING_ENABLED, MODEL, CHAT_API_URL,
     TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
     TELEGRAM_BOT_API_LOCAL_MODE,
 )
@@ -118,7 +117,7 @@ async def periodic_summarization(bot=None):
                     # Нужно > SUMMARY_INTERVAL+1, иначе 1 резюме + keep не короче исходника
                     if len(history) > SUMMARY_INTERVAL + 1:
                         old_len = len(history)
-                        new_history = await summarize_history(history)
+                        new_history = await summarize_history(history, key=key)
 
                         if new_history is not history and len(new_history) < old_len:
                             async with state.get_history_lock(key):
@@ -366,13 +365,6 @@ def main():
         f"🎲 Базовый шанс случайного ответа: [yellow]{state.random_reply_chance}%[/]"
     )
     logger.info(f"🧠 Чат-модель: [cyan]{MODEL}[/] ([magenta]{CHAT_API_URL}[/])")
-    if CHAT_PROVIDER == "auto":
-        logger.info("🧭 OpenRouter provider: [cyan]auto[/]")
-    else:
-        logger.info(
-            f"🧭 OpenRouter provider: [cyan]{CHAT_PROVIDER}[/] "
-            f"(fallbacks=[yellow]{CHAT_PROVIDER_ALLOW_FALLBACKS}[/])"
-        )
     logger.info(f"📝 Максимальный контекст: [yellow]{MAX_CONTEXT_TOKENS}[/] токенов")
     logger.info(f"💬 Максимум токенов в ответе: [yellow]{MAX_REPLY_TOKENS}[/]")
     logger.info(f"👁️ Vision mode: [yellow]{VISION_MODE}[/]")

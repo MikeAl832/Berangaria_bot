@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter (default `x-ai/grok-4.6`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. Direct xAI (default `grok-4.6`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 ## Prompt and model baseline
 
@@ -117,12 +117,10 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Persist structured `reasoning_details` (or the single legacy reasoning field) only
   after confirmed final delivery and echo it unmodified on later chat turns. Keep this
   opaque provider state out of Telegram previews, memory extraction, and summaries.
-- Every chat scope uses one stable opaque OpenRouter `session_id`. Do not use
-  `provider.order`: it disables sticky prompt-cache routing. Restrict hosts with
-  `provider.only` instead.
-- Request OpenRouter router metadata for chat calls and keep its logs content-free: record
-  generation ID, selected endpoint, region, attempt, and pipeline names, never prompts or
-  opaque reasoning state at INFO.
+- Every chat scope uses one stable opaque conversation id, sent to xAI as the
+  `x-grok-conv-id` header so Grok prompt cache pins to one server. Do not add a
+  second chat gateway path (OpenRouter `session_id` / `provider.only`) back into
+  the request.
 - Private chats use `send_message_draft`. Group turns must not create persistent streaming previews: an ambiguous send timeout can lose the message ID and leave an undeletable partial duplicate, so groups receive one final response only.
 
 ## Persistence and memory rules

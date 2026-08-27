@@ -1,19 +1,15 @@
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (прямой xAI)
 # ========================================
-# Чат и суммаризация идут на OpenRouter. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
+# Чат и суммаризация идут на api.x.ai. Память (Mem0 extractor/verifier) — отдельно на DeepSeek.
 # Чат: Grok 4.6. Reasoning нельзя выключить; low — чтобы группа не ждала thinking.
-"model": "x-ai/grok-4.6"
-"chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
-# Хостер модели на OpenRouter. auto = сам выбирает (цена+uptime).
-# Иначе slug с карточки: xai (прямой SpaceXAI), amazon-bedrock дороже на ~10%.
-"chat_provider": "xai"
-"chat_provider_fallbacks": ["amazon-bedrock"] # разрешённые запасные хостеры без provider.order (он ломает sticky cache)
-"chat_provider_allow_fallbacks": true     # если xai лёг — пробовать разрешённые fallback-хостеры
+# Прямой xAI нужен ради заголовка x-grok-conv-id: кэш Grok живёт на конкретной реплике.
+"model": "grok-4.6"
+"chat_api_url": "https://api.x.ai/v1/chat/completions"
 "max_context_tokens": 32000               # Максимальная история контекста
 "max_reply_tokens": 4096                  # Максимальный размер ответа
 
-# Параметры генерации. OpenRouter отбрасывает то, что конкретная модель не поддерживает.
+# Параметры генерации. Неподдерживаемые поля провайдер отбрасывает.
 # Grok 4.6: reasoning.effort low|medium|high|xhigh (дефолт провайдера — high).
 "generation_params":
   "temperature": 1.0
@@ -149,8 +145,8 @@
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# x-ai/grok-4.6 на OpenRouter: вход $2 / кэш $0.50 / выход $6 (ниже 200K prompt).
-# У xAI нет отдельного cache-write тарифа. Если OpenRouter вернул usage.cost — берём его.
+# grok-4.6 на api.x.ai: вход $2 / кэш $0.50 / выход $6 (ниже 200K prompt).
+# У xAI нет отдельного cache-write тарифа. Если провайдер вернул usage.cost — берём его.
 "price_prompt_cache_miss": 2.00          # Обычные входные токены
 "price_prompt_cache_hit": 0.50           # Прочитанные из кэша
 "price_prompt_cache_write": 0.00         # xAI не тарифицирует запись в кэш отдельно

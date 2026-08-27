@@ -63,7 +63,7 @@ def test_stream_aggregates_openai_reasoning_without_previewing_it():
 
     result = asyncio.run(stream_chat_completion(
         client,
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://api.x.ai/v1/chat/completions",
         payload={"model": "openai/gpt-5.6-luna", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
@@ -162,7 +162,7 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
 
     result = asyncio.run(stream_chat_completion(
         _Client(response),
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://api.x.ai/v1/chat/completions",
         payload={"model": "x-ai/grok-4.6", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
@@ -205,7 +205,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
 
     result = asyncio.run(stream_chat_completion(
         _Client(response),
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://api.x.ai/v1/chat/completions",
         payload={"model": "x-ai/grok-4.6", "messages": []},
         headers={"X-OpenRouter-Metadata": "enabled"},
     ))

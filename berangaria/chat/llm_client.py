@@ -18,7 +18,7 @@ from berangaria.config import (
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
     MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
-    MULTI_MESSAGE_CHARS_PER_SEC, CHAT_PROVIDER, chat_api_headers, apply_chat_routing,
+    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers,
 )
 from berangaria.analytics import store as analytics_store
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
@@ -120,7 +120,7 @@ def _current_date_str() -> str:
 
 
 def _chat_session_id(history_key: str) -> str:
-    """Stable opaque OpenRouter sticky-routing key for one persisted chat scope."""
+    """Stable opaque xAI ``x-grok-conv-id`` for one persisted chat scope."""
     digest = hashlib.sha256(str(history_key).encode("utf-8")).hexdigest()
     return f"berangaria-{digest}"
 
@@ -249,8 +249,9 @@ _count_memory_block_facts = memory_context.count_memory_block_facts
 _filter_approved_memory_results = memory_context.filter_approved_results
 
 
-async def summarize_history(history: list) -> list:
-    return await summarization.summarize_history(history)
+async def summarize_history(history: list, *, key: str | None = None) -> list:
+    session_id = _chat_session_id(key) if key else None
+    return await summarization.summarize_history(history, session_id=session_id)
 
 
 async def _mark_history_sent_to_provider(history: list, *, key: str) -> None:
@@ -280,7 +281,7 @@ async def send_llm_request(
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
     if chat_tokens.get(key, 0) > context_threshold:
         logger.info(f"📝 [yellow]Автосуммаризация[/] для key={key}")
-        history = await summarize_history(history)
+        history = await summarize_history(history, key=key)
         async with get_history_lock(key):
             histories[key] = history
             save_history(key)
@@ -483,17 +484,17 @@ async def send_llm_request(
                 # Факты после поиска/чтения ссылки — холоднее, меньше выдумок
                 gen_params["temperature"] = FACTUAL_TEMPERATURE
 
-            payload = apply_chat_routing({
+            session_id = _chat_session_id(key)
+            payload = {
                 "model": MODEL,
-                "session_id": _chat_session_id(key),
                 "messages": payload_messages,
                 "max_tokens": MAX_REPLY_TOKENS,
                 "tools": TOOLS,
                 **gen_params
-            })
+            }
 
             try:
-                headers = chat_api_headers(include_router_metadata=True)
+                headers = chat_api_headers(session_id=session_id)
                 
                 response = await _request_completion(client, payload, headers)
 
@@ -558,7 +559,7 @@ async def send_llm_request(
                         estimate_request_cost=_estimate_request_cost,
                     )
                     details = usage.get("prompt_tokens_details") or {}
-                    provider_name = str(data.get("provider") or CHAT_PROVIDER)
+                    provider_name = str(data.get("provider") or "xai")
                     model_name = str(data.get("model") or MODEL)
                     prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
                     cached_tokens = max(0, int(details.get("cached_tokens", 0) or 0))
@@ -571,7 +572,7 @@ async def send_llm_request(
                         "🧭 Маршрут: provider=%s model=%s session=%s cache=%.1f%%",
                         provider_name,
                         model_name,
-                        payload["session_id"][-12:],
+                        session_id[-12:],
                         cache_ratio,
                     )
                     analytics_store.record_llm_usage(

@@ -41,7 +41,7 @@ verbose: false
 2026-06-10 18:02:08 [INFO] 🧠 Память: найдено 17 → загружено 9 фактов (732 символов)
 2026-06-10 18:02:12 [INFO] 📊 Токены: запрос=2492 (кэш=2176), ответ=126, всего=2618
 2026-06-10 18:02:12 [INFO] 💰 Стоимость запроса: $0.000086
-2026-06-10 18:02:12 [INFO] 🛰️ OpenRouter: generation=gen-... strategy=direct region=iad endpoint=xAI/x-ai/grok-4.6 attempt=1 pipeline=none
+2026-06-10 18:02:12 [INFO] 🧭 Маршрут: provider=xai model=grok-4.6 session=e51b38c1b58f cache=89.0%
 2026-06-10 18:02:18 [INFO] 🧠 Память: факт одобрен (source_id=41, scope=group_-123, key=hardware.gpu, reason=прямое самоутверждение)
 ```
 

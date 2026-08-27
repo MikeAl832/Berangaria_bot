@@ -135,9 +135,11 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
         "index": 0,
     }]
     payloads = []
+    captured_headers = []
 
     async def fake_stream(client, url, *, payload, headers, on_content):
         payloads.append(copy.deepcopy(payload))
+        captured_headers.append(dict(headers))
         await on_content("потоковый ответ")
         return StreamedCompletionResponse(
             status_code=200,
@@ -188,7 +190,9 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["mid"] == 99
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
-    assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
+    assert "session_id" not in payloads[0]
+    assert "provider" not in payloads[0]
+    assert captured_headers[0]["x-grok-conv-id"] == llm_client._chat_session_id(key)
 
     state.histories.clear()
     state.load_all_histories()

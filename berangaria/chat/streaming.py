@@ -117,8 +117,6 @@ async def stream_chat_completion(
                 if event.get(field) is not None:
                     response_meta[field] = event[field]
             if isinstance(event.get("openrouter_metadata"), dict):
-                # OpenRouter emits this on the terminal streaming chunk. Preserve
-                # it for cache-affinity diagnostics just like the non-streaming API.
                 response_meta["openrouter_metadata"] = event["openrouter_metadata"]
 
             choices = event.get("choices") or []
@@ -135,7 +133,7 @@ async def stream_chat_completion(
                 reasoning_parts.append(reasoning_text)
             detail_chunks = delta.get("reasoning_details")
             if isinstance(detail_chunks, list):
-                # OpenRouter requires the complete structured sequence to be echoed
+                # xAI requires the complete structured sequence to be echoed
                 # back unmodified during tool use. Streaming chunks are already in
                 # provider order, so concatenate them instead of merging by index.
                 reasoning_details.extend(
