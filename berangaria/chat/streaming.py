@@ -116,6 +116,10 @@ async def stream_chat_completion(
             for field in ("id", "model", "provider"):
                 if event.get(field) is not None:
                     response_meta[field] = event[field]
+            if isinstance(event.get("openrouter_metadata"), dict):
+                # OpenRouter emits this on the terminal streaming chunk. Preserve
+                # it for cache-affinity diagnostics just like the non-streaming API.
+                response_meta["openrouter_metadata"] = event["openrouter_metadata"]
 
             choices = event.get("choices") or []
             if not choices:

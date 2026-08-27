@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import copy
 import hashlib
 import random
 import httpx
@@ -138,6 +139,53 @@ def _build_payload_prefix() -> list[dict]:
         {"role": "system", "content": _build_system_prompt()},
         {"role": "system", "content": _current_date_str()},
     ]
+
+
+def _provider_trace_for_history(
+    payload_messages: list[dict],
+    start: int,
+    *,
+    final_message: dict | None = None,
+    terminal_tool_result: str | None = None,
+) -> list[dict]:
+    """Copy the exact assistant/tool suffix needed for the next cache prefix.
+
+    Normal final assistant messages have not been appended to ``payload_messages``
+    yet, so callers pass them separately. Terminal Telegram tools do not make a
+    follow-up model request; synthesize their tool results only after delivery is
+    confirmed so the persisted transcript remains API-valid without claiming an
+    action that the user never received.
+    """
+    trace = [
+        copy.deepcopy(message)
+        for message in payload_messages[max(0, start):]
+        if isinstance(message, dict)
+    ]
+    if isinstance(final_message, dict):
+        copied_final = copy.deepcopy(final_message)
+        if not copied_final.get("role"):
+            copied_final["role"] = "assistant"
+        trace.append(copied_final)
+
+    if terminal_tool_result is not None:
+        answered_ids = {
+            message.get("tool_call_id")
+            for message in trace
+            if message.get("role") == "tool" and message.get("tool_call_id")
+        }
+        for message in trace:
+            if message.get("role") != "assistant":
+                continue
+            for tool_call in message.get("tool_calls") or []:
+                call_id = tool_call.get("id")
+                if call_id and call_id not in answered_ids:
+                    trace.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": terminal_tool_result,
+                    })
+                    answered_ids.add(call_id)
+    return trace
 
 
 def _multi_message_delay_seconds(text: str, *, slept_total: float = 0.0) -> float:
@@ -347,13 +395,19 @@ async def send_llm_request(
             messages, target_mid, status_msg, _delivery_runtime()
         )
 
-    async def _save_assistant(text: str, *, provider_message: dict | None = None):
+    async def _save_assistant(
+        text: str,
+        *,
+        provider_message: dict | None = None,
+        provider_messages: list[dict] | None = None,
+    ):
         return await assistant_turn.save_assistant_turn(
             text,
             turn=turn,
             key=key,
             history=history,
             provider_message=provider_message,
+            provider_messages=provider_messages,
         )
 
     async def _remember_bot_mid(entry, sent_mid):
@@ -405,6 +459,11 @@ async def send_llm_request(
             error=error,
         )
 
+    # Everything appended after this boundary is the provider-only side of the
+    # current turn (assistant tool calls, tool results, final raw assistant). It is
+    # persisted beside the Telegram-visible text after confirmed delivery.
+    provider_turn_start = len(payload_messages)
+
     # From this point on the exact rendered history may reach the provider. Mark
     # explicit new rows before network I/O so an ambiguous timeout cannot make a
     # possibly cached prefix mutable again.
@@ -434,7 +493,7 @@ async def send_llm_request(
             })
 
             try:
-                headers = chat_api_headers()
+                headers = chat_api_headers(include_router_metadata=True)
                 
                 response = await _request_completion(client, payload, headers)
 
@@ -489,6 +548,7 @@ async def send_llm_request(
                 finish_reason = choice.get('finish_reason', '')
                 message = choice['message']
                 usage = data.get('usage', {})
+                llm_diagnostics.log_router_metadata(data, response.headers)
 
                 if usage:
                     total_cost = llm_diagnostics.record_usage(
@@ -573,6 +633,11 @@ async def send_llm_request(
                                 "content": f"Инструмент завершился ошибкой: {exc}",
                             })
 
+                    provider_tool_trace = _provider_trace_for_history(
+                        payload_messages,
+                        provider_turn_start,
+                    )
+
                     # reply_to_message терминальный и приоритетный: если модель его вызвала,
                     # отправляем выбранный ответ и завершаем — без ещё одного витка к API
                     # и без дефолтного реплая ниже (двойной отправки не будет).
@@ -592,7 +657,17 @@ async def send_llm_request(
                             )
                             await _delete_turn_status()
                             if turn.reactions_made or turn.stickers_made or turn.voices_made:
-                                await _save_assistant("")
+                                await _save_assistant(
+                                    "",
+                                    provider_messages=_provider_trace_for_history(
+                                        payload_messages,
+                                        provider_turn_start,
+                                        terminal_tool_result=(
+                                            "Текстовый ответ не был отправлен; "
+                                            "ход завершён уже выполненным действием."
+                                        ),
+                                    ),
+                                )
                             return
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
@@ -607,11 +682,30 @@ async def send_llm_request(
                                     exc,
                                 )
                                 if turn.reactions_made or turn.stickers_made or turn.voices_made:
-                                    await _save_assistant("")
+                                    await _save_assistant(
+                                        "",
+                                        provider_messages=_provider_trace_for_history(
+                                            payload_messages,
+                                            provider_turn_start,
+                                            terminal_tool_result=(
+                                                "Telegram не подтвердил текстовый ответ; "
+                                                "ход завершён уже выполненным действием."
+                                            ),
+                                        ),
+                                    )
                                 raise ReplyDeliveryError(
                                     "Telegram не подтвердил доставку ответа"
                                 ) from exc
-                            saved = await _save_assistant(reply_text)
+                            saved = await _save_assistant(
+                                reply_text,
+                                provider_messages=_provider_trace_for_history(
+                                    payload_messages,
+                                    provider_turn_start,
+                                    terminal_tool_result=(
+                                        "Ответ доставлен в Telegram. Ход завершён."
+                                    ),
+                                ),
+                            )
                             await _remember_bot_mid(saved, sent_mid)
                             _record_reply(
                                 sent_mid,
@@ -621,7 +715,17 @@ async def send_llm_request(
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
                             if turn.reacted or turn.sticker_sent or turn.voice_sent:
-                                await _save_assistant("")  # реакция/стикер/голос, текста нет
+                                await _save_assistant(
+                                    "",
+                                    provider_messages=_provider_trace_for_history(
+                                        payload_messages,
+                                        provider_turn_start,
+                                        terminal_tool_result=(
+                                            "Текстовый ответ пуст; ход завершён "
+                                            "уже выполненным действием."
+                                        ),
+                                    ),
+                                )
                                 if turn.sticker_sent or turn.voice_sent:
                                     _record_reply(
                                         None,
@@ -663,14 +767,33 @@ async def send_llm_request(
                                 exc,
                             )
                             if turn.reactions_made or turn.stickers_made or turn.voices_made:
-                                await _save_assistant("")
+                                await _save_assistant(
+                                    "",
+                                    provider_messages=_provider_trace_for_history(
+                                        payload_messages,
+                                        provider_turn_start,
+                                        terminal_tool_result=(
+                                            "Telegram не подтвердил пакет сообщений; "
+                                            "ход завершён уже выполненным действием."
+                                        ),
+                                    ),
+                                )
                             raise ReplyDeliveryError(
                                 "Telegram не подтвердил доставку серии сообщений"
                             ) from exc
                         if delivered:
                             # One history row: joined bubbles (prefix cache / summarizer).
                             history_text = "\n".join(delivered)
-                            saved = await _save_assistant(history_text)
+                            saved = await _save_assistant(
+                                history_text,
+                                provider_messages=_provider_trace_for_history(
+                                    payload_messages,
+                                    provider_turn_start,
+                                    terminal_tool_result=(
+                                        "Сообщения доставлены в Telegram. Ход завершён."
+                                    ),
+                                ),
+                            )
                             await _remember_bot_mid(saved, sent_mid)
                             _record_reply(
                                 sent_mid,
@@ -679,13 +802,26 @@ async def send_llm_request(
                                 bubbles=len(delivered),
                             )
                         elif turn.reactions_made or turn.stickers_made or turn.voices_made:
-                            await _save_assistant("")
+                            await _save_assistant(
+                                "",
+                                provider_messages=_provider_trace_for_history(
+                                    payload_messages,
+                                    provider_turn_start,
+                                    terminal_tool_result=(
+                                        "Текстовые сообщения не отправлены; ход завершён "
+                                        "уже выполненным действием."
+                                    ),
+                                ),
+                            )
                         return
 
                     # Стикер уже в чате — это полный ответ, лишний round-trip к API не нужен.
                     if turn.sticker_sent:
                         api_call_count[key] = api_call_count.get(key, 0) + 1
-                        await _save_assistant("")
+                        await _save_assistant(
+                            "",
+                            provider_messages=provider_tool_trace,
+                        )
                         _record_reply(
                             None,
                             target_mid=update.message.message_id,
@@ -702,7 +838,10 @@ async def send_llm_request(
                     # Голосовое уже в чате — терминальный ответ, без ещё одного round-trip.
                     if turn.voice_sent:
                         api_call_count[key] = api_call_count.get(key, 0) + 1
-                        await _save_assistant("")
+                        await _save_assistant(
+                            "",
+                            provider_messages=provider_tool_trace,
+                        )
                         _record_reply(
                             None,
                             target_mid=update.message.message_id,
@@ -719,6 +858,11 @@ async def send_llm_request(
                     continue
 
                 reply = message.get('content', '')
+                provider_final_trace = _provider_trace_for_history(
+                    payload_messages,
+                    provider_turn_start,
+                    final_message=message,
+                )
                 
                 # В DEBUG показываем полный ответ модели
                 if FULL_DEBUG_LOGS:
@@ -733,7 +877,11 @@ async def send_llm_request(
                 if not reply:
                     if turn.reacted or turn.sticker_sent or turn.voice_sent:
                         # Ограничилась реакцией/стикером/голосом — валидный ответ.
-                        await _save_assistant("")
+                        await _save_assistant(
+                            "",
+                            provider_message=message,
+                            provider_messages=provider_final_trace,
+                        )
                         if turn.sticker_sent or turn.voice_sent:
                             _record_reply(
                                 None,
@@ -793,11 +941,25 @@ async def send_llm_request(
                         exc,
                     )
                     if turn.reactions_made or turn.stickers_made or turn.voices_made:
-                        await _save_assistant("")
+                        await _save_assistant(
+                            "",
+                            provider_messages=_provider_trace_for_history(
+                                payload_messages,
+                                provider_turn_start,
+                                terminal_tool_result=(
+                                    "Telegram не подтвердил финальный текст; "
+                                    "ход завершён уже выполненным действием."
+                                ),
+                            ),
+                        )
                     raise ReplyDeliveryError(
                         "Telegram не подтвердил доставку ответа"
                     ) from exc
-                saved = await _save_assistant(reply, provider_message=message)
+                saved = await _save_assistant(
+                    reply,
+                    provider_message=message,
+                    provider_messages=provider_final_trace,
+                )
                 await _remember_bot_mid(saved, sent_mid)
                 _record_reply(sent_mid, target_mid=target_mid, mode="text")
                 return

@@ -18,8 +18,16 @@ async def save_assistant_turn(
     key: str,
     history: list,
     provider_message: dict | None = None,
+    provider_messages: list[dict] | None = None,
 ) -> dict | None:
-    """Append delivered text, actions, and opaque provider reasoning state."""
+    """Append delivered text plus the byte-stable provider side of the turn.
+
+    ``content`` is the Telegram-visible text and may be cleaned for presentation.
+    ``provider_messages`` is the exact assistant/tool transcript OpenRouter saw or
+    returned.  Keeping the two representations separate prevents Telegram-only
+    cleanup (for example removing a final full stop) from invalidating xAI's
+    prompt prefix on the next turn.
+    """
     if (
         not text
         and not turn.reactions_made
@@ -43,13 +51,36 @@ async def save_assistant_turn(
     if turn.voices_made:
         entry["voices"] = list(turn.voices_made)
 
-    if isinstance(provider_message, dict):
-        reasoning_details = provider_message.get("reasoning_details")
+    exact_messages = [
+        copy.deepcopy(message)
+        for message in (provider_messages or [])
+        if isinstance(message, dict)
+    ]
+    if not exact_messages and isinstance(provider_message, dict):
+        exact_messages = [copy.deepcopy(provider_message)]
+    for message in exact_messages:
+        if not message.get("role"):
+            message["role"] = "assistant"
+    if exact_messages:
+        entry["provider_messages"] = exact_messages
+
+    reasoning_source = provider_message
+    if not isinstance(reasoning_source, dict):
+        reasoning_source = next(
+            (
+                message
+                for message in reversed(exact_messages)
+                if message.get("role") == "assistant"
+            ),
+            None,
+        )
+    if isinstance(reasoning_source, dict):
+        reasoning_details = reasoning_source.get("reasoning_details")
         if isinstance(reasoning_details, list) and reasoning_details:
             entry["reasoning_details"] = copy.deepcopy(reasoning_details)
         else:
-            reasoning_content = provider_message.get("reasoning_content")
-            reasoning = provider_message.get("reasoning")
+            reasoning_content = reasoning_source.get("reasoning_content")
+            reasoning = reasoning_source.get("reasoning")
             if isinstance(reasoning_content, str) and reasoning_content:
                 entry["reasoning_content"] = reasoning_content
             elif isinstance(reasoning, str) and reasoning:

@@ -102,9 +102,18 @@ Each chat request also carries a deterministic, opaque `session_id` derived from
 persisted history key. It contains no raw Telegram ID and keeps one conversation on a
 sticky OpenRouter endpoint. Completed assistant `reasoning_details` (or the legacy
 reasoning string when structured details are unavailable) are stored with the confirmed
-history turn and echoed back unmodified. They are never sent to Telegram, memory
-extraction, or the summarizer. Provider cache entries may still be evicted after an idle
-period; a cold request affects price and latency, not the conversation context.
+history turn and echoed back unmodified. The same row stores Telegram-visible `content`
+separately from the exact `provider_messages` assistant/tool transcript. Display cleanup,
+including removal of a final full stop, therefore never changes the next provider prefix;
+tool calls and their results are also replayed in their original order. Opaque reasoning
+and provider-only tool data are never sent to Telegram, memory extraction, or the
+summarizer. Provider cache entries may still be evicted after an idle period; a cold
+request affects price and latency, not the conversation context.
+
+Main chat calls opt in to OpenRouter router metadata. INFO logs retain only the generation
+ID, strategy, region, selected endpoint, attempt number, and pipeline stage names. This is
+enough to distinguish provider drift, fallback, and context compression without logging
+additional prompt or reasoning content.
 
 Persisted history also records whether each new row has crossed its first provider-send
 boundary. A user reaction is stored beside a newly delivered assistant reply until that

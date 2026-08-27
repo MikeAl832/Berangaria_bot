@@ -93,6 +93,10 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Group debounce buffers are per user, but group history is shared. Do not remove per-history turn serialization.
 - Summarization must work on copies of retained entries. Never renumber or otherwise mutate live history before the API request succeeds.
 - Deliver Telegram text before adding the assistant entry to history. A delivery failure must not create a response the user never received or retry the whole LLM turn.
+- Telegram-only cleanup and formatting must never rewrite the provider transcript. Store
+  confirmed display text in `content`, retain the exact assistant/tool sequence in
+  `provider_messages`, and render that sequence unmodified on later LLM turns. Terminal
+  Telegram tools need a persisted tool result so replayed tool-call history stays valid.
 - New persisted prompt rows carry `provider_sent: false`. Immediately before the first
   provider request, atomically persist them as sent; legacy rows without the flag count as
   sent. An incoming reaction may update an unsent assistant row in place, but after that
@@ -116,6 +120,9 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Every chat scope uses one stable opaque OpenRouter `session_id`. Do not use
   `provider.order`: it disables sticky prompt-cache routing. Restrict hosts with
   `provider.only` instead.
+- Request OpenRouter router metadata for chat calls and keep its logs content-free: record
+  generation ID, selected endpoint, region, attempt, and pipeline names, never prompts or
+  opaque reasoning state at INFO.
 - Private chats use `send_message_draft`. Group turns must not create persistent streaming previews: an ambiguous send timeout can lose the message ID and leave an undeletable partial duplicate, so groups receive one final response only.
 
 ## Persistence and memory rules

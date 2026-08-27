@@ -241,6 +241,53 @@ def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path):
     assert leaders["cost"][0]["value"] == 321
 
 
+def test_telegram_cleanup_does_not_change_provider_history(monkeypatch, tmp_path):
+    response = _Response(200, {
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "Сырая точка."},
+        }],
+        "usage": {},
+    })
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 1,
+        "mid": 10,
+    }]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+    bot = _SuccessfulBot()
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, True,
+    ))
+
+    assert bot.messages[0]["text"] == "Сырая точка"
+    assert history[-1]["content"] == "Сырая точка"
+    assert history[-1]["provider_messages"] == [{
+        "role": "assistant",
+        "content": "Сырая точка.",
+    }]
+    assert llm_client._render_history_for_api(history)[-1] == {
+        "role": "assistant",
+        "content": "Сырая точка.",
+    }
+
+    state.histories.clear()
+    state.load_all_histories()
+    restored = state.histories[key][-1]
+    assert restored["content"] == "Сырая точка"
+    assert restored["provider_messages"][0]["content"] == "Сырая точка."
+
+
 def test_terminal_reply_failure_does_not_resend_unanswered_tool_calls(
     monkeypatch, tmp_path
 ):
@@ -484,13 +531,13 @@ def _run_turn_with_tool(monkeypatch, tmp_path, name, arguments):
         _Update(), _Context(_ReactingBot()), key, history, "Миша", 1, True,
     ))
     assert len(posts) == 2, posts
-    return posts
+    return posts, history
 
 
 def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
     """The cold temperature is the price of retelling looked-up facts, not of any
     tool at all. Reactions and stickers must not flatten the rest of the turn."""
-    posts = _run_turn_with_tool(
+    posts, _ = _run_turn_with_tool(
         monkeypatch, tmp_path, "react_to_message", '{"emoji": "\\ud83d\\udd25"}'
     )
     assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
@@ -505,10 +552,63 @@ def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path)
         tool_handlers, "web_search",
         lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт\nтекст\nhttps://e.com",
     )
-    posts = _run_turn_with_tool(
+    posts, history = _run_turn_with_tool(
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
     assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
+    provider_messages = history[-1]["provider_messages"]
+    assert [message["role"] for message in provider_messages] == [
+        "assistant", "tool", "assistant",
+    ]
+    assert provider_messages[0]["tool_calls"][0]["function"]["name"] == "web_search"
+    assert provider_messages[1]["tool_call_id"] == "call_1"
+    assert provider_messages[-1]["content"] == "ответ"
+
+
+def test_terminal_reply_persists_valid_exact_provider_trace(monkeypatch, tmp_path):
+    posts = []
+    response = _tool_call_response(
+        "reply_to_message",
+        '{"id":1,"text":"Адресный ответ."}',
+    )
+    monkeypatch.setattr(
+        llm_client.httpx,
+        "AsyncClient",
+        _sequenced_client(posts, [response]),
+    )
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 1,
+        "mid": 10,
+    }]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+    bot = _SuccessfulBot()
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, True,
+    ))
+
+    assert len(posts) == 1
+    assert bot.messages[0]["text"] == "Адресный ответ"
+    assert history[-1]["content"] == "Адресный ответ"
+    provider_messages = history[-1]["provider_messages"]
+    assert [message["role"] for message in provider_messages] == ["assistant", "tool"]
+    assert provider_messages[0]["tool_calls"][0]["function"]["arguments"].endswith(
+        '"Адресный ответ."}'
+    )
+    assert provider_messages[1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "Ответ доставлен в Telegram. Ход завершён.",
+    }
 
 
 def test_streamed_reasoning_details_are_echoed_after_search(monkeypatch, tmp_path):

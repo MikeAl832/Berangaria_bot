@@ -529,7 +529,7 @@ PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.00)
 PRICE_COMPLETION = config_yaml.get("price_completion", 6.00)
 
 
-def chat_api_headers() -> dict[str, str]:
+def chat_api_headers(*, include_router_metadata: bool = False) -> dict[str, str]:
     """OpenAI-compatible headers for the chat/summarization provider."""
     headers = {
         "Authorization": f"Bearer {CHAT_API_KEY}",
@@ -539,6 +539,10 @@ def chat_api_headers() -> dict[str, str]:
         headers["HTTP-Referer"] = CHAT_API_REFERER
     if CHAT_API_TITLE:
         headers["X-Title"] = CHAT_API_TITLE
+    if include_router_metadata:
+        # Additive, content-free routing diagnostics. This exposes the selected
+        # endpoint/region and fallback attempts without logging prompt data.
+        headers["X-OpenRouter-Metadata"] = "enabled"
     return headers
 
 # ========================================

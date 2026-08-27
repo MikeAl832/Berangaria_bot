@@ -178,6 +178,41 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     assert previews == []
 
 
+def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
+    metadata = {
+        "strategy": "direct",
+        "region": "iad",
+        "attempt": 1,
+        "endpoints": {
+            "available": [{
+                "provider": "xAI",
+                "model": "x-ai/grok-4.6",
+                "selected": True,
+            }],
+        },
+    }
+    response = _StreamResponse([
+        _event({
+            "id": "generation-1",
+            "choices": [{
+                "delta": {"role": "assistant", "content": "готово"},
+                "finish_reason": "stop",
+            }],
+        }),
+        _event({"choices": [], "openrouter_metadata": metadata}),
+        "data: [DONE]",
+    ])
+
+    result = asyncio.run(stream_chat_completion(
+        _Client(response),
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={"model": "x-ai/grok-4.6", "messages": []},
+        headers={"X-OpenRouter-Metadata": "enabled"},
+    ))
+
+    assert result.json()["openrouter_metadata"] == metadata
+
+
 def test_stream_reassembles_tool_call_arguments():
     response = _StreamResponse([
         _event({"choices": [{"delta": {"tool_calls": [{

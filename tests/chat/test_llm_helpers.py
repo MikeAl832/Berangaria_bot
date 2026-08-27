@@ -42,6 +42,7 @@ from berangaria.chat.llm_client import (
     _build_system_prompt,
     _build_payload_prefix,
     _current_date_str,
+    _provider_trace_for_history,
 )
 
 
@@ -76,6 +77,14 @@ def test_payload_prefix_puts_date_in_a_second_system_message():
     assert date_line.startswith("Today is ")
     assert "Times of Day" not in date_line
     assert " year." not in date_line
+
+
+def test_chat_headers_enable_router_metadata_only_when_requested():
+    regular = bot_config.chat_api_headers()
+    diagnostic = bot_config.chat_api_headers(include_router_metadata=True)
+
+    assert "X-OpenRouter-Metadata" not in regular
+    assert diagnostic["X-OpenRouter-Metadata"] == "enabled"
 
 def test_markdown_html_escapes_special_chars():
     assert markdown_to_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
@@ -160,6 +169,61 @@ def test_render_prepends_sid_to_user():
 def test_render_plain_assistant_untouched():
     hist = [{"role": "assistant", "content": "ответ"}]
     assert _render_history_for_api(hist) == [{"role": "assistant", "content": "ответ"}]
+
+
+def test_render_prefers_exact_provider_message_over_telegram_text():
+    provider_messages = [{
+        "role": "assistant",
+        "content": "Ответ с точкой.",
+        "reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque"}],
+    }]
+    hist = [{
+        "role": "assistant",
+        "content": "Ответ с точкой",
+        "provider_messages": provider_messages,
+    }]
+
+    rendered = _render_history_for_api(hist)
+
+    assert rendered == provider_messages
+    assert rendered is not provider_messages
+    assert rendered[0] is not provider_messages[0]
+
+
+def test_provider_trace_keeps_tool_call_and_adds_terminal_result():
+    tool_message = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "reply_to_message",
+                "arguments": '{"id":1,"text":"Ответ."}',
+            },
+        }],
+    }
+    payload = [
+        {"role": "system", "content": "static"},
+        {"role": "user", "content": "question"},
+        tool_message,
+    ]
+
+    trace = _provider_trace_for_history(
+        payload,
+        2,
+        terminal_tool_result="Ответ доставлен в Telegram. Ход завершён.",
+    )
+
+    assert trace == [
+        tool_message,
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "Ответ доставлен в Telegram. Ход завершён.",
+        },
+    ]
+    assert trace[0] is not tool_message
 
 
 def test_render_plain_assistant_preserves_structured_reasoning():

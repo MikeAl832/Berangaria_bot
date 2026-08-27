@@ -55,6 +55,18 @@ def _render_assistant_message(message: dict, content: str) -> dict:
     return rendered
 
 
+def _render_provider_messages(message: dict) -> list[dict]:
+    """Return the exact provider transcript stored for a confirmed turn."""
+    provider_messages = message.get("provider_messages")
+    if not isinstance(provider_messages, list):
+        return []
+    return [
+        copy.deepcopy(provider_message)
+        for provider_message in provider_messages
+        if isinstance(provider_message, dict) and provider_message.get("role")
+    ]
+
+
 def _render_history_event(message: dict) -> dict | None:
     """Convert one structured timeline event into ephemeral provider context."""
     if message.get("event_kind") != "incoming_reaction":
@@ -105,14 +117,20 @@ def render_history_for_api(history: list) -> list:
         incoming = message.get("incoming_reactions") if role == "assistant" else None
         stickers = message.get("stickers") if role == "assistant" else None
         voices = message.get("voices") if role == "assistant" else None
+        provider_messages = _render_provider_messages(message) if role == "assistant" else []
         if not (reactions or incoming or stickers or voices):
             if role == "assistant":
-                output.append(_render_assistant_message(message, content))
+                if provider_messages:
+                    output.extend(provider_messages)
+                else:
+                    output.append(_render_assistant_message(message, content))
             else:
                 output.append({"role": role, "content": content})
             continue
 
-        if content and not voices:
+        if provider_messages:
+            output.extend(provider_messages)
+        elif content and not voices:
             output.append(_render_assistant_message(message, content))
         elif content and voices and (reactions or stickers or incoming):
             output.append(_render_assistant_message(message, content))

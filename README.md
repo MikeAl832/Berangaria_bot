@@ -283,6 +283,11 @@ Set `debug: true` in config.yaml for detailed logging:
   OpenRouter sticky cache routing; the shipped client does both automatically
 - Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
   appends those reactions after the cached prefix automatically
+- Telegram cleanup is display-only: persisted `provider_messages` replay the exact raw
+  assistant/tool transcript, including punctuation and tool results, while `content`
+  remains the text the user actually received
+- Check the `🛰️ OpenRouter` line beside token usage for endpoint, region, fallback attempt,
+  or context-compression drift when cache reads unexpectedly collapse
 - Confirm `OPENROUTER_API_KEY` is set and the `model` slug is still discounted if costs jump
 - Monitor token usage with `/stats` command
 

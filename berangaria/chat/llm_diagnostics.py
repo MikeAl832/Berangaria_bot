@@ -54,6 +54,44 @@ def log_response(reply: str, finish_reason: str, *, enabled: bool) -> None:
     logger.debug("[blue]%s[/]", "=" * 80)
 
 
+def log_router_metadata(data: dict, headers) -> None:
+    """Log safe OpenRouter routing evidence for cache-affinity diagnosis."""
+    metadata = data.get("openrouter_metadata")
+    generation_id = data.get("id")
+    if not generation_id and headers is not None:
+        generation_id = headers.get("X-Generation-Id") or headers.get(
+            "x-generation-id"
+        )
+
+    if not isinstance(metadata, dict):
+        if generation_id:
+            logger.debug("🛰️ OpenRouter generation=%s (router metadata absent)", generation_id)
+        return
+
+    selected = []
+    endpoints = metadata.get("endpoints") or {}
+    for endpoint in endpoints.get("available") or []:
+        if isinstance(endpoint, dict) and endpoint.get("selected"):
+            provider = endpoint.get("provider") or "?"
+            model = endpoint.get("model") or "?"
+            selected.append(f"{provider}/{model}")
+    pipeline = [
+        str(stage.get("name") or stage.get("type"))
+        for stage in metadata.get("pipeline") or []
+        if isinstance(stage, dict) and (stage.get("name") or stage.get("type"))
+    ]
+    logger.info(
+        "🛰️ OpenRouter: generation=%s strategy=%s region=%s endpoint=%s "
+        "attempt=%s pipeline=%s",
+        generation_id or "?",
+        metadata.get("strategy") or "?",
+        metadata.get("region") or "?",
+        ",".join(selected) or "?",
+        metadata.get("attempt") or "?",
+        ",".join(pipeline) or "none",
+    )
+
+
 def record_usage(
     usage: dict,
     *,
