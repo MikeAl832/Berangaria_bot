@@ -1,4 +1,5 @@
 import logging
+import time
 import warnings
 import asyncio
 
@@ -38,10 +39,11 @@ from telegram.ext import (
 
 from berangaria.config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL, SUMMARY_INTERVAL,
+    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL,
     MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
     MEMORY_SOURCE_RETENTION_SECONDS,
-    SUMMARY_HOURS, TIMEZONE_NAME,
+    SUMMARY_HOURS, SUMMARY_INTERVAL, SUMMARY_MIN_EXTRA, SUMMARY_QUIET_SECONDS,
+    TIMEZONE_NAME,
     STREAMING_ENABLED, MODEL, CHAT_API_URL,
     TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
     TELEGRAM_BOT_API_LOCAL_MODE,
@@ -85,10 +87,72 @@ async def _telegram_post_init(application: Application) -> None:
         logger.exception("👀 [red]User bridge: ошибка запуска (бот продолжает работу)[/]")
 
 
+async def _summarize_scheduled_keys(keys: list[str]) -> tuple[int, list[str]]:
+    """Compress chats that pass the scheduled gates. Returns (done, postponed)."""
+    from berangaria.chat.llm_client import summarize_history
+    from berangaria.chat.summarization import scheduled_summary_status
+
+    summarized_count = 0
+    postponed: list[str] = []
+    for key in keys:
+        async with state.get_turn_lock(key):
+            history = state.histories.get(key, [])
+            status = scheduled_summary_status(
+                len(history),
+                last_activity=state.last_activity.get(key),
+                now=time.time(),
+                interval=SUMMARY_INTERVAL,
+                min_extra=SUMMARY_MIN_EXTRA,
+                quiet_seconds=SUMMARY_QUIET_SECONDS,
+            )
+            if status == "too_short":
+                continue
+            if status == "recent":
+                postponed.append(key)
+                continue
+            old_len = len(history)
+            new_history = await summarize_history(history, key=key)
+            if new_history is not history and len(new_history) < old_len:
+                async with state.get_history_lock(key):
+                    state.histories[key] = new_history
+                    state.save_history(key)
+                summarized_count += 1
+                logger.info(f"  ✅ {key}: {old_len} → {len(new_history)} сообщений")
+    return summarized_count, postponed
+
+
+async def run_scheduled_summarization_slot(*, sleep=asyncio.sleep) -> int:
+    """One opportunity slot: skip short chats, postpone recently active once."""
+    total_chats = len(state.histories)
+    logger.info(f"📝 [yellow]Запуск суммаризации для {total_chats} активных чатов...[/]")
+    summarized_count, postponed = await _summarize_scheduled_keys(
+        list(state.histories.keys())
+    )
+    if postponed:
+        logger.info(
+            "📝 [dim]Откладываю %s чат(ов) на %.0fс — недавно писали[/]",
+            len(postponed),
+            SUMMARY_QUIET_SECONDS,
+        )
+        await sleep(SUMMARY_QUIET_SECONDS)
+        extra, still_active = await _summarize_scheduled_keys(postponed)
+        summarized_count += extra
+        for key in still_active:
+            logger.info(
+                "📝 [dim]Пропуск %s до следующего слота — всё ещё пишут[/]",
+                key,
+            )
+    if summarized_count > 0:
+        logger.info(
+            f"📝 [green]Суммаризировано {summarized_count} из {total_chats} чатов[/]"
+        )
+    else:
+        logger.info("📝 [dim]Нет чатов для суммаризации[/]")
+    return summarized_count
+
+
 async def periodic_summarization(bot=None):
     """Суммаризирует активные чаты в заданные часы (по умолчанию 05:00 и 14:00 МСК)."""
-    from berangaria.chat.llm_client import summarize_history
-
     while True:
         now = now_local()
         target = next_summary_run(now)
@@ -105,31 +169,7 @@ async def periodic_summarization(bot=None):
             raise
 
         try:
-            summarized_count = 0
-            total_chats = len(state.histories)
-
-            logger.info(f"📝 [yellow]Запуск суммаризации для {total_chats} активных чатов...[/]")
-
-            for key in list(state.histories.keys()):
-                async with state.get_turn_lock(key):
-                    history = state.histories.get(key, [])
-
-                    # Нужно > SUMMARY_INTERVAL+1, иначе 1 резюме + keep не короче исходника
-                    if len(history) > SUMMARY_INTERVAL + 1:
-                        old_len = len(history)
-                        new_history = await summarize_history(history, key=key)
-
-                        if new_history is not history and len(new_history) < old_len:
-                            async with state.get_history_lock(key):
-                                state.histories[key] = new_history
-                                state.save_history(key)
-                            summarized_count += 1
-                            logger.info(f"  ✅ {key}: {old_len} → {len(new_history)} сообщений")
-
-            if summarized_count > 0:
-                logger.info(f"📝 [green]Суммаризировано {summarized_count} из {total_chats} чатов[/]")
-            else:
-                logger.info("📝 [dim]Нет чатов для суммаризации[/]")
+            await run_scheduled_summarization_slot()
 
             # Чистим данные чатов, неактивных больше 72 часов (предотвращает рост словарей в памяти)
             removed = state.cleanup_old_chats(max_age_hours=72)

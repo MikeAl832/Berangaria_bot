@@ -292,6 +292,20 @@ MULTI_MESSAGE_CHARS_PER_SEC = max(
 BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
 RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+# Scheduled job only: skip a chat unless at least this many messages sit
+# beyond the keep window. /summarize and the 85% token path ignore this.
+SUMMARY_MIN_EXTRA = max(
+    2,
+    _as_int(config_yaml.get("summary_min_extra", 10), 10),
+)
+# Scheduled job only: postpone once if the chat spoke this recently.
+SUMMARY_QUIET_SECONDS = max(
+    0.0,
+    min(
+        _as_float(config_yaml.get("summary_quiet_seconds", 600.0), 600.0),
+        3600.0,
+    ),
+)
 MESSAGE_DEBOUNCE_SECONDS = config_yaml.get("message_debounce_seconds", 4.0)
 RANDOM_REPLY_COOLDOWN = config_yaml.get("random_reply_cooldown", 30)
 RANDOM_REPLY_RECENT_WINDOW_SECONDS = max(

@@ -82,6 +82,34 @@ class _Context:
         self.bot = bot
 
 
+def test_ambient_empty_reply_stays_silent_without_retry(monkeypatch, tmp_path):
+    posts = []
+    empty = _Response(200, {
+        "choices": [{"finish_reason": "stop", "message": {"content": ""}}],
+        "usage": {},
+    })
+    monkeypatch.setattr(
+        llm_client.httpx, "AsyncClient", _sequenced_client(posts, [empty]),
+    )
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "group_-1"
+    history = [{"role": "user", "content": "[Message: привет всем]", "sid": 1, "mid": 10}]
+    state.histories[key] = history
+    bot = _SuccessfulBot()
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, False,
+    ))
+
+    assert len(posts) == 1
+    assert posts[0]["messages"][-1]["role"] != "system"
+    assert [entry["role"] for entry in history] == ["user"]
+    assert bot.messages == []
+
+
 def test_failed_delivery_does_not_create_ghost_assistant(monkeypatch):
     response = _Response(200, {
         "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],

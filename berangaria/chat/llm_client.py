@@ -474,8 +474,6 @@ async def send_llm_request(
         if FULL_DEBUG_LOGS:
             llm_diagnostics.log_request(payload_messages, enabled=True)
 
-        forced_answer_nudge = False  # один раз подтолкнём ответить, если промолчала при прямом обращении
-
         api_failures = 0
         tool_rounds = 0
         while True:
@@ -896,7 +894,6 @@ async def send_llm_request(
                                 pass
                         return
                     if not mentioned:
-                        # Ambient-пинг: к Ber не обращались — осознанное молчание, это норма.
                         logger.info(f"🤫 [dim]Промолчала (ambient)[/] (ключ={key})")
                         if turn.status_message:
                             try:
@@ -904,16 +901,7 @@ async def send_llm_request(
                             except Exception:
                                 pass
                         return
-                    # Прямое обращение / личка / событие — молчать нельзя. Один раз подталкиваем ответить.
-                    if not forced_answer_nudge:
-                        forced_answer_nudge = True
-                        payload_messages.append({
-                            "role": "system",
-                            "content": "Тебе адресовали сообщение напрямую — нельзя молчать. Дай короткий ответ в своём стиле."
-                        })
-                        logger.info(f"↩️ [yellow]Пустой ответ при прямом обращении — подталкиваю ответить[/] (ключ={key})")
-                        continue
-                    logger.warning(f"⚠️ [yellow]Пустой ответ при прямом обращении даже после напоминания[/] (ключ={key})")
+                    logger.warning(f"⚠️ [yellow]Пустой ответ при прямом обращении[/] (ключ={key})")
                     if turn.status_message:
                         try:
                             await turn.status_message.delete()

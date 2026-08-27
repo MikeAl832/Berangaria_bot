@@ -220,8 +220,10 @@ memory_source_retention_seconds: 2592000
 bot_names: ["Бер", "Ber"]
 random_reply_chance: 10
 summary_interval: 10
+summary_min_extra: 10
+summary_quiet_seconds: 600
 timezone: "Europe/Moscow"
-summary_hours: [5]
+summary_hours: [5, 10, 14, 20]
 message_debounce_seconds: 4.0
 max_buffered_messages: 30
 max_buffered_chars: 20000
@@ -247,8 +249,10 @@ log_message_preview_chars: 400
 - `bot_names`: Names that trigger bot responses in groups
 - `random_reply_chance`: Base probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts. The effective probability is calculated before an LLM call as `base × idle_factor × presence_factor / (1 + 0.5 × recent_turns)`. `idle_factor` grows linearly from `0.1` to `3.0` as the gap since the previous group turn approaches `random_reply_idle_target_seconds`. After Ber successfully answers an explicit mention/reply, `presence_factor` starts at `random_reply_presence_multiplier` and linearly decays to `1.0`. A candidate is discarded when a newer message, group event, or emoji reaction arrives during the debounce window. Values `0` and `100` retain their explicit off/on meaning after these activity and cooldown gates.
 - `summary_interval`: Messages preserved after summarization
+- `summary_min_extra`: Scheduled slots skip a chat unless at least this many messages sit beyond the keep window (shipped: `10`, so about 20+ total with the default interval). `/summarize` and the 85% token path ignore this.
+- `summary_quiet_seconds`: If someone wrote this recently, the slot postpones that chat once by the same duration, then skips until the next hour if they are still talking (shipped: `600`). Manual and token-budget compression do not wait.
 - `timezone`: Bot timezone for `[Time:]` tags, the separate calendar-date line in the chat payload, and scheduled summarization (default `Europe/Moscow`)
-- `summary_hours`: Local hours when automatic history compression runs (shipped: `[5]` → 05:00; default if omitted: `[5, 14]`)
+- `summary_hours`: Local hours when automatic history compression runs (shipped: `[5, 10, 14, 20]` Moscow). Slots are opportunity points in the lulls around the group's peaks (11, 13, 21–22, 00), not hard fires during them. Default if omitted: `[5, 14]`.
 - `message_debounce_seconds`: Timeout for merging consecutive messages (seconds)
 - `max_buffered_messages` / `max_buffered_chars`: Budget for one debounce buffer. Every message
   restarts the debounce window, so without a budget a continuous stream merges into a single
@@ -429,18 +433,19 @@ Request cost: $0.000285
 ### Automatic Summarization
 
 **How it works:**
-- Runs at every hour listed in `summary_hours` (shipped: 05:00 local time)
-- Summarizes chats longer than `summary_interval + 1` messages (result must be strictly shorter)
+- Runs at every hour listed in `summary_hours` (shipped: 05:00, 10:00, 14:00, 20:00 local)
+- A slot is an opportunity: skip the chat if fewer than `summary_min_extra` messages sit beyond the keep window
+- If someone wrote within `summary_quiet_seconds`, postpone that chat once by the same window; still talking after that → wait for the next hour
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
 - Uses the chat model with `reasoning.effort: high`; long client timeout and a larger `max_tokens` budget so CoT does not starve the final summary
 
 **Manual trigger:**
-Use `/summarize` command to compress chat history immediately.
+Use `/summarize` command to compress chat history immediately. Token-budget compression at 85% of `max_context_tokens` also ignores the scheduled min-extra and quiet gates.
 
 **Configuration:**
-- Schedule is set by `summary_hours` in config.yaml (shipped: `[5]`)
-- Minimum messages required: more than `summary_interval + 1` (result is always 1 summary + `summary_interval` recent)
+- Schedule is set by `summary_hours` in config.yaml (shipped: `[5, 10, 14, 20]`)
+- Scheduled minimum: `summary_interval + summary_min_extra` messages (result is always 1 summary + `summary_interval` recent)
 
 **Logs:**
 ```

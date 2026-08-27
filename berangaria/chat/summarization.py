@@ -12,11 +12,45 @@ from berangaria.config import (
     FULL_DEBUG_LOGS,
     MODEL,
     SUMMARY_INTERVAL,
+    SUMMARY_MIN_EXTRA,
+    SUMMARY_QUIET_SECONDS,
     chat_api_headers,
 )
 from berangaria.core.utils import strip_tiktok_urls
 
 logger = logging.getLogger(__name__)
+
+
+def scheduled_summary_status(
+    history_len: int,
+    *,
+    last_activity: float | None,
+    now: float,
+    interval: int = SUMMARY_INTERVAL,
+    min_extra: int = SUMMARY_MIN_EXTRA,
+    quiet_seconds: float = SUMMARY_QUIET_SECONDS,
+) -> str:
+    """Decide whether a scheduled slot should compress this chat.
+
+    Returns ``ready``, ``too_short`` (not enough older messages to bother),
+    or ``recent`` (someone spoke inside the quiet window). The 85% token
+    path and ``/summarize`` do not use this gate.
+    """
+    try:
+        extra = int(history_len) - int(interval)
+    except (TypeError, ValueError):
+        return "too_short"
+    if extra < int(min_extra):
+        return "too_short"
+    if quiet_seconds <= 0 or last_activity is None:
+        return "ready"
+    try:
+        age = float(now) - float(last_activity)
+    except (TypeError, ValueError):
+        return "ready"
+    if age < quiet_seconds:
+        return "recent"
+    return "ready"
 
 
 def _message_reasoning_len(message: dict) -> int:

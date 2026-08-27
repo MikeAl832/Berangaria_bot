@@ -80,6 +80,24 @@ def test_prompt_does_not_embed_clock_or_time_of_day():
     assert "time_of_day" not in SYSTEM_PROMPT
 
 
+def test_prompt_treats_ambient_silence_as_last_resort():
+    assert "Empty silence is a last resort" in SYSTEM_PROMPT
+    assert "Don't know what to say → send_sticker" in SYSTEM_PROMPT
+    assert "otherwise stay silent" not in SYSTEM_PROMPT
+
+
+def test_send_sticker_covers_having_no_line():
+    from berangaria.tools.schemas import TOOLS
+
+    description = next(
+        tool["function"]["description"]
+        for tool in TOOLS
+        if tool["function"]["name"] == "send_sticker"
+    )
+    assert "have no sentence" in description
+    assert "going empty" in description
+
+
 def test_prompt_forbids_faking_multi_bubbles_with_blank_lines():
     assert "Never fake a messenger burst with a blank line" in SYSTEM_PROMPT
     assert "two or more beats" in SYSTEM_PROMPT
