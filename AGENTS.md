@@ -4,20 +4,20 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. Direct xAI (default `grok-4.6`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter `openai/gpt-5.6-terra` (chat `reasoning.effort: low`, summarization `high`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 ## Prompt and model baseline
 
-- Normal Grok 4.6 chat deliberately uses `temperature: 1.0` with
-  `reasoning.effort: low`. Treat 1.0 as the project's preferred native sampling point for
-  intelligence plus wit; do not lower it based on generic conservative-sampling advice.
-  After `web_search` or `read_url`, `factual_temperature` deliberately cools only the
-  factual continuation.
+- Normal Terra chat uses `temperature: 1.0` with `reasoning.effort: low`. Treat 1.0 as
+  the native sampling point; do not add `top_k` / `min_p` / `top_p` (OpenAI Terra does
+  not take them). After `web_search` or `read_url`, `factual_temperature` cools only when
+  reasoning is `none` — GPT-5.6 Completions reject a non-default temperature with effort
+  other than `none`. Summarization still sends `reasoning.effort: high` on its own request.
 - `SYSTEM_PROMPT` is intentionally compact and uncensored for a strong model. Do not
   reintroduce exhaustive forbidden-catchphrase lists, weak-model personality cookbooks,
   anti-swearing/anti-insult censorship, or repeated all-caps constraints. Keep positive
-  direction toward wit, jokes, banter, and equal-participant behavior, and let Grok infer
-  the natural execution.
+  direction toward wit, jokes, banter, and equal-participant behavior, and let the model
+  infer the natural execution.
 - Prompt slimming must preserve actual protocol and security invariants: authenticated
   owner metadata, service-tag boundaries, untrusted web data, memory provenance, tool
   argument rules, and terminal tool paths. Protect those contracts with focused tests.
@@ -117,10 +117,10 @@ Bandit may report intentional low-severity best-effort exception handling and no
 - Persist structured `reasoning_details` (or the single legacy reasoning field) only
   after confirmed final delivery and echo it unmodified on later chat turns. Keep this
   opaque provider state out of Telegram previews, memory extraction, and summaries.
-- Every chat scope uses one stable opaque conversation id, sent to xAI as the
-  `x-grok-conv-id` header so Grok prompt cache pins to one server. Do not add a
-  second chat gateway path (OpenRouter `session_id` / `provider.only`) back into
-  the request.
+- Every chat scope uses one stable opaque conversation id, sent to OpenRouter as
+  `session_id` / `x-session-id` plus `provider.only: ["openai"]` (no Azure/Bedrock
+  fallback) so OpenAI prompt cache stays on one host. There is no second chat
+  gateway path.
 - Private chats use `send_message_draft`. Group turns must not create persistent streaming previews: an ambiguous send timeout can lose the message ID and leave an undeletable partial duplicate, so groups receive one final response only.
 
 ## Persistence and memory rules
@@ -134,6 +134,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 ## Configuration and deployment
 
 - `config.yaml` is the runtime source of non-secret defaults. Environment variables override secrets and selected deployment paths.
+- Chat Completions go through OpenRouter only (`OPENROUTER_API_KEY`). Do not add a second provider key or a direct-xAI request path.
 - The first entry in `allowed_users` is the authenticated owner. Reuse that value through `OWNER_USER_ID`; do not duplicate it in another setting. Only server-generated `[Owner: Name]` metadata may identify the owner, and the owner bypasses user/group allowlists.
 - `admin_alert_chat_id` is one integer Telegram chat ID or `null`, not a list. `null` routes alerts to `OWNER_USER_ID`; a configured ID overrides that destination.
 - Docker uses `BOT_DB_PATH=/data/bot_state.db` and `BOT_LOG_FILE=/data/bot.log`; preserve the mounted `/data` volume for stateful changes.

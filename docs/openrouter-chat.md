@@ -1,131 +1,76 @@
-# Переход чата на OpenRouter
+# OpenRouter chat cache
 
-Штатный чат — прямой `api.x.ai`. OpenRouter в коде **нет**: ни `session_id` в теле, ни `provider.only`, ни ключа `OPENROUTER_API_KEY`. Это нарочно. Развилка «вдруг вернёмся» раздувала `config.py` и ломала кэш Grok, потому что шлюз пинит хостера, а KV-кэш живёт на конкретной реплике xAI.
+Один шлюз: `https://openrouter.ai/api/v1/chat/completions`, модель
+`openai/gpt-5.6-terra`, ключ `OPENROUTER_API_KEY`. Прямого xAI в коде нет.
 
-Вернуть OpenRouter можно. Это не «поменять URL». Нужны yaml, секрет и снова несколько строк в транспорте. Этот файл — что именно и почему.
+Кэш здесь двухслойный. OpenRouter клеит запросы к **одному хостеру**. OpenAI
+кэширует **байт-стабильный префикс** messages. Без первого слоя второй живёт
+только пока балансировщик случайно попадёт на ту же машину.
 
-## Зачем вообще уходили
+## Что уходит в каждый запрос
 
-Grok кэширует префикс **на сервере**. Заголовок `x-grok-conv-id` клеит чат к одной машине. OpenRouter `session_id` клеит только к провайдеру `xAI`. Дальше их балансировщик кидает ARN ↔ HEL (и разные реплики внутри региона). Префикс байт-в-байт тот же, `cached_tokens` прыгает 97% → 0%.
+Тело (чат и суммаризация):
 
-Официальный passthrough заголовков у OpenRouter — вроде `x-anthropic-beta`. `x-grok-conv-id` в этом списке нет. Пока шлюз его не форвардит, на Grok через OpenRouter кэш почти наверняка снова будет пилой. Имеет смысл возвращаться ради фолбэка на Bedrock, единого счёта или другой модели — не ради hit-rate Grok.
-
-## Что уже есть и трогать не надо
-
-Это общее для обоих хостов. Ломать нельзя, иначе кэш умрёт и на прямом xAI:
-
-- Стабильный id чата: `berangaria.chat.llm_client._chat_session_id(history_key)` — sha256 ключа истории, без Telegram id, ≤256 символов.
-- Дата — вторым `system`, не внутри personality prompt.
-- Память дописывается в **последнее** user-сообщение, не в начало.
-- Уже отправленный префикс не переписывается (реакции — в хвост).
-- `reasoning_details` эхом как пришли.
-- `provider_messages` — сырой assistant/tool след, `content` — то, что ушло в Telegram.
-
-В логе смотри `🧭 Маршрут: ... cache=`. Цель после прогрева 70–90%. Первый запрос чата холодный. Редкий мисс после простоя — норма. Пила 97/0/97 на соседних репликах — нет.
-
-## Переменные и yaml
-
-`.env`:
-
-```env
-OPENROUTER_API_KEY=<ключ с openrouter.ai/keys>
-```
-
-Сейчас загрузчик читает только `XAI_API_KEY` или `CHAT_API_KEY`. Пока код не научится брать `OPENROUTER_API_KEY`, временно можно:
-
-```env
-CHAT_API_KEY=<тот же ключ OpenRouter>
-```
-
-`config.yaml`:
-
-```yaml
-model: "x-ai/grok-4.6"
-chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
-```
-
-Slug `grok-4.6` на шлюзе не работает — нужен `x-ai/grok-4.6`.
-
-Цены (`price_prompt_cache_*`, `price_completion`) для Grok 4.6 те же: $2 / $0.50 cached / $6 за 1M, ниже 200K prompt. Если OpenRouter вернёт `usage.cost`, лог берёт его.
-
-DeepSeek `API_KEY` и Gemini не связаны с этим переключением.
-
-## Что обязательно вернуть в код
-
-Иначе получится «URL OpenRouter, кэш как без affinity».
-
-### 1. Ключ
-
-В `berangaria/config.py` для URL OpenRouter читать `OPENROUTER_API_KEY` (с запасным `CHAT_API_KEY`). Не слать ключ xAI на шлюз и наоборот.
-
-### 2. Тело запроса — `session_id`, не `provider.order`
-
-В `send_llm_request` и суммаризации, тот же id что сейчас в заголовке:
-
-```python
-payload["session_id"] = session_id  # _chat_session_id(key)
-```
-
-Липкость OpenRouter: один `session_id` → один хостер, сбрасывается после ~10 минут тишины. Без него шлюз хеширует первые сообщения и может сменить endpoint.
-
-Хост ограничивать так:
-
-```python
-payload["provider"] = {
-    "only": ["xai"],
-    "allow_fallbacks": False,
+```json
+{
+  "model": "openai/gpt-5.6-terra",
+  "session_id": "berangaria-<sha256(history_key)>",
+  "provider": { "only": ["openai"], "allow_fallbacks": false },
+  "reasoning": { "effort": "low" },
+  "messages": [ ... ],
+  "tools": [ ... ]
 }
 ```
 
-| Делать | Не делать |
-|---|---|
-| `provider.only` | `provider.order` — **выключает** sticky routing |
-| `allow_fallbacks: false`, если нужен только xAI | `sort: "price"` — прыгает между равноценными пулами xAI и сбрасывает кэш |
-| Один стабильный `session_id` на history key | Новый id на каждый ход или tool-round |
-
-Фолбэк `amazon-bedrock` (~+10% к цене) — только если сознательно принимаешь холодный кэш при уходе с xAI.
-
-### 3. Заголовки
-
-`chat_api_headers` на пути OpenRouter:
+Заголовки:
 
 ```
 Authorization: Bearer <OPENROUTER_API_KEY>
-Content-Type: application/json
 x-session-id: <тот же session_id>
-x-grok-conv-id: <тот же>          # на случай если шлюз начнёт форвардить
-HTTP-Referer: ...                 # опционально, атрибуция
-X-Title: Berangaria               # опционально
-X-OpenRouter-Metadata: enabled    # опционально, диагностика region/endpoint
+HTTP-Referer: https://github.com/MikeAl832/Berangaria_bot
+X-Title: Berangaria
 ```
 
-Прямому `api.x.ai` **нельзя** слать `session_id` и `provider` в JSON — неизвестные поля могут дать 400. Если снова появится развилка, режь её по URL, не держи оба набора полей «на всякий».
+`session_id` в теле важнее заголовка, если вдруг разойдутся. Один id на весь
+чат (`private_X` / `group_Y`), не на ход и не на tool-round. Длина ≤256.
 
-Точки: `berangaria/config.py` (`CHAT_API_KEY`, `chat_api_headers`), `berangaria/chat/llm_client.py` (тело чата), `berangaria/chat/summarization.py` (тоже Completions).
+| Поле | Зачем |
+|---|---|
+| `session_id` / `x-session-id` | sticky routing с первого успешного ответа, не после первого cache hit |
+| `provider.only: ["openai"]` | не прыгать на Azure/Bedrock — у них другой KV-кэш |
+| `allow_fallbacks: false` | падение OpenAI не «спасается» чужим хостером ценой холодного кэша |
+| `reasoning.effort: low` | чат+tools по гайду OpenAI; `none` — если снова упрётесь в CoT-налог |
+| суммаризация `high` | отдельный запрос, как на Grok/Luna; не наследует low чата |
 
-## Как проверить, что кэш живой
-
-После выкладки 10–15 реплик подряд в одном ЛС:
-
-```
-🧭 Маршрут: provider=... model=x-ai/grok-4.6 session=............ cache=...
-```
-
-- `cache=` 70–90% на втором и дальше запросах того же чата — ок.
-- Снова 97% ↔ 0%/2% при том же `session=` — шлюз не держит реплику xAI. Это ожидаемо для Grok через OpenRouter, пока нет форварда `x-grok-conv-id`. Тогда либо мириться с ценой, либо обратно на `api.x.ai`.
-- Если включил `X-OpenRouter-Metadata`, в ответе будет `openrouter_metadata` (region/endpoint). Скачки ARN↔HEL при том же session — тот же диагноз.
+В логе: `🧭 Маршрут: provider=OpenAI ... cache=`. После прогрева цель 80–90%.
+Первый запрос чата холодный. Пила 90/0/90 при том же `session_id` — хостер сменился
+или префикс messages переписали.
 
 Не путай с Mem0: `🧠 Память` к prompt cache не относится.
 
-## Обратно на прямой xAI
+## Что держит сам префикс messages
 
-```yaml
-model: "grok-4.6"
-chat_api_url: "https://api.x.ai/v1/chat/completions"
-```
+Это уже не поля OpenRouter, а как собран prompt. Ломать нельзя:
 
-```env
-XAI_API_KEY=<ключ с console.x.ai>
-```
+- Personality system — первое сообщение, без даты.
+- Календарный день — вторым `system`, не внутри personality.
+- Память дописывается в **последнее** user-сообщение, не в начало.
+- Уже отправленный префикс не переписывается (реакции — в хвост).
+- `provider_messages` — сырой assistant/tool след, `content` — то, что ушло в Telegram.
 
-В запросе снова только `x-grok-conv-id`. Без `session_id` и без `provider` в теле.
+OpenAI автоматически кэширует префикс, если он ≥1024 токенов. System prompt + tools
+это закрывают. Меняется хвост (новый user, tool results текущего хода) — это
+нормальный miss только на хвосте; начало должно оставаться cache hit.
+
+## Чего не делать
+
+| Делать | Не делать |
+|---|---|
+| `provider.only: ["openai"]` | `provider.order` — выключает sticky routing |
+| `allow_fallbacks: false` | `sort: "price"` — прыжки OpenAI ↔ Azure ↔ Bedrock |
+| Один `session_id` на history key | Новый id на ход или tool-round |
+| `reasoning.effort: low` в чате | `medium`/`high` на каждый пинг в группе |
+| `high` только в суммаризации | `top_k` / `min_p` — OpenAI их не ест |
+
+Точки в коде: `berangaria/config.py` (`chat_api_headers`, `apply_chat_gateway`),
+`berangaria/chat/llm_client.py`, `berangaria/chat/summarization.py`.

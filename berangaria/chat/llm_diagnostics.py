@@ -65,6 +65,27 @@ def log_router_metadata(data: dict, headers) -> None:
         logger.debug("🛰️ generation=%s", generation_id)
 
 
+def _nonneg_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def reasoning_tokens(usage: dict) -> int:
+    """Thinking tokens billed for this call. Never the reasoning text itself."""
+    for key in ("completion_tokens_details", "output_tokens_details"):
+        details = usage.get(key)
+        if isinstance(details, dict) and details.get("reasoning_tokens") is not None:
+            return _nonneg_int(details.get("reasoning_tokens"))
+    prompt = _nonneg_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
+    completion = _nonneg_int(
+        usage.get("completion_tokens") or usage.get("output_tokens")
+    )
+    total = _nonneg_int(usage.get("total_tokens"))
+    return max(0, total - prompt - completion)
+
+
 def record_usage(
     usage: dict,
     *,
@@ -81,13 +102,15 @@ def record_usage(
     details = usage.get("prompt_tokens_details", {})
     cached_tokens = details.get("cached_tokens", 0)
     cache_write_tokens = details.get("cache_write_tokens", 0)
+    thinking_tokens = reasoning_tokens(usage)
     chat_tokens[key] = total_tokens
     logger.info(
         "📊 Токены: запрос=[cyan]%s[/] (кэш=[cyan]%s[/]), "
-        "ответ=[cyan]%s[/], всего=[bright_green]%s[/]",
+        "ответ=[cyan]%s[/], reasoning=[cyan]%s[/], всего=[bright_green]%s[/]",
         prompt_tokens,
         cached_tokens,
         completion_tokens,
+        thinking_tokens,
         total_tokens,
     )
     total_cost = estimate_request_cost(

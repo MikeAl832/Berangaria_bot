@@ -14,7 +14,7 @@ Environment variables for sensitive data:
 
 ```env
 TELEGRAM_BOT_TOKEN=<token>
-XAI_API_KEY=<xai_key>
+OPENROUTER_API_KEY=<openrouter_key>
 API_KEY=<deepseek_key>
 GEMINI_API_KEY=<gemini_key>
 # Optional Fish Audio TTS (send_voice tool). Without both, voice stays off.
@@ -49,11 +49,11 @@ Prompt texts live separately in `berangaria/prompts.py`.
 
 ## config.yaml Parameters
 
-### Main LLM (direct xAI)
+### Main LLM (OpenRouter → OpenAI Terra)
 
 ```yaml
-model: "grok-4.6"
-chat_api_url: "https://api.x.ai/v1/chat/completions"
+model: "openai/gpt-5.6-terra"
+chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 max_context_tokens: 32000
 max_reply_tokens: 4096
 generation_params:
@@ -63,16 +63,17 @@ generation_params:
 ```
 
 **Parameters:**
-- `model`: Chat Completions model id used for chat and summarization (shipped: `grok-4.6`)
-- `chat_api_url`: xAI Chat Completions endpoint (`CHAT_API_URL` env override)
+- `model`: Chat Completions model id used for chat and summarization (shipped: `openai/gpt-5.6-terra`)
+- `chat_api_url`: OpenRouter Chat Completions endpoint (`CHAT_API_URL` env override)
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters. Grok 4.6 accepts `reasoning.effort`
-  (`low` / `medium` / `high` / `xhigh`) and cannot disable reasoning. Shipped chat uses
-  `temperature: 1.0` with `low`; summarization still sends `high` on its own request.
+- `generation_params`: Model sampling parameters. Terra accepts `reasoning.effort`
+  (`none` / `low` / `medium` / `high` / `xhigh` / `max`). Shipped chat uses
+  `temperature: 1.0` with `low`. Do not add `top_k`, `min_p`, or `top_p`.
+  Summarization overrides effort to `high` on its own request.
 
 `temperature: 1.0` is intentional: it is the project's preferred native sampling point
-for Grok 4.6, retaining intelligence while giving normal conversation more wit and
+for Terra, retaining intelligence while giving normal conversation more wit and
 variation. Do not lower it as a generic anti-hallucination measure. Turns that actually
 used `web_search` or `read_url` are cooled separately by `factual_temperature`.
 
@@ -82,16 +83,16 @@ personality recipes for weaker models. Preserve the explicit security, metadata,
 web-trust, and terminal-tool contracts while directing style positively through wit,
 banter, and jokes.
 
-Secret: `XAI_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still required for Mem0
+Secret: `OPENROUTER_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still required for Mem0
 extraction/verification. Gemini is vision and embeddings only.
 
-OpenRouter is not a shipped chat path. To put the gateway back (yaml, secrets, and the
-code that actually preserves cache affinity), see [openrouter-chat.md](openrouter-chat.md).
+Chat Completions have one gateway: OpenRouter. See [openrouter-chat.md](openrouter-chat.md)
+for the cache fields on each request.
 
 Each chat request carries a deterministic, opaque conversation id derived from the
-persisted history key. It contains no raw Telegram ID and is sent as the
-`x-grok-conv-id` header so Grok prompt cache pins to one server. Cache entries live
-per-replica, so omitting that header produces the 97%→0% hit-rate sawtooth.
+persisted history key. It contains no raw Telegram ID. OpenRouter receives it as
+`session_id` / `x-session-id` plus `provider.only: ["openai"]` so OpenAI prompt cache
+stays on one host. Allowing Azure/Bedrock fallback splits that cache.
 Completed assistant `reasoning_details` (or the legacy reasoning string when structured
 details are unavailable) are stored with the confirmed history turn and echoed back
 unmodified. The same row stores Telegram-visible `content` separately from the exact
@@ -353,20 +354,20 @@ Analytics starts after deployment of the feature; old log files and summarized h
 
 ```yaml
 price_prompt_cache_miss: 2.00
-price_prompt_cache_hit: 0.50
-price_prompt_cache_write: 0.00
-price_completion: 6.00
+price_prompt_cache_hit: 0.20
+price_prompt_cache_write: 2.50
+price_completion: 12.00
 ```
 
 **Parameters (per 1M tokens):**
 - `price_prompt_cache_miss`: Regular input tokens
 - `price_prompt_cache_hit`: Cached input tokens (cache read)
-- `price_prompt_cache_write`: Tokens written into the prompt cache (0 for the shipped xAI route; other providers may bill cache writes separately)
+- `price_prompt_cache_write`: Tokens written into the prompt cache (OpenAI bills this; xAI does not)
 - `price_completion`: Output tokens
 
-Shipped values are xAI `grok-4.6` list prices (prompts below 200K tokens).
+Shipped values are OpenRouter list prices for `openai/gpt-5.6-terra`.
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
-Update the yaml prices when the model slug changes.
+Update the yaml prices when the model slug or exclusive discount changes.
 
 ## Memory Configuration
 
@@ -438,7 +439,9 @@ Request cost: $0.000285
 - If someone wrote within `summary_quiet_seconds`, postpone that chat once by the same window; still talking after that → wait for the next hour
 - Keeps the last `summary_interval` messages intact
 - Compresses older history into a brief summary
-- Uses the chat model with `reasoning.effort: high`; long client timeout and a larger `max_tokens` budget so CoT does not starve the final summary
+- Uses the same chat model with `reasoning.effort: high` (not the chat `low`);
+  long client timeout and a larger `max_tokens` budget so CoT does not starve
+  the final summary
 
 **Manual trigger:**
 Use `/summarize` command to compress chat history immediately. Token-budget compression at 85% of `max_context_tokens` also ignores the scheduled min-extra and quiet gates.
@@ -480,15 +483,16 @@ Use `/summarize` command to compress chat history immediately. Token-budget comp
 
 ### High API Costs
 
-**Symptoms:** Unexpected xAI charges
+**Symptoms:** Unexpected OpenRouter / OpenAI charges
 
 **Solutions:**
-1. Check cache hit rate in logs (target: 70-90%); occasional cold requests after idle
+1. Check cache hit rate in logs (target: 80-90% after warmup); occasional cold requests after idle
    eviction are normal
-2. Confirm the shipped `grok-4.6` slug, `api.x.ai` URL, and that
+2. Confirm the shipped `openai/gpt-5.6-terra` slug, OpenRouter URL, and that
    `generation_params.reasoning.effort` is `low`
-3. Confirm requests send a stable `x-grok-conv-id` per chat. A 97%→0% sawtooth with an
-   unchanged prompt prefix means replica affinity was lost, not that history was rewritten
+3. Confirm requests send a stable `session_id` and `provider.only: ["openai"]`. A 90%→0%
+   sawtooth with an unchanged prompt prefix means the hoster changed (fallback to Azure/Bedrock),
+   not that history was rewritten
 4. Reduce `max_context_tokens` if conversations are too long
 5. Use `/summarize` to compress long chats
 6. Re-check `price_*` yaml if list prices changed
@@ -562,7 +566,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- Direct xAI `grok-4.6` is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
+- OpenRouter `openai/gpt-5.6-terra` is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -611,7 +615,7 @@ MEM0_CONFIG = {
 | Variable | Required | Purpose | Source |
 |----------|----------|---------|--------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot authentication | @BotFather |
-| `XAI_API_KEY` | Yes | Chat and summarization via xAI | console.x.ai |
+| `OPENROUTER_API_KEY` | Yes | Chat and summarization via OpenRouter | openrouter.ai/keys |
 | `API_KEY` | Yes | DeepSeek API access for Mem0 extractor/verifier | platform.deepseek.com |
 | `GEMINI_API_KEY` | Yes | Gemini vision + embeddings | aistudio.google.com |
 | `FISH_API_KEY` | No | Fish Audio TTS | fish.audio/app/api-keys |
@@ -629,7 +633,7 @@ and empty shell exports are unset so Compose still reads the server `.env`
 - `FISH_API_KEY` / `FISH_VOICE_ID` (TTS)
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (local Bot API + user bridge)
 - `USER_BRIDGE_SESSION` (Telethon StringSession for the optional user bridge)
-- `XAI_API_KEY` (chat and summarization)
+- `OPENROUTER_API_KEY` (chat and summarization)
 
 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` must exist either as GitHub secrets or
 already in the VPS `.env` — `docker-compose.yml` requires them for
@@ -680,7 +684,7 @@ Berangaria_bot/
 │   ├── chat/handlers.py             # Telegram event handlers
 │   ├── chat/message_queue.py        # Debounce, history commit, turn dispatch
 │   ├── chat/media_handlers.py       # Albums and Telegram media processing
-│   ├── chat/llm_client.py           # xAI chat client
+│   ├── chat/llm_client.py           # OpenRouter chat client
 │   ├── chat/completion_transport.py # Streaming/non-streaming API transport
 │   ├── chat/assistant_turn.py       # Confirmed assistant-turn persistence
 │   ├── chat/llm_diagnostics.py      # Full audit, token, and cost logs
@@ -705,9 +709,9 @@ Berangaria_bot/
 
 ## References
 
-- [xAI API Docs](https://docs.x.ai/developers/grok-4-6)
-- [Grok prompt caching](https://docs.x.ai/developers/advanced-api-usage/prompt-caching)
-- [Switching chat to OpenRouter](openrouter-chat.md)
+- [OpenRouter](https://openrouter.ai/docs)
+- [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra)
+- [OpenRouter chat cache](openrouter-chat.md)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)

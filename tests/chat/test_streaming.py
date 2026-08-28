@@ -63,7 +63,7 @@ def test_stream_aggregates_openai_reasoning_without_previewing_it():
 
     result = asyncio.run(stream_chat_completion(
         client,
-        "https://api.x.ai/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions",
         payload={"model": "openai/gpt-5.6-luna", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
@@ -137,8 +137,8 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     response = _StreamResponse([
         _event({
             "id": "generation-1",
-            "model": "x-ai/grok-4.6",
-            "provider": "xai",
+            "model": "openai/gpt-5.6-terra",
+            "provider": "OpenAI",
             "choices": [{"delta": {
             "role": "assistant",
             "reasoning": "плоская копия, которую не надо дублировать",
@@ -162,16 +162,16 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
 
     result = asyncio.run(stream_chat_completion(
         _Client(response),
-        "https://api.x.ai/v1/chat/completions",
-        payload={"model": "x-ai/grok-4.6", "messages": []},
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={"model": "openai/gpt-5.6-terra", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
 
     message = result.json()["choices"][0]["message"]
     assert result.json()["id"] == "generation-1"
-    assert result.json()["model"] == "x-ai/grok-4.6"
-    assert result.json()["provider"] == "xai"
+    assert result.json()["model"] == "openai/gpt-5.6-terra"
+    assert result.json()["provider"] == "OpenAI"
     assert message["reasoning_details"] == detail_chunks
     assert "reasoning_content" not in message
     assert message["tool_calls"][0]["function"]["name"] == "web_search"
@@ -185,8 +185,8 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
         "attempt": 1,
         "endpoints": {
             "available": [{
-                "provider": "xAI",
-                "model": "x-ai/grok-4.6",
+                "provider": "OpenAI",
+                "model": "openai/gpt-5.6-terra",
                 "selected": True,
             }],
         },
@@ -205,8 +205,8 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
 
     result = asyncio.run(stream_chat_completion(
         _Client(response),
-        "https://api.x.ai/v1/chat/completions",
-        payload={"model": "x-ai/grok-4.6", "messages": []},
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={"model": "openai/gpt-5.6-terra", "messages": []},
         headers={"X-OpenRouter-Metadata": "enabled"},
     ))
 

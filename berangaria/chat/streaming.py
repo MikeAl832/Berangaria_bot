@@ -133,9 +133,9 @@ async def stream_chat_completion(
                 reasoning_parts.append(reasoning_text)
             detail_chunks = delta.get("reasoning_details")
             if isinstance(detail_chunks, list):
-                # xAI requires the complete structured sequence to be echoed
-                # back unmodified during tool use. Streaming chunks are already in
-                # provider order, so concatenate them instead of merging by index.
+                # Reasoning models require the complete structured sequence to be
+                # echoed unmodified during tool use. Streaming chunks are already
+                # in provider order, so concatenate them instead of merging by index.
                 reasoning_details.extend(
                     detail for detail in detail_chunks if isinstance(detail, dict)
                 )

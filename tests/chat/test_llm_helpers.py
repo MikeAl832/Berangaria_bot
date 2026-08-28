@@ -9,7 +9,7 @@ import asyncio
 import copy
 
 from berangaria.chat import llm_client
-from berangaria.chat import history_rendering, reply_formatting
+from berangaria.chat import history_rendering, llm_diagnostics, reply_formatting
 from berangaria.config import (
     CHAT_API_URL,
     GENERATION_PARAMS,
@@ -73,16 +73,33 @@ def test_payload_prefix_puts_date_in_a_second_system_message():
     assert " year." not in date_line
 
 
-def test_chat_headers_send_xai_conv_id():
+def test_chat_headers_send_openrouter_session_affinity():
     regular = bot_config.chat_api_headers()
     pinned = bot_config.chat_api_headers(session_id="berangaria-abc")
 
-    assert "x-grok-conv-id" not in regular
-    assert pinned["x-grok-conv-id"] == "berangaria-abc"
+    assert "x-session-id" not in regular
+    assert pinned["x-session-id"] == "berangaria-abc"
+    assert pinned["HTTP-Referer"] == bot_config.OPENROUTER_HTTP_REFERER
+    assert pinned["X-Title"] == bot_config.OPENROUTER_APP_TITLE
+    assert regular["HTTP-Referer"] == bot_config.OPENROUTER_HTTP_REFERER
     assert "X-OpenRouter-Metadata" not in pinned
-    assert "x-session-id" not in pinned
-    assert "HTTP-Referer" not in pinned
-    assert "X-Title" not in pinned
+    assert "x-grok-conv-id" not in pinned
+
+
+def test_apply_chat_gateway_pins_openai():
+    payload = bot_config.apply_chat_gateway(
+        {"model": MODEL, "messages": []},
+        session_id="berangaria-abc",
+    )
+    assert payload["session_id"] == "berangaria-abc"
+    assert payload["provider"] == {"only": ["openai"], "allow_fallbacks": False}
+
+
+def test_apply_chat_gateway_skips_without_session_id():
+    payload = bot_config.apply_chat_gateway({"model": MODEL, "messages": []}, session_id=None)
+    assert "session_id" not in payload
+    assert "provider" not in payload
+
 
 def test_markdown_html_escapes_special_chars():
     assert markdown_to_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
@@ -620,7 +637,7 @@ def _summary_history(n=12):
     ]
 
 
-def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
+def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
     captured = {}
 
     class OkClient:
@@ -659,20 +676,27 @@ def test_successful_summary_enables_reasoning_and_returns_new_list(monkeypatch):
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
     assert captured["url"] == llm_client.CHAT_API_URL
-    assert captured["headers"]["Authorization"] == "Bearer test-xai-key"
-    assert "X-Title" not in captured["headers"]
-    assert captured["headers"]["x-grok-conv-id"] == llm_client._chat_session_id(
+    assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
+    assert captured["headers"]["X-Title"] == "Berangaria"
+    assert captured["headers"]["x-session-id"] == llm_client._chat_session_id(
         "private_1"
     )
+    assert "x-grok-conv-id" not in captured["headers"]
     assert captured["payload"]["model"] == llm_client.MODEL
     assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert captured["payload"]["temperature"] == 0.3
     assert "thinking" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert captured["payload"]["max_tokens"] == 8192
     assert "top_k" not in captured["payload"]
+    assert "top_p" not in captured["payload"]
+    assert "min_p" not in captured["payload"]
     assert captured["timeout"] == 120.0
-    assert "provider" not in captured["payload"]
-    assert "session_id" not in captured["payload"]
+    assert captured["payload"]["provider"] == {
+        "only": ["openai"],
+        "allow_fallbacks": False,
+    }
+    assert captured["payload"]["session_id"] == llm_client._chat_session_id("private_1")
 
 
 def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
@@ -712,6 +736,24 @@ def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
     assert history == before
 
 
+def test_reasoning_tokens_prefers_completion_details():
+    assert llm_diagnostics.reasoning_tokens({
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+        "completion_tokens_details": {"reasoning_tokens": 12},
+    }) == 12
+
+
+def test_reasoning_tokens_uses_total_gap_when_details_missing():
+    # xAI counted thinking in total but not in completion_tokens.
+    assert llm_diagnostics.reasoning_tokens({
+        "prompt_tokens": 15912,
+        "completion_tokens": 28,
+        "total_tokens": 17941,
+    }) == 2001
+
+
 def test_estimate_request_cost_prefers_provider_usage_cost():
     cost = llm_client._estimate_request_cost(
         {"cost": "0.00123"},
@@ -740,11 +782,14 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
     assert cost == expected
 
 
-def test_shipped_chat_model_is_grok_4_6_with_low_reasoning():
-    assert MODEL == "grok-4.6"
-    assert "api.x.ai" in CHAT_API_URL
+def test_shipped_chat_model_is_terra_with_low_reasoning():
+    assert MODEL == "openai/gpt-5.6-terra"
+    assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
+    assert "top_p" not in GENERATION_PARAMS
+    assert "top_k" not in GENERATION_PARAMS
+    assert "min_p" not in GENERATION_PARAMS
 
 
 def test_chat_session_id_is_stable_opaque_and_scope_specific():

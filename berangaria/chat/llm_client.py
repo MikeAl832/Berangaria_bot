@@ -18,7 +18,7 @@ from berangaria.config import (
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
     STREAM_PREVIEW_MIN_CHARS,
     MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
-    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers,
+    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers, apply_chat_gateway,
 )
 from berangaria.analytics import store as analytics_store
 from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
@@ -120,7 +120,7 @@ def _current_date_str() -> str:
 
 
 def _chat_session_id(history_key: str) -> str:
-    """Stable opaque xAI ``x-grok-conv-id`` for one persisted chat scope."""
+    """Stable opaque conversation id for one persisted chat scope."""
     digest = hashlib.sha256(str(history_key).encode("utf-8")).hexdigest()
     return f"berangaria-{digest}"
 
@@ -478,18 +478,26 @@ async def send_llm_request(
         tool_rounds = 0
         while True:
             gen_params = dict(GENERATION_PARAMS)
-            if used_tool:
-                # Факты после поиска/чтения ссылки — холоднее, меньше выдумок
+            reasoning = gen_params.get("reasoning")
+            reasoning_effort = (
+                reasoning.get("effort") if isinstance(reasoning, dict) else None
+            )
+            if used_tool and reasoning_effort in (None, "none"):
+                # GPT-5.6 with reasoning.effort other than none rejects non-default
+                # temperature on Chat Completions. Cool only the no-thinking path.
                 gen_params["temperature"] = FACTUAL_TEMPERATURE
 
             session_id = _chat_session_id(key)
-            payload = {
-                "model": MODEL,
-                "messages": payload_messages,
-                "max_tokens": MAX_REPLY_TOKENS,
-                "tools": TOOLS,
-                **gen_params
-            }
+            payload = apply_chat_gateway(
+                {
+                    "model": MODEL,
+                    "messages": payload_messages,
+                    "max_tokens": MAX_REPLY_TOKENS,
+                    "tools": TOOLS,
+                    **gen_params
+                },
+                session_id=session_id,
+            )
 
             try:
                 headers = chat_api_headers(session_id=session_id)
@@ -557,7 +565,7 @@ async def send_llm_request(
                         estimate_request_cost=_estimate_request_cost,
                     )
                     details = usage.get("prompt_tokens_details") or {}
-                    provider_name = str(data.get("provider") or "xai")
+                    provider_name = str(data.get("provider") or "openrouter")
                     model_name = str(data.get("model") or MODEL)
                     prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
                     cached_tokens = max(0, int(details.get("cached_tokens", 0) or 0))

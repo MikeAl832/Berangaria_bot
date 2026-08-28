@@ -96,17 +96,19 @@ FISH_API_KEY = (
 FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
 
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (прямой xAI chat + DeepSeek Mem0)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Terra chat + DeepSeek Mem0)
 # ========================================
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 CHAT_API_URL = _str_setting(
     "CHAT_API_URL",
     "chat_api_url",
-    "https://api.x.ai/v1/chat/completions",
+    "https://openrouter.ai/api/v1/chat/completions",
 )
-MODEL = config_yaml.get("model", "grok-4.6")
+MODEL = config_yaml.get("model", "openai/gpt-5.6-terra")
+OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
+OPENROUTER_APP_TITLE = "Berangaria"
 CHAT_API_KEY = (
-    os.environ.get("XAI_API_KEY", "")
+    os.environ.get("OPENROUTER_API_KEY", "")
     or os.environ.get("CHAT_API_KEY", "")
 ).strip()
 
@@ -116,7 +118,7 @@ if not TELEGRAM_TOKEN:
 if not DEEPSEEK_API_KEY:
     raise ValueError("API_KEY (DeepSeek) не установлен в .env файле!")
 if not CHAT_API_KEY:
-    raise ValueError("XAI_API_KEY (чат) не установлен в .env файле!")
+    raise ValueError("OPENROUTER_API_KEY (чат) не установлен в .env файле!")
 
 
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
@@ -449,22 +451,36 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match xAI grok-4.6 list prices (no separate cache-write meter).
+# Defaults match OpenRouter list prices for openai/gpt-5.6-terra.
 PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 2.00)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.50)
-PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.00)
-PRICE_COMPLETION = config_yaml.get("price_completion", 6.00)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.20)
+PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 2.50)
+PRICE_COMPLETION = config_yaml.get("price_completion", 12.00)
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
-    """xAI Chat Completions headers. ``x-grok-conv-id`` pins one cache replica."""
+    """OpenRouter Completions headers. ``x-session-id`` is the sticky routing key."""
     headers = {
         "Authorization": f"Bearer {CHAT_API_KEY}",
         "Content-Type": "application/json",
+        "HTTP-Referer": OPENROUTER_HTTP_REFERER,
+        "X-Title": OPENROUTER_APP_TITLE,
     }
     if session_id:
-        headers["x-grok-conv-id"] = session_id
+        headers["x-session-id"] = session_id
     return headers
+
+
+def apply_chat_gateway(payload: dict, *, session_id: str | None) -> dict:
+    """Pin the chat to OpenAI so prompt cache is not split across Azure/Bedrock."""
+    if not session_id:
+        return payload
+    payload["session_id"] = session_id
+    payload["provider"] = {
+        "only": ["openai"],
+        "allow_fallbacks": False,
+    }
+    return payload
 
 # ========================================
 # 🧠 MEM0 КОНФИГУРАЦИЯ

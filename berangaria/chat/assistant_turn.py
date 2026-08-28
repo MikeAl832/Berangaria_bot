@@ -23,9 +23,9 @@ async def save_assistant_turn(
     """Append delivered text plus the byte-stable provider side of the turn.
 
     ``content`` is the Telegram-visible text and may be cleaned for presentation.
-    ``provider_messages`` is the exact assistant/tool transcript xAI saw or
-    returned.  Keeping the two representations separate prevents Telegram-only
-    cleanup (for example removing a final full stop) from invalidating xAI's
+    ``provider_messages`` is the exact assistant/tool transcript the provider saw
+    or returned.  Keeping the two representations separate prevents Telegram-only
+    cleanup (for example removing a final full stop) from invalidating the
     prompt prefix on the next turn.
     """
     if (

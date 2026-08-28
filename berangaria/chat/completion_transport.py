@@ -1,4 +1,4 @@
-"""One xAI completion request with optional Telegram streaming preview."""
+"""One chat completion request with optional Telegram streaming preview."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass

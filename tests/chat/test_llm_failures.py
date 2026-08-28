@@ -218,9 +218,10 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["mid"] == 99
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
-    assert "session_id" not in payloads[0]
-    assert "provider" not in payloads[0]
-    assert captured_headers[0]["x-grok-conv-id"] == llm_client._chat_session_id(key)
+    assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
+    assert payloads[0]["provider"] == {"only": ["openai"], "allow_fallbacks": False}
+    assert captured_headers[0]["x-session-id"] == llm_client._chat_session_id(key)
+    assert "x-grok-conv-id" not in captured_headers[0]
 
     state.histories.clear()
     state.load_all_histories()
@@ -576,8 +577,8 @@ def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
     assert posts[1]["temperature"] != llm_client.FACTUAL_TEMPERATURE
 
 
-def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path):
-    """After web_search it is the opposite: the reply retells sources and must be cold."""
+def test_search_round_keeps_temperature_when_reasoning_is_on(monkeypatch, tmp_path):
+    """With effort other than none, OpenAI rejects a cooled temperature on Completions."""
     from berangaria.tools import dispatch as tool_handlers
 
     monkeypatch.setattr(
@@ -587,7 +588,8 @@ def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path)
     posts, history = _run_turn_with_tool(
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
-    assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
+    assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
+    assert posts[1]["temperature"] != llm_client.FACTUAL_TEMPERATURE
     provider_messages = history[-1]["provider_messages"]
     assert [message["role"] for message in provider_messages] == [
         "assistant", "tool", "assistant",
@@ -595,6 +597,24 @@ def test_search_round_switches_to_the_factual_temperature(monkeypatch, tmp_path)
     assert provider_messages[0]["tool_calls"][0]["function"]["name"] == "web_search"
     assert provider_messages[1]["tool_call_id"] == "call_1"
     assert provider_messages[-1]["content"] == "ответ"
+
+
+def test_search_round_cools_when_reasoning_is_off(monkeypatch, tmp_path):
+    from berangaria.tools import dispatch as tool_handlers
+
+    monkeypatch.setattr(
+        llm_client,
+        "GENERATION_PARAMS",
+        {**llm_client.GENERATION_PARAMS, "reasoning": {"effort": "none"}},
+    )
+    monkeypatch.setattr(
+        tool_handlers, "web_search",
+        lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт\nтекст\nhttps://e.com",
+    )
+    posts, _ = _run_turn_with_tool(
+        monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
+    )
+    assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
 
 
 def test_terminal_reply_persists_valid_exact_provider_trace(monkeypatch, tmp_path):
@@ -739,4 +759,4 @@ def test_streamed_reasoning_details_are_echoed_after_search(monkeypatch, tmp_pat
     assert assistant["reasoning_details"] == reasoning_details
     assert "reasoning_content" not in assistant
     assert any(message.get("role") == "tool" for message in continuation)
-    assert payloads[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
+    assert payloads[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]

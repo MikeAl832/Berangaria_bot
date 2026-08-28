@@ -10,10 +10,12 @@ from berangaria.chat.history_rendering import renumber_sids
 from berangaria.config import (
     CHAT_API_URL,
     FULL_DEBUG_LOGS,
+    GENERATION_PARAMS,
     MODEL,
     SUMMARY_INTERVAL,
     SUMMARY_MIN_EXTRA,
     SUMMARY_QUIET_SECONDS,
+    apply_chat_gateway,
     chat_api_headers,
 )
 from berangaria.core.utils import strip_tiktok_urls
@@ -98,28 +100,31 @@ async def summarize_history(
         )
         return history
 
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Напиши ТЕХНИЧЕСКОЕ РЕЗЮМЕ диалога на русском:"
-                    "Сожми этот диалог в КРАТКОЕ резюме на русском языке. "
-                    "Пиши ТОЛЬКО суть, без вводных фраз. "
-                    "Обязательно сохрани: имена, цифры, модели (например, RTX 5070 Ti), "
-                    "технические характеристики, решения и важные факты. "
-                    "НЕ пиши 'Пользователь сказал...', 'Собеседник ответил...' — "
-                    "просто перескажи факты."
-                ),
-            },
-            {"role": "user", "content": text_to_summarize},
-        ],
-        "max_tokens": 8192,
-        "temperature": 0.3,
-        "top_p": 0.9,
-        "reasoning": {"effort": "high"},
-    }
+    payload = apply_chat_gateway(
+        {
+            "model": MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Напиши ТЕХНИЧЕСКОЕ РЕЗЮМЕ диалога на русском:"
+                        "Сожми этот диалог в КРАТКОЕ резюме на русском языке. "
+                        "Пиши ТОЛЬКО суть, без вводных фраз. "
+                        "Обязательно сохрани: имена, цифры, модели (например, RTX 5070 Ti), "
+                        "технические характеристики, решения и важные факты. "
+                        "НЕ пиши 'Пользователь сказал...', 'Собеседник ответил...' — "
+                        "просто перескажи факты."
+                    ),
+                },
+                {"role": "user", "content": text_to_summarize},
+            ],
+            "max_tokens": 8192,
+            **dict(GENERATION_PARAMS),
+            "temperature": 0.3,
+            "reasoning": {"effort": "high"},
+        },
+        session_id=session_id,
+    )
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
