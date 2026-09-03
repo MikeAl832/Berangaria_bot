@@ -49,10 +49,10 @@ Prompt texts live separately in `berangaria/prompts.py`.
 
 ## config.yaml Parameters
 
-### Main LLM (OpenRouter → OpenAI Terra)
+### Main LLM (OpenRouter → OpenAI Sol Flex)
 
 ```yaml
-model: "openai/gpt-5.6-terra"
+model: "openai/gpt-5.6-sol"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 max_context_tokens: 32000
 max_reply_tokens: 4096
@@ -63,17 +63,17 @@ generation_params:
 ```
 
 **Parameters:**
-- `model`: Chat Completions model id used for chat and summarization (shipped: `openai/gpt-5.6-terra`)
+- `model`: Chat Completions model id used for chat and summarization (shipped: `openai/gpt-5.6-sol`)
 - `chat_api_url`: OpenRouter Chat Completions endpoint (`CHAT_API_URL` env override)
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters. Terra accepts `reasoning.effort`
+- `generation_params`: Model sampling parameters. Sol accepts `reasoning.effort`
   (`none` / `low` / `medium` / `high` / `xhigh` / `max`). Shipped chat uses
   `temperature: 1.0` with `low`. Do not add `top_k`, `min_p`, or `top_p`.
   Summarization overrides effort to `high` on its own request.
 
 `temperature: 1.0` is intentional: it is the project's preferred native sampling point
-for Terra, retaining intelligence while giving normal conversation more wit and
+for Sol, retaining intelligence while giving normal conversation more wit and
 variation. Do not lower it as a generic anti-hallucination measure. Turns that actually
 used `web_search` or `read_url` are cooled separately by `factual_temperature`.
 
@@ -91,8 +91,9 @@ for the cache fields on each request.
 
 Each chat request carries a deterministic, opaque conversation id derived from the
 persisted history key. It contains no raw Telegram ID. OpenRouter receives it as
-`session_id` / `x-session-id` plus `provider.only: ["openai"]` so OpenAI prompt cache
-stays on one host. Allowing Azure/Bedrock fallback splits that cache.
+`session_id` / `x-session-id` plus `provider.only: ["openai/flex"]` so price and the
+OpenAI Flex prompt cache stay on one endpoint. Allowing another tier or Azure/Bedrock
+fallback splits that cache.
 Completed assistant `reasoning_details` (or the legacy reasoning string when structured
 details are unavailable) are stored with the confirmed history turn and echoed back
 unmodified. The same row stores Telegram-visible `content` separately from the exact
@@ -353,10 +354,10 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 2.00
-price_prompt_cache_hit: 0.20
-price_prompt_cache_write: 2.50
-price_completion: 12.00
+price_prompt_cache_miss: 1.00
+price_prompt_cache_hit: 0.10
+price_prompt_cache_write: 1.25
+price_completion: 5.00
 ```
 
 **Parameters (per 1M tokens):**
@@ -365,7 +366,8 @@ price_completion: 12.00
 - `price_prompt_cache_write`: Tokens written into the prompt cache (OpenAI bills this; xAI does not)
 - `price_completion`: Output tokens
 
-Shipped values are OpenRouter list prices for `openai/gpt-5.6-terra`.
+Shipped values are the current promotional OpenRouter prices for `openai/gpt-5.6-sol`
+on the `openai/flex` endpoint.
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
 Update the yaml prices when the model slug or exclusive discount changes.
 
@@ -488,10 +490,10 @@ Use `/summarize` command to compress chat history immediately. Token-budget comp
 **Solutions:**
 1. Check cache hit rate in logs (target: 80-90% after warmup); occasional cold requests after idle
    eviction are normal
-2. Confirm the shipped `openai/gpt-5.6-terra` slug, OpenRouter URL, and that
+2. Confirm the shipped `openai/gpt-5.6-sol` slug, OpenRouter URL, and that
    `generation_params.reasoning.effort` is `low`
-3. Confirm requests send a stable `session_id` and `provider.only: ["openai"]`. A 90%→0%
-   sawtooth with an unchanged prompt prefix means the hoster changed (fallback to Azure/Bedrock),
+3. Confirm requests send a stable `session_id` and `provider.only: ["openai/flex"]`. A
+   90%→0% sawtooth with an unchanged prompt prefix means the endpoint changed,
    not that history was rewritten
 4. Reduce `max_context_tokens` if conversations are too long
 5. Use `/summarize` to compress long chats
@@ -566,7 +568,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `openai/gpt-5.6-terra` is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
+- OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -710,7 +712,7 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter](https://openrouter.ai/docs)
-- [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra)
+- [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol)
 - [OpenRouter chat cache](openrouter-chat.md)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)

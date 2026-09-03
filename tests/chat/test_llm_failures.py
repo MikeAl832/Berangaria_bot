@@ -219,7 +219,10 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
     assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
-    assert payloads[0]["provider"] == {"only": ["openai"], "allow_fallbacks": False}
+    assert payloads[0]["provider"] == {
+        "only": ["openai/flex"],
+        "allow_fallbacks": False,
+    }
     assert captured_headers[0]["x-session-id"] == llm_client._chat_session_id(key)
     assert "x-grok-conv-id" not in captured_headers[0]
 

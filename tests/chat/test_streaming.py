@@ -137,7 +137,7 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     response = _StreamResponse([
         _event({
             "id": "generation-1",
-            "model": "openai/gpt-5.6-terra",
+            "model": "openai/gpt-5.6-sol",
             "provider": "OpenAI",
             "choices": [{"delta": {
             "role": "assistant",
@@ -163,14 +163,14 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "openai/gpt-5.6-terra", "messages": []},
+        payload={"model": "openai/gpt-5.6-sol", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
 
     message = result.json()["choices"][0]["message"]
     assert result.json()["id"] == "generation-1"
-    assert result.json()["model"] == "openai/gpt-5.6-terra"
+    assert result.json()["model"] == "openai/gpt-5.6-sol"
     assert result.json()["provider"] == "OpenAI"
     assert message["reasoning_details"] == detail_chunks
     assert "reasoning_content" not in message
@@ -186,7 +186,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
         "endpoints": {
             "available": [{
                 "provider": "OpenAI",
-                "model": "openai/gpt-5.6-terra",
+                "model": "openai/gpt-5.6-sol",
                 "selected": True,
             }],
         },
@@ -206,7 +206,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "openai/gpt-5.6-terra", "messages": []},
+        payload={"model": "openai/gpt-5.6-sol", "messages": []},
         headers={"X-OpenRouter-Metadata": "enabled"},
     ))
 

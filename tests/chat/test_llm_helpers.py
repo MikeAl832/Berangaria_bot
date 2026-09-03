@@ -86,13 +86,16 @@ def test_chat_headers_send_openrouter_session_affinity():
     assert "x-grok-conv-id" not in pinned
 
 
-def test_apply_chat_gateway_pins_openai():
+def test_apply_chat_gateway_pins_openai_flex():
     payload = bot_config.apply_chat_gateway(
         {"model": MODEL, "messages": []},
         session_id="berangaria-abc",
     )
     assert payload["session_id"] == "berangaria-abc"
-    assert payload["provider"] == {"only": ["openai"], "allow_fallbacks": False}
+    assert payload["provider"] == {
+        "only": ["openai/flex"],
+        "allow_fallbacks": False,
+    }
 
 
 def test_apply_chat_gateway_skips_without_session_id():
@@ -693,7 +696,7 @@ def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
     assert "min_p" not in captured["payload"]
     assert captured["timeout"] == 120.0
     assert captured["payload"]["provider"] == {
-        "only": ["openai"],
+        "only": ["openai/flex"],
         "allow_fallbacks": False,
     }
     assert captured["payload"]["session_id"] == llm_client._chat_session_id("private_1")
@@ -782,11 +785,15 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
     assert cost == expected
 
 
-def test_shipped_chat_model_is_terra_with_low_reasoning():
-    assert MODEL == "openai/gpt-5.6-terra"
+def test_shipped_chat_model_is_sol_with_low_reasoning():
+    assert MODEL == "openai/gpt-5.6-sol"
     assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
+    assert llm_client.PRICE_PROMPT_CACHE_MISS == 1.00
+    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.10
+    assert llm_client.PRICE_PROMPT_CACHE_WRITE == 1.25
+    assert llm_client.PRICE_COMPLETION == 5.00
     assert "top_p" not in GENERATION_PARAMS
     assert "top_k" not in GENERATION_PARAMS
     assert "min_p" not in GENERATION_PARAMS

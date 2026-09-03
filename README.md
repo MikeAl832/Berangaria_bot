@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `openai/gpt-5.6-terra` (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **Main LLM**: OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -101,9 +101,9 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: chat model (shipped: `openai/gpt-5.6-terra` on OpenRouter)
-- `chat_api_url`: OpenRouter Completions; each chat sends `session_id` and pins `provider.only: ["openai"]` so prompt cache stays on OpenAI
-- `generation_params`: normal Terra chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`; do not add `top_k` / `min_p` / `top_p`
+- `model`: chat model (shipped: `openai/gpt-5.6-sol` on OpenRouter)
+- `chat_api_url`: OpenRouter Completions; each chat sends `session_id` and pins `provider.only: ["openai/flex"]` so price and prompt cache stay on OpenAI Flex
+- `generation_params`: normal Sol chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`; do not add `top_k` / `min_p` / `top_p`
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
@@ -233,11 +233,11 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `openai/gpt-5.6-terra` (per 1M tokens, list prices)
-- Regular input: $2.00
-- Cached input: $0.20
-- Cache write: $2.50
-- Output: $12.00
+### OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex (per 1M tokens, promotional prices)
+- Regular input: $1.00
+- Cached input: $0.10
+- Cache write: $1.25
+- Output: $5.00
 - Provider `usage.cost` is preferred when the response includes it
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
@@ -251,7 +251,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **GPT-5.6 Terra**: shipped chat model on OpenRouter (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **GPT-5.6 Sol**: shipped chat model on OpenRouter through OpenAI Flex (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - **Gemini**: vision and embeddings only
 
@@ -279,8 +279,8 @@ Set `debug: true` in config.yaml for detailed logging:
 **High costs**: 
 - Check cache hit rate in logs (should be 80-90% after warmup on OpenAI)
 - Confirm `OPENROUTER_API_KEY` is set, chat `reasoning.effort` is `low`, and chat requests
-  send a stable `session_id` with `provider.only: ["openai"]`. Azure/Bedrock fallback
-  splits OpenAI prompt cache.
+  send a stable `session_id` with `provider.only: ["openai/flex"]`. Other tiers or
+  Azure/Bedrock split the OpenAI Flex prompt cache.
 - Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
   appends those reactions after the cached prefix automatically
 - Telegram cleanup is display-only: persisted `provider_messages` replay the exact raw

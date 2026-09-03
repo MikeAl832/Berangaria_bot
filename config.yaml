@@ -1,19 +1,19 @@
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter → OpenAI Terra)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter → OpenAI Sol Flex)
 # ========================================
-# Чат и суммаризация: openai/gpt-5.6-terra через OpenRouter, pinned to OpenAI.
+# Чат и суммаризация: openai/gpt-5.6-sol через OpenRouter, pinned to OpenAI Flex.
 # Чат: effort low (официальный уровень для chat+tools; none оставляли как baseline).
 # Суммаризация шлёт high отдельно — это сжатие фактов, не болтовня.
 # Память (Mem0 extractor/verifier) по-прежнему DeepSeek.
 # Кэш OpenAI — префикс сообщений. session_id + provider.only держат хостера;
 # фолбэк на Azure/Bedrock сбрасывает cache hits.
-"model": "openai/gpt-5.6-terra"
+"model": "openai/gpt-5.6-sol"
 "chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
 "max_context_tokens": 32000               # Максимальная история контекста
 "max_reply_tokens": 4096                  # Максимальный размер ответа
 
 # Параметры генерации обычного чата. Неподдерживаемые поля провайдер отбрасывает.
-# Terra: reasoning.effort none|low|medium|high|xhigh|max.
+# Sol: reasoning.effort none|low|medium|high|xhigh|max.
 # OpenAI не принимает top_k / min_p; top_p вместе с temperature не крутим.
 "generation_params":
   "temperature": 1.0
@@ -151,9 +151,9 @@
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# openai/gpt-5.6-terra на OpenRouter (list): вход $2 / кэш $0.20 / запись кэша $2.50 / выход $12.
+# openai/gpt-5.6-sol на OpenAI Flex с текущей скидкой: вход $1 / кэш $0.10 / запись $1.25 / выход $5.
 # Если OpenRouter вернул usage.cost — берём его. Эксклюзив шлюза правится здесь, не в коде.
-"price_prompt_cache_miss": 2.00          # Обычные входные токены
-"price_prompt_cache_hit": 0.20           # Прочитанные из кэша
-"price_prompt_cache_write": 2.50         # OpenAI тарифицирует запись в кэш
-"price_completion": 12.00                # Выходные токены
+"price_prompt_cache_miss": 1.00          # Обычные входные токены
+"price_prompt_cache_hit": 0.10           # Прочитанные из кэша
+"price_prompt_cache_write": 1.25         # OpenAI тарифицирует запись в кэш
+"price_completion": 5.00                 # Выходные токены

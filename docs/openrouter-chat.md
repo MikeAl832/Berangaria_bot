@@ -1,7 +1,8 @@
 # OpenRouter chat cache
 
 Один шлюз: `https://openrouter.ai/api/v1/chat/completions`, модель
-`openai/gpt-5.6-terra`, ключ `OPENROUTER_API_KEY`. Прямого xAI в коде нет.
+`openai/gpt-5.6-sol` на endpoint `openai/flex`, ключ `OPENROUTER_API_KEY`.
+Прямого xAI в коде нет.
 
 Кэш здесь двухслойный. OpenRouter клеит запросы к **одному хостеру**. OpenAI
 кэширует **байт-стабильный префикс** messages. Без первого слоя второй живёт
@@ -13,9 +14,9 @@
 
 ```json
 {
-  "model": "openai/gpt-5.6-terra",
+  "model": "openai/gpt-5.6-sol",
   "session_id": "berangaria-<sha256(history_key)>",
-  "provider": { "only": ["openai"], "allow_fallbacks": false },
+  "provider": { "only": ["openai/flex"], "allow_fallbacks": false },
   "reasoning": { "effort": "low" },
   "messages": [ ... ],
   "tools": [ ... ]
@@ -37,8 +38,8 @@ X-Title: Berangaria
 | Поле | Зачем |
 |---|---|
 | `session_id` / `x-session-id` | sticky routing с первого успешного ответа, не после первого cache hit |
-| `provider.only: ["openai"]` | не прыгать на Azure/Bedrock — у них другой KV-кэш |
-| `allow_fallbacks: false` | падение OpenAI не «спасается» чужим хостером ценой холодного кэша |
+| `provider.only: ["openai/flex"]` | держать скидочную цену и KV-кэш на OpenAI Flex |
+| `allow_fallbacks: false` | не переходить на другой tier/Azure/Bedrock ценой холодного кэша |
 | `reasoning.effort: low` | чат+tools по гайду OpenAI; `none` — если снова упрётесь в CoT-налог |
 | суммаризация `high` | отдельный запрос, как на Grok/Luna; не наследует low чата |
 
@@ -66,7 +67,7 @@ OpenAI автоматически кэширует префикс, если он
 
 | Делать | Не делать |
 |---|---|
-| `provider.only: ["openai"]` | `provider.order` — выключает sticky routing |
+| `provider.only: ["openai/flex"]` | `provider.order` — выключает sticky routing |
 | `allow_fallbacks: false` | `sort: "price"` — прыжки OpenAI ↔ Azure ↔ Bedrock |
 | Один `session_id` на history key | Новый id на ход или tool-round |
 | `reasoning.effort: low` в чате | `medium`/`high` на каждый пинг в группе |

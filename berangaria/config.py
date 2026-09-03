@@ -96,7 +96,7 @@ FISH_API_KEY = (
 FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
 
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Terra chat + DeepSeek Mem0)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Sol chat + DeepSeek Mem0)
 # ========================================
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 CHAT_API_URL = _str_setting(
@@ -104,7 +104,7 @@ CHAT_API_URL = _str_setting(
     "chat_api_url",
     "https://openrouter.ai/api/v1/chat/completions",
 )
-MODEL = config_yaml.get("model", "openai/gpt-5.6-terra")
+MODEL = config_yaml.get("model", "openai/gpt-5.6-sol")
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
 CHAT_API_KEY = (
@@ -451,11 +451,11 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match OpenRouter list prices for openai/gpt-5.6-terra.
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 2.00)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.20)
-PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 2.50)
-PRICE_COMPLETION = config_yaml.get("price_completion", 12.00)
+# Defaults match the current promotional OpenRouter prices for Sol on OpenAI Flex.
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 1.00)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.10)
+PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 1.25)
+PRICE_COMPLETION = config_yaml.get("price_completion", 5.00)
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
@@ -472,12 +472,12 @@ def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
 
 
 def apply_chat_gateway(payload: dict, *, session_id: str | None) -> dict:
-    """Pin the chat to OpenAI so prompt cache is not split across Azure/Bedrock."""
+    """Pin chat to OpenAI Flex so price and prompt-cache routing stay stable."""
     if not session_id:
         return payload
     payload["session_id"] = session_id
     payload["provider"] = {
-        "only": ["openai"],
+        "only": ["openai/flex"],
         "allow_fallbacks": False,
     }
     return payload

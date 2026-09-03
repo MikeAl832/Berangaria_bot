@@ -4,12 +4,12 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter `openai/gpt-5.6-terra` (chat `reasoning.effort: low`, summarization `high`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex (chat `reasoning.effort: low`, summarization `high`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 ## Prompt and model baseline
 
-- Normal Terra chat uses `temperature: 1.0` with `reasoning.effort: low`. Treat 1.0 as
-  the native sampling point; do not add `top_k` / `min_p` / `top_p` (OpenAI Terra does
+- Normal Sol chat uses `temperature: 1.0` with `reasoning.effort: low`. Treat 1.0 as
+  the native sampling point; do not add `top_k` / `min_p` / `top_p` (OpenAI Sol does
   not take them). After `web_search` or `read_url`, `factual_temperature` cools only when
   reasoning is `none` — GPT-5.6 Completions reject a non-default temperature with effort
   other than `none`. Summarization still sends `reasoning.effort: high` on its own request.
@@ -118,9 +118,9 @@ Bandit may report intentional low-severity best-effort exception handling and no
   after confirmed final delivery and echo it unmodified on later chat turns. Keep this
   opaque provider state out of Telegram previews, memory extraction, and summaries.
 - Every chat scope uses one stable opaque conversation id, sent to OpenRouter as
-  `session_id` / `x-session-id` plus `provider.only: ["openai"]` (no Azure/Bedrock
-  fallback) so OpenAI prompt cache stays on one host. There is no second chat
-  gateway path.
+  `session_id` / `x-session-id` plus `provider.only: ["openai/flex"]` (no other tier or
+  Azure/Bedrock fallback) so OpenAI Flex pricing and prompt cache stay on one endpoint.
+  There is no second chat gateway path.
 - Private chats use `send_message_draft`. Group turns must not create persistent streaming previews: an ambiguous send timeout can lose the message ID and leave an undeletable partial duplicate, so groups receive one final response only.
 
 ## Persistence and memory rules
