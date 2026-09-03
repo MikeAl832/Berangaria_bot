@@ -81,7 +81,9 @@ The shipped system prompt is likewise intentionally compact and uncensored. Do n
 back exhaustive forbidden-phrase lists, anti-swearing/anti-insult rules, or step-by-step
 personality recipes for weaker models. Preserve the explicit security, metadata, memory,
 web-trust, and terminal-tool contracts while directing style positively through wit,
-banter, and jokes.
+banter, and jokes. Ber matches the language of the current message, switches naturally
+with the speaker, and uses Russian only when the current exchange provides no language
+signal.
 
 Secret: `OPENROUTER_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still required for Mem0
 extraction/verification. Gemini is vision and embeddings only.

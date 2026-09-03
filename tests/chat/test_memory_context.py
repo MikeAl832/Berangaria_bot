@@ -56,6 +56,13 @@ def test_prompt_does_not_force_one_liners_or_wit_xor_wisdom():
     assert "Prefer short." in SYSTEM_PROMPT
 
 
+def test_prompt_matches_the_language_of_the_current_message():
+    assert "Match the language used to address you in the current message" in SYSTEM_PROMPT
+    assert "Switch naturally when the speaker switches" in SYSTEM_PROMPT
+    assert "defaulting to Russian only when there is no signal" in SYSTEM_PROMPT
+    assert "Always answer in Russian." not in SYSTEM_PROMPT
+
+
 def test_prompt_does_not_ban_swearing_or_insults():
     assert "never stoop to insults" not in SYSTEM_PROMPT
     assert "never flat insults" not in SYSTEM_PROMPT
