@@ -26,6 +26,10 @@ explicit. Chat reasoning stays off: hidden CoT is billed and then replayed into 
 - **Telegram reactions** via function calling for natural emoji responses; reactions from
   users are attached to a new unsent reply when safe, otherwise appended as timeline
   events so an already-cached conversation prefix is never rewritten
+- **Native Telegram text features**: replies render a safe Markdown subset (bold, italic,
+  code, block quotes, underline, strike, spoilers, and links). Manually selected reply
+  quotes are preserved in model context, and `reply_to_message` can highlight an exact
+  substring; an edited or mismatched quote safely falls back to a whole-message reply.
 - **Optional voice notes** via Fish Audio TTS (`send_voice`) — rare deadpan spoken replies when the model chooses the tool
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)

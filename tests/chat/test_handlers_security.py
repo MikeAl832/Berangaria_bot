@@ -100,3 +100,44 @@ def test_group_media_invalidates_older_ambient_candidate(monkeypatch):
     handlers._record_incoming_media_activity(update, context)
 
     assert not state.is_latest_group_activity(-100, stale_token)
+
+
+def test_extract_reply_context_prefers_manual_selected_quote():
+    replied = SimpleNamespace(
+        from_user=SimpleNamespace(first_name="Миша"),
+        sender_chat=None,
+        text="Это длинное исходное сообщение",
+        caption=None,
+    )
+    message = SimpleNamespace(
+        reply_to_message=replied,
+        quote=SimpleNamespace(
+            text="длинное исходное",
+            position=4,
+            is_manual=True,
+        ),
+    )
+
+    assert handlers._extract_reply_context(message) == (
+        "Миша",
+        "длинное исходное",
+        True,
+        4,
+    )
+
+
+def test_extract_reply_context_falls_back_to_original_excerpt():
+    replied = SimpleNamespace(
+        from_user=SimpleNamespace(first_name="Миша"),
+        sender_chat=None,
+        text="я" * 100,
+        caption=None,
+    )
+    message = SimpleNamespace(reply_to_message=replied, quote=None)
+
+    assert handlers._extract_reply_context(message) == (
+        "Миша",
+        "я" * 80,
+        False,
+        None,
+    )

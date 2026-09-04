@@ -110,14 +110,14 @@ TC = {"id": "tc1", "function": {"name": "x", "arguments": "{}"}}
 
 def test_handle_reply_known_sid():
     turn = ToolTurn()
-    handle_reply(turn, FakeUpdate(mid=1), {"id": 2, "text": "хай"}, {2: 42})
-    assert turn.pending_reply == (42, "хай", 2)
+    handle_reply(turn, FakeUpdate(mid=1), {"id": 2, "text": "хай"}, {2: 42}, [])
+    assert turn.pending_reply == (42, "хай", 2, None, None)
 
 
 def test_handle_reply_unknown_sid_falls_back_to_current_message():
     turn = ToolTurn()
-    handle_reply(turn, FakeUpdate(mid=7), {"id": 99, "text": "x"}, {2: 42})
-    assert turn.pending_reply == (7, "x", 99)
+    handle_reply(turn, FakeUpdate(mid=7), {"id": 99, "text": "x"}, {2: 42}, [])
+    assert turn.pending_reply == (7, "x", 99, None, None)
 
 
 @pytest.mark.parametrize("bad_text", [42, 3.5, None, ["а", "б"], {"t": "x"}, True])
@@ -125,14 +125,56 @@ def test_handle_reply_coerces_non_string_text_to_empty(bad_text):
     # Аргументы инструмента — недоверенный JSON от модели. Нестроковый `text`
     # должен дать пустой ответ, а не улететь дальше и уронить _clean_reply.
     turn = ToolTurn()
-    handle_reply(turn, FakeUpdate(mid=7), {"id": 2, "text": bad_text}, {2: 42})
-    assert turn.pending_reply == (42, "", 2)
+    handle_reply(
+        turn, FakeUpdate(mid=7), {"id": 2, "text": bad_text}, {2: 42}, []
+    )
+    assert turn.pending_reply == (42, "", 2, None, None)
 
 
 def test_handle_reply_missing_text_key():
     turn = ToolTurn()
-    handle_reply(turn, FakeUpdate(mid=7), {"id": 2}, {2: 42})
-    assert turn.pending_reply == (42, "", 2)
+    handle_reply(turn, FakeUpdate(mid=7), {"id": 2}, {2: 42}, [])
+    assert turn.pending_reply == (42, "", 2, None, None)
+
+
+def test_handle_reply_resolves_exact_quote_and_utf16_position():
+    turn = ToolTurn()
+    history = [{
+        "role": "user",
+        "sid": 2,
+        "mid": 42,
+        "telegram_messages": [{"mid": 41, "text": "😀 важные слова здесь"}],
+    }]
+
+    handle_reply(
+        turn,
+        FakeUpdate(mid=1),
+        {"id": 2, "text": "Да", "quote": "важные слова"},
+        {2: 42},
+        history,
+    )
+
+    assert turn.pending_reply == (41, "Да", 2, "важные слова", 3)
+
+
+def test_handle_reply_drops_quote_that_is_not_exact():
+    turn = ToolTurn()
+    history = [{
+        "role": "user",
+        "sid": 2,
+        "mid": 42,
+        "telegram_messages": [{"mid": 42, "text": "точный исходный текст"}],
+    }]
+
+    handle_reply(
+        turn,
+        FakeUpdate(mid=1),
+        {"id": 2, "text": "Нет", "quote": "пересказ исходного"},
+        {2: 42},
+        history,
+    )
+
+    assert turn.pending_reply == (42, "Нет", 2, None, None)
 
 
 # ---------- handle_react ----------
@@ -474,7 +516,7 @@ def test_dispatch_routes_send_voice(monkeypatch):
 
 def test_handle_send_messages_mutex_with_reply():
     turn = ToolTurn()
-    turn.pending_reply = (1, "x", 2)
+    turn.pending_reply = (1, "x", 2, None, None)
     payload = []
     handle_send_messages(
         turn, payload, TC, {"messages": ["a", "b"]}
@@ -486,9 +528,11 @@ def test_handle_send_messages_mutex_with_reply():
 def test_handle_reply_clears_pending_messages():
     turn = ToolTurn()
     turn.pending_messages = ["a", "b"]
-    handle_reply(turn, FakeUpdate(mid=1), {"id": 2, "text": "хай"}, {2: 42})
+    handle_reply(
+        turn, FakeUpdate(mid=1), {"id": 2, "text": "хай"}, {2: 42}, []
+    )
     assert turn.pending_messages is None
-    assert turn.pending_reply == (42, "хай", 2)
+    assert turn.pending_reply == (42, "хай", 2, None, None)
 
 
 def test_dispatch_routes_send_messages():
@@ -668,4 +712,4 @@ def test_dispatch_routes_reply_to_message():
     asyncio.run(dispatch_tool_call(turn, payload, FakeUpdate(mid=1), FakeContext(), tc, {2: 40}, []))
     # терминальный инструмент: в payload ничего не пишет, только pending_reply
     assert payload == []
-    assert turn.pending_reply == (40, "yo", 2)
+    assert turn.pending_reply == (40, "yo", 2, None, None)

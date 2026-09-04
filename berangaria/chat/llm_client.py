@@ -386,9 +386,21 @@ async def send_llm_request(
             multi_message_delay_seconds=_multi_message_delay_seconds,
         )
 
-    async def _deliver(text: str, target_mid, status_msg):
+    async def _deliver(
+        text: str,
+        target_mid,
+        status_msg,
+        *,
+        quote: str | None = None,
+        quote_position: int | None = None,
+    ):
         return await reply_delivery.deliver(
-            text, target_mid, status_msg, _delivery_runtime()
+            text,
+            target_mid,
+            status_msg,
+            _delivery_runtime(),
+            quote=quote,
+            quote_position=quote_position,
         )
 
     async def _deliver_multi(messages: list[str], target_mid, status_msg):
@@ -623,7 +635,7 @@ async def send_llm_request(
                         for tc in message["tool_calls"]
                     ):
                         used_tool = True
-                    turn.pending_reply = None  # (target_mid, text, sid) если модель выбрала reply_to_message
+                    turn.pending_reply = None
                     turn.pending_messages = None  # list[str] если send_messages
 
                     for tool_call in message['tool_calls']:
@@ -649,7 +661,13 @@ async def send_llm_request(
                     # отправляем выбранный ответ и завершаем — без ещё одного витка к API
                     # и без дефолтного реплая ниже (двойной отправки не будет).
                     if turn.pending_reply is not None:
-                        reply_mid, reply_text, reply_sid = turn.pending_reply
+                        (
+                            reply_mid,
+                            reply_text,
+                            reply_sid,
+                            reply_quote,
+                            reply_quote_position,
+                        ) = turn.pending_reply
                         try:
                             reply_text = _clean_reply(reply_text)
                         except Exception as exc:
@@ -680,7 +698,13 @@ async def send_llm_request(
                         if reply_text:
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
                             try:
-                                sent_mid = await _deliver(reply_text, reply_mid, turn.status_message)
+                                sent_mid = await _deliver(
+                                    reply_text,
+                                    reply_mid,
+                                    turn.status_message,
+                                    quote=reply_quote,
+                                    quote_position=reply_quote_position,
+                                )
                             except Exception as exc:
                                 logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
                                 await _alert(

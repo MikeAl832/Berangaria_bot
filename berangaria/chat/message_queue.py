@@ -43,7 +43,9 @@ class QueueRuntime:
     truncate_at_sentence: Callable[[str, int], str]
     build_memory_text: Callable[..., str]
     extract_forward_info: Callable[[Any], str | None]
-    extract_reply_context: Callable[[Any], tuple[str | None, str | None]]
+    extract_reply_context: Callable[
+        [Any], tuple[str | None, str | None, bool, int | None]
+    ]
     log_message_preview: Callable[[str], str]
     is_bot_mentioned: Callable[..., tuple[bool, str]]
     should_reply_randomly: Callable[..., bool]
@@ -82,9 +84,16 @@ async def process_buffered_messages(
 
     if first_msg.get("forward_info"):
         message_parts.append(f"[{first_msg['forward_info']}]")
-    if is_group and first_msg["reply_to_name"]:
-        message_parts.append(f"[Reply to: {first_msg['reply_to_name']}]")
-        message_parts.append(f"[Quoted message: {first_msg['reply_to_text']}]")
+    if first_msg.get("reply_to_name"):
+        reply_to_name = escape_user_text(first_msg["reply_to_name"])
+        reply_to_text = escape_user_text(first_msg.get("reply_to_text") or "")
+        quote_tag = (
+            "Selected quote"
+            if first_msg.get("reply_quote_selected")
+            else "Quoted message"
+        )
+        message_parts.append(f"[Reply to: {reply_to_name}]")
+        message_parts.append(f"[{quote_tag}: {reply_to_text}]")
 
     combined_text = "\n".join(message["text"] for message in messages if message["text"])
     if combined_text:
@@ -126,19 +135,35 @@ async def process_buffered_messages(
                 (message.get("sid", 0) for message in history), default=0
             ) + 1
             last_mid = messages[-1].get("message_id")
-            history.append(
+            entry = {
+                "role": "user",
+                "content": message_content,
+                "sid": next_sid,
+                "mid": last_mid,
+                "author_id": user_id,
+                "author_name": user_name,
+                "author_kind": author_kind.lower(),
+                "created_at": first_msg.get("created_at"),
+                "provider_sent": False,
+            }
+            telegram_messages = [
                 {
-                    "role": "user",
-                    "content": message_content,
-                    "sid": next_sid,
-                    "mid": last_mid,
-                    "author_id": user_id,
-                    "author_name": user_name,
-                    "author_kind": author_kind.lower(),
-                    "created_at": first_msg.get("created_at"),
-                    "provider_sent": False,
+                    "mid": message.get("message_id"),
+                    "text": message.get("telegram_text") or "",
                 }
-            )
+                for message in messages
+                if message.get("message_id") is not None
+            ]
+            if telegram_messages:
+                entry["telegram_messages"] = telegram_messages
+            if first_msg.get("reply_to_name"):
+                entry["reply_context"] = {
+                    "target_name": first_msg["reply_to_name"],
+                    "text": first_msg.get("reply_to_text") or "",
+                    "is_manual": bool(first_msg.get("reply_quote_selected")),
+                    "position": first_msg.get("reply_quote_position"),
+                }
+            history.append(entry)
             histories[key] = history
             touch_activity(key)
             state.save_history(key)
@@ -200,7 +225,12 @@ async def queue_message(
     text = strip_tiktok_urls(original_text)
     now = now_local()
     timestamp = f"{now.hour:02d}:{now.minute:02d}"
-    reply_to_name, reply_to_text = runtime.extract_reply_context(update.message)
+    (
+        reply_to_name,
+        reply_to_text,
+        reply_quote_selected,
+        reply_quote_position,
+    ) = runtime.extract_reply_context(update.message)
     forward_info = runtime.extract_forward_info(update.message)
 
     mentioned, _ = runtime.is_bot_mentioned(update, context)
@@ -213,11 +243,14 @@ async def queue_message(
 
     msg_data = {
         "text": text,
+        "telegram_text": text,
         "media_description": media_description,
         "media_kind": media_kind,
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text,
+        "reply_quote_selected": reply_quote_selected,
+        "reply_quote_position": reply_quote_position,
         "forward_info": forward_info,
         "message_id": update.message.message_id,
         "created_at": (
@@ -285,6 +318,8 @@ async def queue_bridge_bot_message(
     media_kind: str | None,
     reply_to_name: str | None,
     reply_to_text: str | None,
+    reply_quote_selected: bool,
+    reply_quote_position: int | None,
     reply_to_user_id: int | None,
     created_at: float | None,
     runtime: QueueRuntime,
@@ -330,11 +365,14 @@ async def queue_bridge_bot_message(
     buffer_key = f"bridge_{chat_id}_{user_id}"
     msg_data = {
         "text": text,
+        "telegram_text": text,
         "media_description": media_description,
         "media_kind": media_kind,
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text,
+        "reply_quote_selected": reply_quote_selected,
+        "reply_quote_position": reply_quote_position,
         "forward_info": None,
         "message_id": update.message.message_id,
         "created_at": created_at if created_at is not None else time.time(),

@@ -116,6 +116,24 @@ def test_markdown_html_bold_italic_code():
     assert markdown_to_html("~~x~~") == "<s>x</s>"
 
 
+def test_markdown_html_telegram_quote_spoiler_and_underline():
+    text = "> **важное**\n> `точно`\n\n||тайна|| и ++акцент++"
+
+    assert markdown_to_html(text) == (
+        "<blockquote><b>важное</b>\n<code>точно</code></blockquote>\n\n"
+        "<tg-spoiler>тайна</tg-spoiler> и <u>акцент</u>"
+    )
+
+
+def test_markdown_html_does_not_format_quote_markers_inside_fenced_code():
+    text = "```python\n> literal\n**also literal**\n```"
+
+    assert markdown_to_html(text) == (
+        '<pre><code class="language-python">&gt; literal\n'
+        "**also literal**\n</code></pre>"
+    )
+
+
 def test_markdown_html_link():
     assert markdown_to_html("[t](http://x.io)") == '<a href="http://x.io">t</a>'
 
@@ -131,6 +149,7 @@ def test_strip_markdown_removes_markup():
     assert strip_markdown("**bold**") == "bold"
     assert strip_markdown("[t](http://x)") == "t (http://x)"
     assert strip_markdown("`code`") == "code"
+    assert strip_markdown("> quote\n||secret|| ++under++") == "quote\nsecret under"
 
 
 # ---------- _clean_reply ----------

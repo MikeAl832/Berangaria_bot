@@ -112,6 +112,23 @@ def test_prompt_forbids_faking_multi_bubbles_with_blank_lines():
     assert 'send_messages(["…", "…"])' in SYSTEM_PROMPT
 
 
+def test_prompt_documents_telegram_markup_and_selected_quotes():
+    assert "[Selected quote: ...] is the exact fragment" in SYSTEM_PROMPT
+    assert "||spoiler||" in SYSTEM_PROMPT
+    assert "++underline++" in SYSTEM_PROMPT
+    assert "lines beginning with > for a block quote" in SYSTEM_PROMPT
+
+    from berangaria.tools.schemas import TOOLS
+
+    reply_tool = next(
+        tool["function"]
+        for tool in TOOLS
+        if tool["function"]["name"] == "reply_to_message"
+    )
+    assert "quote" in reply_tool["parameters"]["properties"]
+    assert "copied EXACTLY" in reply_tool["description"]
+
+
 def test_memory_text_keeps_only_user_text():
     assert _build_memory_text("Я использую Fedora") == "Я использую Fedora"
 

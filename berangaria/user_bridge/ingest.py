@@ -35,6 +35,8 @@ async def ingest_bridge_message(bot: Any, message: BridgeMessage) -> None:
             media_kind=message.media_kind,
             reply_to_name=message.reply_to_name,
             reply_to_text=message.reply_to_text,
+            reply_quote_selected=message.reply_quote_selected,
+            reply_quote_position=message.reply_quote_position,
             reply_to_user_id=message.reply_to_user_id,
             created_at=message.created_at,
         )

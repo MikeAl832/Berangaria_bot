@@ -165,3 +165,39 @@ def test_bridge_queue_skips_memory_on_text_only_bot_chat(monkeypatch, isolated_d
     history = state.histories.get(key) or []
     assert history
     assert "[Bot:" in history[-1]["content"]
+
+
+def test_bridge_queue_preserves_selected_quote_context(monkeypatch, isolated_db):
+    monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-1002263830880])
+    monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(handlers, "should_reply_randomly", lambda *args: False)
+    update = _Update(text="вот на это отвечаю")
+    context = SimpleNamespace(bot=_Bot())
+
+    async def _run():
+        await handlers.queue_bridge_bot_message(
+            update,
+            context,
+            text="вот на это отвечаю",
+            reply_to_name="Другой бот",
+            reply_to_text="выбранные слова",
+            reply_quote_selected=True,
+            reply_quote_position=7,
+        )
+        await asyncio.sleep(0.05)
+        for data in list(state.message_buffer.values()):
+            task = data.get("task")
+            if task is not None:
+                await task
+
+    asyncio.run(_run())
+
+    key = state.get_history_key(-1002263830880, False)
+    entry = state.histories[key][-1]
+    assert "[Selected quote: выбранные слова]" in entry["content"]
+    assert entry["reply_context"] == {
+        "target_name": "Другой бот",
+        "text": "выбранные слова",
+        "is_manual": True,
+        "position": 7,
+    }

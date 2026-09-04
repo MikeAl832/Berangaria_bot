@@ -71,7 +71,8 @@ class ToolTurn:
         self.voices_made = []        # [{"text", "emotion"}] — голосовые этого хода
         self.send_voice_calls = 0    # send_voice attempts this turn
         self.web_search_calls = 0     # how many times web_search ran in this turn
-        self.pending_reply = None     # (target_mid, text, sid) если модель выбрала reply_to_message
+        # (target_mid, text, sid, exact_quote, quote_position) for reply_to_message
+        self.pending_reply = None
         self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
 
 
@@ -325,6 +326,49 @@ def _quote_for_mid(history, react_mid) -> str | None:
             if not _t:
                 return None
             return (_t[:40] + "…") if len(_t) > 40 else _t
+    return None
+
+
+def _utf16_position(text: str, character_index: int) -> int:
+    """Return a Python string offset in Telegram's UTF-16 code units."""
+    return len(text[:character_index].encode("utf-16-le")) // 2
+
+
+def _resolve_exact_reply_quote(
+    history: list,
+    reply_sid: int | None,
+    requested_quote: str | None,
+) -> tuple[int, str, int] | None:
+    """Resolve an exact model quote to the Telegram message that contains it."""
+    if reply_sid is None or not requested_quote or len(requested_quote) > 1024:
+        return None
+    target = next(
+        (
+            item
+            for item in history or []
+            if item.get("role") == "user" and item.get("sid") == reply_sid
+        ),
+        None,
+    )
+    if target is None:
+        return None
+    telegram_messages = target.get("telegram_messages")
+    if not isinstance(telegram_messages, list):
+        return None
+    for message in reversed(telegram_messages):
+        if not isinstance(message, dict):
+            continue
+        text = message.get("text")
+        message_id = message.get("mid")
+        if not isinstance(text, str) or not isinstance(message_id, int):
+            continue
+        character_index = text.find(requested_quote)
+        if character_index >= 0:
+            return (
+                message_id,
+                requested_quote,
+                _utf16_position(text, character_index),
+            )
     return None
 
 
@@ -629,7 +673,7 @@ def handle_send_messages(turn, payload_messages, tool_call, args):
     )
 
 
-def handle_reply(turn, update, args, sid_to_mid):
+def handle_reply(turn, update, args, sid_to_mid, history):
     """
     Терминальный инструмент. Только выставляет turn.pending_reply —
     отправку и запись в историю делает вызывающий код после цикла,
@@ -648,9 +692,47 @@ def handle_reply(turn, update, args, sid_to_mid):
     if reply_mid is None:
         # Невалидный/устаревший [#N] — отвечаем на текущее сообщение
         reply_mid = update.message.message_id
+    raw_quote = args.get("quote")
+    requested_quote = raw_quote if isinstance(raw_quote, str) else None
+    resolved_quote = _resolve_exact_reply_quote(
+        history,
+        reply_sid,
+        requested_quote,
+    )
+    if resolved_quote is None and requested_quote and reply_mid == update.message.message_id:
+        current_text = (
+            getattr(update.message, "text", None)
+            or getattr(update.message, "caption", None)
+            or ""
+        )
+        character_index = current_text.find(requested_quote)
+        if character_index >= 0 and len(requested_quote) <= 1024:
+            resolved_quote = (
+                reply_mid,
+                requested_quote,
+                _utf16_position(current_text, character_index),
+            )
+    if resolved_quote is not None:
+        reply_mid, reply_quote, quote_position = resolved_quote
+    else:
+        reply_quote = None
+        quote_position = None
+        if requested_quote:
+            logger.info(
+                "↩️ [dim]Точная цитата не найдена; обычный reply[/] "
+                "sid=%s quote=%r",
+                reply_sid,
+                requested_quote[:80],
+            )
     # Mutex with send_messages: one terminal text path per tool round.
     turn.pending_messages = None
-    turn.pending_reply = (reply_mid, reply_text, reply_sid)
+    turn.pending_reply = (
+        reply_mid,
+        reply_text,
+        reply_sid,
+        reply_quote,
+        quote_position,
+    )
 
 
 async def dispatch_tool_call(turn, payload_messages, update, context, tool_call, sid_to_mid, history):
@@ -690,7 +772,7 @@ async def dispatch_tool_call(turn, payload_messages, update, context, tool_call,
     elif func_name == 'react_to_message':
         await handle_react(turn, payload_messages, update, context, tool_call, args, sid_to_mid, history)
     elif func_name == 'reply_to_message':
-        handle_reply(turn, update, args, sid_to_mid)
+        handle_reply(turn, update, args, sid_to_mid, history)
     elif func_name == 'send_messages':
         handle_send_messages(turn, payload_messages, tool_call, args)
     elif func_name == 'send_voice':

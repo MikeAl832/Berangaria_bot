@@ -208,7 +208,7 @@ def extract_plain_text(content) -> str:
 
     text = re.sub(
         r"\[(?:Image description|Video description|Context from memory|User|Time|"
-        r"Reply to|Quoted message|Forwarded from [^]]+):"
+        r"Reply to|Quoted message|Selected quote|Forwarded from [^]]+):"
         r"(?:[^\[\]]|\[(?!Message:))*?\]",
         "",
         content,

@@ -270,6 +270,8 @@ async def _handle_event(
 
     reply_to_name = None
     reply_to_text = None
+    reply_quote_selected = False
+    reply_quote_position = None
     reply_to_user_id = None
     if msg.is_reply:
         try:
@@ -283,7 +285,18 @@ async def _handle_event(
                         or getattr(r_sender, "username", None)
                     )
                     reply_to_user_id = int(getattr(r_sender, "id", 0) or 0) or None
-                reply_to_text = (reply.message or reply.text or "сообщение без текста")[:80]
+                reply_header = getattr(msg, "reply_to", None)
+                selected_quote = getattr(reply_header, "quote_text", None)
+                if selected_quote:
+                    reply_to_text = str(selected_quote)[:1024]
+                    reply_quote_selected = True
+                    raw_offset = getattr(reply_header, "quote_offset", None)
+                    if isinstance(raw_offset, int):
+                        reply_quote_position = raw_offset
+                else:
+                    reply_to_text = (
+                        reply.message or reply.text or "сообщение без текста"
+                    )[:80]
         except Exception as exc:
             logger.debug("user_bridge: reply context failed: %s", exc)
 
@@ -322,6 +335,8 @@ async def _handle_event(
         media_kind=media_kind,
         reply_to_name=reply_to_name,
         reply_to_text=reply_to_text,
+        reply_quote_selected=reply_quote_selected,
+        reply_quote_position=reply_quote_position,
         reply_to_user_id=reply_to_user_id,
         created_at=created_at,
         is_group=True,

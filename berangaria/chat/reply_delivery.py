@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from telegram import ReplyParameters
 from telegram.error import BadRequest
 
 from berangaria.chat.reply_formatting import (
@@ -49,6 +50,9 @@ async def deliver(
     target_mid: int | None,
     status_message: Any,
     runtime: DeliveryRuntime,
+    *,
+    quote: str | None = None,
+    quote_position: int | None = None,
 ) -> int | None:
     """Deliver one final reply, returning the first Telegram message ID."""
     update = runtime.update
@@ -59,7 +63,11 @@ async def deliver(
     thread_id = getattr(update.message, "message_thread_id", None)
 
     if status_message is not None:
-        if target_mid == update.message.message_id and len(reply_html) <= 4096:
+        if (
+            target_mid == update.message.message_id
+            and quote is None
+            and len(reply_html) <= 4096
+        ):
             try:
                 await status_message.edit_text(reply_html, parse_mode="HTML")
                 return status_message.message_id
@@ -81,21 +89,57 @@ async def deliver(
         except Exception:
             pass
 
-    async def send_raw(body: str, html: bool) -> int:
+    async def send_raw(
+        body: str,
+        html: bool,
+        reply_mid: int | None,
+        *,
+        with_quote: bool,
+    ) -> int:
         kwargs = {"chat_id": chat_id, "text": body}
         if thread_id is not None:
             kwargs["message_thread_id"] = thread_id
-        if target_mid is not None:
-            kwargs["reply_to_message_id"] = target_mid
-            kwargs["allow_sending_without_reply"] = True
+        if reply_mid is not None:
+            if with_quote and quote:
+                kwargs["reply_parameters"] = ReplyParameters(
+                    message_id=reply_mid,
+                    allow_sending_without_reply=True,
+                    quote=quote,
+                    quote_position=quote_position,
+                )
+            else:
+                kwargs["reply_to_message_id"] = reply_mid
+                kwargs["allow_sending_without_reply"] = True
         if html:
             kwargs["parse_mode"] = "HTML"
         sent = await context.bot.send_message(**kwargs)
         return sent.message_id
 
+    async def send_with_quote_fallback(
+        body: str,
+        html: bool,
+        reply_mid: int | None,
+    ) -> int:
+        try:
+            return await send_raw(body, html, reply_mid, with_quote=True)
+        except BadRequest as error:
+            error_text = str(error).lower()
+            quote_rejected = any(
+                marker in error_text
+                for marker in ("quote not found", "reply quote", "quoted part")
+            )
+            if not quote or not quote_rejected:
+                raise
+            logger.warning(
+                "⚠️ [yellow]Telegram отклонил точную цитату; "
+                "повторяю обычным reply:[/] %s",
+                error,
+            )
+            return await send_raw(body, html, reply_mid, with_quote=False)
+
     if len(reply_html) <= 4096:
         try:
-            return await send_raw(reply_html, True)
+            return await send_with_quote_fallback(reply_html, True, target_mid)
         except BadRequest as error:
             if not runtime.is_parse_error(error):
                 raise
@@ -103,18 +147,13 @@ async def deliver(
                 "⚠️ [yellow]HTML не распарсился, отправляю как текст:[/] %s",
                 error,
             )
-            return await send_raw(reply_plain, False)
+            return await send_with_quote_fallback(reply_plain, False, target_mid)
 
     first_mid = None
     for chunk in split_for_telegram(reply_plain):
-        kwargs = {"chat_id": chat_id, "text": chunk}
-        if thread_id is not None:
-            kwargs["message_thread_id"] = thread_id
-        if first_mid is None and target_mid is not None:
-            kwargs["reply_to_message_id"] = target_mid
-            kwargs["allow_sending_without_reply"] = True
+        reply_mid = target_mid if first_mid is None else None
         try:
-            sent = await context.bot.send_message(**kwargs)
+            sent_mid = await send_with_quote_fallback(chunk, False, reply_mid)
         except Exception as error:
             if first_mid is None:
                 raise
@@ -124,7 +163,7 @@ async def deliver(
             )
             return first_mid
         if first_mid is None:
-            first_mid = sent.message_id
+            first_mid = sent_mid
     return first_mid
 
 

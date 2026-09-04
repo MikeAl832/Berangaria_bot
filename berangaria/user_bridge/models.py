@@ -24,6 +24,8 @@ class BridgeMessage:
     media_kind: Optional[str] = None  # image | video | audio
     reply_to_name: Optional[str] = None
     reply_to_text: Optional[str] = None
+    reply_quote_selected: bool = False
+    reply_quote_position: Optional[int] = None
     reply_to_user_id: Optional[int] = None
     created_at: Optional[float] = None
     is_group: bool = True

@@ -578,15 +578,44 @@ def _extract_forward_info(message) -> str | None:
     return None
 
 
-def _extract_reply_context(message) -> tuple[str | None, str | None]:
-    """Извлекает контекст reply-сообщения (на кого отвечает)."""
-    if not message.reply_to_message:
-        return None, None
-    
-    reply_to_name = message.reply_to_message.from_user.first_name
-    raw_reply = message.reply_to_message.text or message.reply_to_message.caption or "сообщение без текста"
-    reply_to_text = (strip_tiktok_urls(raw_reply) or "сообщение без текста")[:80]
-    return reply_to_name, reply_to_text
+def _extract_reply_context(
+    message,
+) -> tuple[str | None, str | None, bool, int | None]:
+    """Extract the replied-to author and Telegram's exact selected quote."""
+    replied = getattr(message, "reply_to_message", None)
+    if replied is None:
+        return None, None, False, None
+
+    replied_user = getattr(replied, "from_user", None)
+    replied_chat = getattr(replied, "sender_chat", None)
+    reply_to_name = (
+        getattr(replied_user, "first_name", None)
+        or getattr(replied_chat, "title", None)
+        or "неизвестный автор"
+    )
+
+    telegram_quote = getattr(message, "quote", None)
+    raw_quote = getattr(telegram_quote, "text", None)
+    selected_manually = bool(
+        raw_quote and getattr(telegram_quote, "is_manual", False) is True
+    )
+    if raw_quote:
+        raw_reply = raw_quote
+        max_chars = 1024
+    else:
+        raw_reply = (
+            getattr(replied, "text", None)
+            or getattr(replied, "caption", None)
+            or "сообщение без текста"
+        )
+        max_chars = 80
+
+    reply_to_text = (
+        strip_tiktok_urls(raw_reply) or "сообщение без текста"
+    )[:max_chars]
+    raw_position = getattr(telegram_quote, "position", None)
+    quote_position = raw_position if isinstance(raw_position, int) else None
+    return reply_to_name, reply_to_text, selected_manually, quote_position
 
 
 async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -610,6 +639,8 @@ async def queue_bridge_bot_message(
     media_kind: str | None = None,
     reply_to_name: str | None = None,
     reply_to_text: str | None = None,
+    reply_quote_selected: bool = False,
+    reply_quote_position: int | None = None,
     reply_to_user_id: int | None = None,
     created_at: float | None = None,
 ):
@@ -621,6 +652,8 @@ async def queue_bridge_bot_message(
         media_kind=media_kind,
         reply_to_name=reply_to_name,
         reply_to_text=reply_to_text,
+        reply_quote_selected=reply_quote_selected,
+        reply_quote_position=reply_quote_position,
         reply_to_user_id=reply_to_user_id,
         created_at=created_at,
         runtime=_queue_runtime(),

@@ -87,9 +87,11 @@ TOOLS = [
                 "Send your message as a Telegram REPLY to a specific earlier message, identified by its [#N] handle "
                 "(shown at the very start of each incoming message, e.g. [#7]). "
                 "In a normal back-and-forth you do NOT need this — just answer with plain text. "
-                "Use it only when you deliberately want to answer an EARLIER or different message than the latest one "
-                "(e.g. you were pinged and want to pick up something said a few messages ago). "
-                "Pass the number from [#N] as 'id' and your reply as 'text'."
+                "Use it when you deliberately want to answer an EARLIER or different message, or when you want "
+                "Telegram to highlight exact words even in the latest message. "
+                "Pass the number from [#N] as 'id' and your reply as 'text'. To make Telegram highlight only "
+                "specific words, optionally pass 'quote' copied EXACTLY from that message's [Message: ...] text. "
+                "Never paraphrase quote; omit it when an exact substring is not available."
             ),
             "parameters": {
                 "type": "object",
@@ -100,7 +102,11 @@ TOOLS = [
                     },
                     "text": {
                         "type": "string",
-                        "description": "Your reply text (plain text, no service tags, no emoji)."
+                        "description": "Your reply text (no service tags or emoji; supported Telegram markup is allowed)."
+                    },
+                    "quote": {
+                        "type": "string",
+                        "description": "Optional exact substring of the target message to highlight in Telegram's reply header."
                     }
                 },
                 "required": ["id", "text"]
