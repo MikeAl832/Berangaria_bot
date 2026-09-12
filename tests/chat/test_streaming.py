@@ -139,6 +139,7 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
             "id": "generation-1",
             "model": "openai/gpt-5.6-sol",
             "provider": "OpenAI",
+            "service_tier": "flex",
             "choices": [{"delta": {
             "role": "assistant",
             "reasoning": "плоская копия, которую не надо дублировать",
@@ -172,6 +173,7 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     assert result.json()["id"] == "generation-1"
     assert result.json()["model"] == "openai/gpt-5.6-sol"
     assert result.json()["provider"] == "OpenAI"
+    assert result.json()["service_tier"] == "flex"
     assert message["reasoning_details"] == detail_chunks
     assert "reasoning_content" not in message
     assert message["tool_calls"][0]["function"]["name"] == "web_search"

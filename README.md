@@ -106,7 +106,7 @@ Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for deta
 
 Key settings:
 - `model`: chat model (shipped: `openai/gpt-5.6-sol` on OpenRouter)
-- `chat_api_url`: OpenRouter Completions; each chat sends `session_id` and pins `provider.only: ["openai/flex"]` so price and prompt cache stay on OpenAI Flex
+- `chat_api_url`: OpenRouter Completions; each request sends `service_tier: "flex"`, while `session_id` and `provider.only: ["openai/flex"]` keep price and prompt cache on OpenAI Flex with fallbacks disabled
 - `generation_params`: normal Sol chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`; do not add `top_k` / `min_p` / `top_p`
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
@@ -282,9 +282,10 @@ Set `debug: true` in config.yaml for detailed logging:
 
 **High costs**: 
 - Check cache hit rate in logs (should be 80-90% after warmup on OpenAI)
-- Confirm `OPENROUTER_API_KEY` is set, chat `reasoning.effort` is `low`, and chat requests
-  send a stable `session_id` with `provider.only: ["openai/flex"]`. Other tiers or
-  Azure/Bedrock split the OpenAI Flex prompt cache.
+- Confirm `OPENROUTER_API_KEY` is set, chat `reasoning.effort` is `low`, and requests
+  send `service_tier: "flex"` plus a stable `session_id` with
+  `provider.only: ["openai/flex"]`. The route log reports the returned tier; an explicit
+  non-Flex response also alerts the owner. Other tiers or Azure/Bedrock split the cache.
 - Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
   appends those reactions after the cached prefix automatically
 - Telegram cleanup is display-only: persisted `provider_messages` replay the exact raw

@@ -1,7 +1,8 @@
 # OpenRouter chat cache
 
 Один шлюз: `https://openrouter.ai/api/v1/chat/completions`, модель
-`openai/gpt-5.6-sol` на endpoint `openai/flex`, ключ `OPENROUTER_API_KEY`.
+`openai/gpt-5.6-sol` с `service_tier=flex` на endpoint `openai/flex`, ключ
+`OPENROUTER_API_KEY`.
 Прямого xAI в коде нет.
 
 Кэш здесь двухслойный. OpenRouter клеит запросы к **одному хостеру**. OpenAI
@@ -15,6 +16,7 @@
 ```json
 {
   "model": "openai/gpt-5.6-sol",
+  "service_tier": "flex",
   "session_id": "berangaria-<sha256(history_key)>",
   "provider": { "only": ["openai/flex"], "allow_fallbacks": false },
   "reasoning": { "effort": "low" },
@@ -37,13 +39,17 @@ X-Title: Berangaria
 
 | Поле | Зачем |
 |---|---|
+| `service_tier: "flex"` | официальный request-level выбор дешёвого OpenAI Flex tier |
 | `session_id` / `x-session-id` | sticky routing с первого успешного ответа, не после первого cache hit |
 | `provider.only: ["openai/flex"]` | держать скидочную цену и KV-кэш на OpenAI Flex |
 | `allow_fallbacks: false` | не переходить на другой tier/Azure/Bedrock ценой холодного кэша |
 | `reasoning.effort: low` | чат+tools по гайду OpenAI; `none` — если снова упрётесь в CoT-налог |
 | суммаризация `high` | отдельный запрос, как на Grok/Luna; не наследует low чата |
 
-В логе: `🧭 Маршрут: provider=OpenAI ... cache=`. После прогрева цель 80–90%.
+В логе: `🧭 Маршрут: provider=OpenAI service_tier=flex ... cache=`. Строка токенов
+разделяет cache read и cache write, а строка стоимости отмечает `usage.cost` либо
+локальную оценку. Явный ответ не с Flex создаёт критический алерт владельцу.
+После прогрева цель cache hit — 80–90%.
 Первый запрос чата холодный. Пила 90/0/90 при том же `session_id` — хостер сменился
 или префикс messages переписали.
 
@@ -67,6 +73,7 @@ OpenAI автоматически кэширует префикс, если он
 
 | Делать | Не делать |
 |---|---|
+| `service_tier: "flex"` | полагаться на неявный/default tier |
 | `provider.only: ["openai/flex"]` | `provider.order` — выключает sticky routing |
 | `allow_fallbacks: false` | `sort: "price"` — прыжки OpenAI ↔ Azure ↔ Bedrock |
 | Один `session_id` на history key | Новый id на ход или tool-round |

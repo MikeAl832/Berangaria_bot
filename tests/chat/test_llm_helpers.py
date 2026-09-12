@@ -7,6 +7,7 @@
 """
 import asyncio
 import copy
+import logging
 
 from berangaria.chat import llm_client
 from berangaria.chat import history_rendering, llm_diagnostics, reply_formatting
@@ -92,6 +93,7 @@ def test_apply_chat_gateway_pins_openai_flex():
         session_id="berangaria-abc",
     )
     assert payload["session_id"] == "berangaria-abc"
+    assert payload["service_tier"] == "flex"
     assert payload["provider"] == {
         "only": ["openai/flex"],
         "allow_fallbacks": False,
@@ -100,6 +102,7 @@ def test_apply_chat_gateway_pins_openai_flex():
 
 def test_apply_chat_gateway_skips_without_session_id():
     payload = bot_config.apply_chat_gateway({"model": MODEL, "messages": []}, session_id=None)
+    assert payload["service_tier"] == "flex"
     assert "session_id" not in payload
     assert "provider" not in payload
 
@@ -707,6 +710,7 @@ def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
     assert captured["payload"]["model"] == llm_client.MODEL
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert captured["payload"]["temperature"] == 0.3
+    assert captured["payload"]["service_tier"] == "flex"
     assert "thinking" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert captured["payload"]["max_tokens"] == 8192
@@ -804,11 +808,60 @@ def test_estimate_request_cost_splits_cache_write_from_uncached():
     assert cost == expected
 
 
+def test_usage_log_identifies_cache_write_and_provider_cost(caplog):
+    caplog.set_level(logging.INFO, logger="berangaria.chat.llm_diagnostics")
+    usage = {
+        "prompt_tokens": 15906,
+        "completion_tokens": 106,
+        "total_tokens": 16012,
+        "prompt_tokens_details": {
+            "cached_tokens": 15799,
+            "cache_write_tokens": 104,
+        },
+        "completion_tokens_details": {"reasoning_tokens": 56},
+        "cost": 0.002243,
+    }
+    chat_tokens = {}
+
+    cost = llm_diagnostics.record_usage(
+        usage,
+        key="private_1",
+        chat_tokens=chat_tokens,
+        estimate_request_cost=llm_client._estimate_request_cost,
+    )
+
+    assert cost == 0.002243
+    assert chat_tokens == {"private_1": 16012}
+    assert "кэш-чтение=[cyan]15799[/], кэш-запись=[cyan]104[/]" in caplog.text
+    assert "источник=usage.cost" in caplog.text
+
+
+def test_usage_log_labels_fallback_estimate_for_invalid_provider_cost(caplog):
+    caplog.set_level(logging.INFO, logger="berangaria.chat.llm_diagnostics")
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "total_tokens": 110,
+        "cost": "invalid",
+    }
+
+    cost = llm_diagnostics.record_usage(
+        usage,
+        key="private_1",
+        chat_tokens={},
+        estimate_request_cost=llm_client._estimate_request_cost,
+    )
+
+    assert cost > 0
+    assert "источник=локальная оценка" in caplog.text
+
+
 def test_shipped_chat_model_is_sol_with_low_reasoning():
     assert MODEL == "openai/gpt-5.6-sol"
     assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
+    assert bot_config.CHAT_SERVICE_TIER == "flex"
     assert llm_client.PRICE_PROMPT_CACHE_MISS == 1.00
     assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.10
     assert llm_client.PRICE_PROMPT_CACHE_WRITE == 1.25

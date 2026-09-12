@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 
 from berangaria.chat import llm_client
 from berangaria.memory import store as memory_store
@@ -219,6 +220,7 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
     assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
+    assert payloads[0]["service_tier"] == "flex"
     assert payloads[0]["provider"] == {
         "only": ["openai/flex"],
         "allow_fallbacks": False,
@@ -237,17 +239,25 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     }]
 
 
-def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path):
+def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path, caplog):
     response = _Response(200, {
+        "id": "gen-flex-1",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-sol-20260709",
+        "service_tier": "flex",
         "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
         "usage": {
             "prompt_tokens": 100,
             "completion_tokens": 20,
             "total_tokens": 120,
-            "prompt_tokens_details": {"cached_tokens": 80},
+            "prompt_tokens_details": {
+                "cached_tokens": 80,
+                "cache_write_tokens": 10,
+            },
             "cost": 0.000321,
         },
     })
+    caplog.set_level(logging.INFO, logger="berangaria.chat.llm_client")
     monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
     monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
     monkeypatch.setattr(memory_store, "memory", None)
@@ -275,6 +285,48 @@ def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path):
     leaders = analytics_store.get_leaderboards("all", chat_id=100)
     assert leaders["replies"][0]["user_id"] == 1
     assert leaders["cost"][0]["value"] == 321
+    assert "provider=OpenAI service_tier=flex" in caplog.text
+
+
+def test_non_flex_service_tier_alerts_owner(monkeypatch, tmp_path):
+    response = _Response(200, {
+        "id": "gen-standard-1",
+        "provider": "OpenAI",
+        "model": "openai/gpt-5.6-sol-20260709",
+        "service_tier": "default",
+        "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
+        "usage": {},
+    })
+    alerts = []
+
+    async def fake_notify_owner(bot, *, category, message, error=None):
+        alerts.append({"category": category, "message": message, "error": error})
+        return True
+
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(llm_client.alerts, "notify_owner", fake_notify_owner)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{
+        "role": "user",
+        "content": "[Message: привет]",
+        "sid": 1,
+        "mid": 10,
+    }]
+    state.histories[key] = history
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    assert len(alerts) == 1
+    assert alerts[0]["category"] == "LLM routing tier"
+    assert "service_tier=default" in alerts[0]["message"]
+    assert "ожидался flex" in alerts[0]["message"]
+    assert "generation=gen-standard-1" in alerts[0]["message"]
 
 
 def test_telegram_cleanup_does_not_change_provider_history(monkeypatch, tmp_path):

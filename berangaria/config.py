@@ -105,6 +105,7 @@ CHAT_API_URL = _str_setting(
     "https://openrouter.ai/api/v1/chat/completions",
 )
 MODEL = config_yaml.get("model", "openai/gpt-5.6-sol")
+CHAT_SERVICE_TIER = "flex"
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
 CHAT_API_KEY = (
@@ -473,6 +474,9 @@ def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
 
 def apply_chat_gateway(payload: dict, *, session_id: str | None) -> dict:
     """Pin chat to OpenAI Flex so price and prompt-cache routing stay stable."""
+    # `service_tier` is OpenRouter's authoritative capacity-tier selector.
+    # Keep the exact provider endpoint pin below as a second fail-closed guard.
+    payload["service_tier"] = CHAT_SERVICE_TIER
     if not session_id:
         return payload
     payload["session_id"] = session_id

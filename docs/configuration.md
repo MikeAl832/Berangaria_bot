@@ -93,9 +93,9 @@ for the cache fields on each request.
 
 Each chat request carries a deterministic, opaque conversation id derived from the
 persisted history key. It contains no raw Telegram ID. OpenRouter receives it as
-`session_id` / `x-session-id` plus `provider.only: ["openai/flex"]` so price and the
-OpenAI Flex prompt cache stay on one endpoint. Allowing another tier or Azure/Bedrock
-fallback splits that cache.
+top-level `service_tier: "flex"`, plus `session_id` / `x-session-id` and
+`provider.only: ["openai/flex"]`, so price and the OpenAI Flex prompt cache stay on one
+endpoint. Fallbacks are disabled. A returned non-Flex tier triggers an owner alert.
 Completed assistant `reasoning_details` (or the legacy reasoning string when structured
 details are unavailable) are stored with the confirmed history turn and echoed back
 unmodified. The same row stores Telegram-visible `content` separately from the exact
@@ -369,8 +369,9 @@ price_completion: 5.00
 - `price_completion`: Output tokens
 
 Shipped values are the current promotional OpenRouter prices for `openai/gpt-5.6-sol`
-on the `openai/flex` endpoint.
-If the provider returns `usage.cost`, that billed figure is logged instead of the estimate.
+on the `openai/flex` endpoint. Requests also explicitly send `service_tier: "flex"`.
+If the provider returns `usage.cost`, that billed figure is logged instead of the estimate,
+and the log labels which source was used.
 Update the yaml prices when the model slug or exclusive discount changes.
 
 ## Memory Configuration
@@ -494,9 +495,10 @@ Use `/summarize` command to compress chat history immediately. Token-budget comp
    eviction are normal
 2. Confirm the shipped `openai/gpt-5.6-sol` slug, OpenRouter URL, and that
    `generation_params.reasoning.effort` is `low`
-3. Confirm requests send a stable `session_id` and `provider.only: ["openai/flex"]`. A
-   90%→0% sawtooth with an unchanged prompt prefix means the endpoint changed,
-   not that history was rewritten
+3. Confirm requests send `service_tier: "flex"`, a stable `session_id`, and
+   `provider.only: ["openai/flex"]`. The route log must report `service_tier=flex`; a
+   90%→0% sawtooth with an unchanged prompt prefix means the endpoint changed, not that
+   history was rewritten
 4. Reduce `max_context_tokens` if conversations are too long
 5. Use `/summarize` to compress long chats
 6. Re-check `price_*` yaml if list prices changed

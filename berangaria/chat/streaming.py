@@ -113,7 +113,7 @@ async def stream_chat_completion(
 
             if event.get("usage"):
                 usage = event["usage"]
-            for field in ("id", "model", "provider"):
+            for field in ("id", "model", "provider", "service_tier"):
                 if event.get(field) is not None:
                     response_meta[field] = event[field]
             if isinstance(event.get("openrouter_metadata"), dict):

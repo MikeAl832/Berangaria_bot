@@ -12,7 +12,7 @@ from berangaria.config import (
     MAX_CONTEXT_TOKENS,
     MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS,
     PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_PROMPT_CACHE_WRITE,
-    PRICE_COMPLETION,
+    PRICE_COMPLETION, CHAT_SERVICE_TIER,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
@@ -569,6 +569,27 @@ async def send_llm_request(
                 usage = data.get('usage', {})
                 llm_diagnostics.log_router_metadata(data, response.headers)
 
+                raw_service_tier = data.get("service_tier")
+                service_tier = str(raw_service_tier or "unknown").lower()
+                if raw_service_tier is None:
+                    logger.warning(
+                        "OpenRouter не вернул service_tier; ожидался %s",
+                        CHAT_SERVICE_TIER,
+                    )
+                elif service_tier != CHAT_SERVICE_TIER:
+                    generation_id = str(data.get("id") or "unknown")
+                    logger.error(
+                        "OpenRouter нарушил pin тарифа: expected=%s actual=%s generation=%s",
+                        CHAT_SERVICE_TIER,
+                        service_tier,
+                        generation_id,
+                    )
+                    await _alert(
+                        "LLM routing tier",
+                        f"OpenRouter вернул service_tier={service_tier}, "
+                        f"ожидался {CHAT_SERVICE_TIER}; generation={generation_id}",
+                    )
+
                 if usage:
                     total_cost = llm_diagnostics.record_usage(
                         usage,
@@ -587,8 +608,10 @@ async def send_llm_request(
                         else 0.0
                     )
                     logger.info(
-                        "🧭 Маршрут: provider=%s model=%s session=%s cache=%.1f%%",
+                        "🧭 Маршрут: provider=%s service_tier=%s model=%s "
+                        "session=%s cache=%.1f%%",
                         provider_name,
+                        service_tier,
                         model_name,
                         session_id[-12:],
                         cache_ratio,

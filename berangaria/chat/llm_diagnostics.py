@@ -72,6 +72,17 @@ def _nonneg_int(value: object) -> int:
         return 0
 
 
+def _has_numeric_provider_cost(usage: dict) -> bool:
+    value = usage.get("cost")
+    if value is None:
+        return False
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def reasoning_tokens(usage: dict) -> int:
     """Thinking tokens billed for this call. Never the reasoning text itself."""
     for key in ("completion_tokens_details", "output_tokens_details"):
@@ -105,10 +116,12 @@ def record_usage(
     thinking_tokens = reasoning_tokens(usage)
     chat_tokens[key] = total_tokens
     logger.info(
-        "📊 Токены: запрос=[cyan]%s[/] (кэш=[cyan]%s[/]), "
+        "📊 Токены: запрос=[cyan]%s[/] (кэш-чтение=[cyan]%s[/], "
+        "кэш-запись=[cyan]%s[/]), "
         "ответ=[cyan]%s[/], reasoning=[cyan]%s[/], всего=[bright_green]%s[/]",
         prompt_tokens,
         cached_tokens,
+        cache_write_tokens,
         completion_tokens,
         thinking_tokens,
         total_tokens,
@@ -120,5 +133,10 @@ def record_usage(
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
     )
-    logger.info("💰 Стоимость запроса: [bright_green]$%.6f[/]", total_cost)
+    cost_source = "usage.cost" if _has_numeric_provider_cost(usage) else "локальная оценка"
+    logger.info(
+        "💰 Стоимость запроса: [bright_green]$%.6f[/] (источник=%s)",
+        total_cost,
+        cost_source,
+    )
     return total_cost
