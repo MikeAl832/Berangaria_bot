@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,17 @@ class _Client:
     async def post(self, url, **kwargs):
         self.posts.append((url, kwargs))
         return self.response
+
+
+class _JsonResponse:
+    status_code = 200
+    headers = {"x-generation-id": "gen-nonstream-error"}
+
+    def __init__(self, data):
+        self.data = data
+
+    def json(self):
+        return self.data
 
 
 def _runtime(stream_callback):
@@ -68,4 +80,60 @@ def test_unrelated_stream_failure_is_not_hidden_by_fallback():
             request_completion(client, {}, {}, turn, _runtime(broken_stream))
         )
 
+    assert client.posts == []
+
+
+def test_nonstreaming_http_200_error_body_is_exposed_as_failure():
+    response = _JsonResponse({
+        "id": "gen-nonstream-error",
+        "error": {
+            "code": 429,
+            "message": "Provider overloaded",
+            "metadata": {"error_type": "provider_overloaded"},
+        },
+    })
+    client = _Client(response)
+
+    async def unused_stream(*args, **kwargs):
+        raise AssertionError("streaming must stay disabled")
+
+    runtime = replace(_runtime(unused_stream), streaming_enabled=False)
+
+    result = asyncio.run(request_completion(
+        client,
+        {"model": "test"},
+        {},
+        SimpleNamespace(status_message=None),
+        runtime,
+    ))
+
+    assert result.status_code == 429
+    assert result.json()["error"]["metadata"]["error_type"] == (
+        "provider_overloaded"
+    )
+
+
+def test_explicit_stream_error_does_not_trigger_nonstreaming_fallback():
+    client = _Client(object())
+    stream_error = _JsonResponse({
+        "error": {
+            "code": 429,
+            "message": "Provider overloaded",
+            "metadata": {"error_type": "provider_overloaded"},
+        },
+    })
+    stream_error.status_code = 429
+
+    async def explicit_error(*args, **kwargs):
+        return stream_error
+
+    result = asyncio.run(request_completion(
+        client,
+        {"model": "test"},
+        {},
+        SimpleNamespace(status_message=None),
+        _runtime(explicit_error),
+    ))
+
+    assert result is stream_error
     assert client.posts == []

@@ -1,6 +1,7 @@
 """Unit tests for Gemini vision helpers: multi-image and safety blocks."""
 
 import asyncio
+import logging
 
 from berangaria.media import vision
 
@@ -58,6 +59,41 @@ def test_audio_prompt_hints_configured_spoken_names(monkeypatch):
     assert "«Бер»" in prompt
     assert "«Ber»" in prompt
     assert "только если оно действительно произнесено" in prompt
+
+
+def test_gemini_audio_400_returns_empty_and_removes_temp_file(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setattr(vision, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(vision, "GEMINI_MODEL", "gemini-test")
+    audio_path = tmp_path / "voice.ogg"
+    audio_path.write_bytes(b"not-real-audio")
+
+    class _Resp:
+        status_code = 400
+        text = "invalid audio payload"
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            return _Resp()
+
+    monkeypatch.setattr(vision.httpx, "AsyncClient", lambda **kwargs: _Client())
+
+    with caplog.at_level(logging.ERROR):
+        result = asyncio.run(vision.transcribe_audio(
+            audio_path=str(audio_path),
+            mime="audio/ogg",
+        ))
+
+    assert result == ""
+    assert not audio_path.exists()
+    assert "Gemini audio API 400" in caplog.text
 
 
 def test_describe_images_single_call_with_multiple_parts(monkeypatch):

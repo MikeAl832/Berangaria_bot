@@ -266,18 +266,72 @@ def test_stream_preserves_http_error_for_existing_retry_logic():
     assert result.text == "rate limited"
 
 
+def test_stream_surfaces_error_without_accepting_partial_as_completion():
+    response = _StreamResponse([
+        _event({
+            "id": "gen-context-1",
+            "model": "openai/gpt-5.6-sol",
+            "provider": "OpenAI",
+            "choices": [{"delta": {"content": "частичный текст"}}],
+        }),
+        _event({
+            "id": "gen-context-1",
+            "model": "openai/gpt-5.6-sol",
+            "provider": "OpenAI",
+            "error": {
+                "code": 400,
+                "message": "Context length exceeded",
+                "metadata": {"error_type": "context_length_exceeded"},
+            },
+            "choices": [{
+                "index": 0,
+                "delta": {"content": ""},
+                "finish_reason": "error",
+            }],
+        }),
+    ])
+    previews = []
+
+    async def on_content(text):
+        previews.append(text)
+
+    result = asyncio.run(stream_chat_completion(
+        _Client(response),
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload={},
+        headers={},
+        on_content=on_content,
+    ))
+
+    assert result.status_code == 400
+    assert result.json()["error"]["metadata"]["error_type"] == (
+        "context_length_exceeded"
+    )
+    assert result.json()["id"] == "gen-context-1"
+    assert previews == ["частичный текст"]
+    assert "частичный текст" not in result.text
+
+
 def test_stream_rejects_truncated_success_response():
     response = _StreamResponse([
-        _event({"choices": [{"delta": {"content": "оборванный ответ"}}]}),
+        _event({
+            "id": "gen-truncated-1",
+            "choices": [{"delta": {"content": "оборванный ответ"}}],
+        }),
     ])
 
-    with pytest.raises(IncompleteSSEError, match="без \\[DONE\\]"):
+    with pytest.raises(IncompleteSSEError, match="без \\[DONE\\]") as captured:
         asyncio.run(stream_chat_completion(
             _Client(response),
             "https://api.example/chat",
             payload={},
             headers={},
         ))
+
+    assert captured.value.generation_id == "gen-truncated-1"
+    assert captured.value.event_count == 1
+    assert captured.value.content_chars == len("оборванный ответ")
+    assert captured.value.tool_call_count == 0
 
 
 class _StatusMessage:

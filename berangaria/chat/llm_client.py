@@ -544,12 +544,14 @@ async def _run_llm_turn(
 
                 if response.status_code == 400:
                     await _delete_turn_status()
-                    async with get_history_lock(key):
-                        histories[key] = []
-                        save_history(key)
                     logger.error(f"[red]400:[/] {response.text}")
-                    await _alert("LLM bad request", "API вернул 400, история чата сброшена")
-                    await update.message.reply_text("⚠️ История сброшена. Напишите ещё раз.")
+                    await _alert(
+                        "LLM bad request",
+                        "API вернул 400; история чата сохранена",
+                    )
+                    await update.message.reply_text(
+                        "⚠️ API отклонил запрос. История сохранена; попробуйте ещё раз."
+                    )
                     return
 
                 # Обработка rate limiting

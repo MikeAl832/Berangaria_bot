@@ -132,7 +132,7 @@ def test_failed_delivery_does_not_create_ghost_assistant(monkeypatch):
     assert [entry["role"] for entry in history] == ["user"]
 
 
-def test_api_400_persists_cleared_history(monkeypatch, tmp_path):
+def test_api_400_preserves_persisted_history(monkeypatch, tmp_path):
     response = _Response(400, text="bad context")
     monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
     monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
@@ -152,7 +152,7 @@ def test_api_400_persists_cleared_history(monkeypatch, tmp_path):
 
     state.histories.clear()
     state.load_all_histories()
-    assert state.histories[key] == []
+    assert state.histories[key] == history
 
 
 def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_path):

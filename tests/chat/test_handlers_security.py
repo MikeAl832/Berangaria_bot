@@ -1,7 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from berangaria.chat import handlers
+from berangaria.chat import completion_transport, handlers
+from berangaria.chat.streaming import IncompleteSSEError
 from berangaria.core import state
 
 
@@ -96,7 +97,13 @@ def _voice_update_and_context():
     return chat, update, context
 
 
-def _run_voice_transcript(monkeypatch, transcript, ambient_selector):
+def _run_voice_transcript(
+    monkeypatch,
+    transcript,
+    ambient_selector,
+    *,
+    llm_handler=None,
+):
     chat, update, context = _voice_update_and_context()
     actions_during_transcription = []
     llm_calls = []
@@ -118,6 +125,8 @@ def _run_voice_transcript(monkeypatch, transcript, ambient_selector):
 
     async def send_llm_request(*args, **kwargs):
         llm_calls.append((args, kwargs))
+        if llm_handler is not None:
+            await llm_handler(*args, **kwargs)
 
     monkeypatch.setattr(handlers, "transcribe_audio", transcribe_audio)
     monkeypatch.setattr(handlers, "should_reply_randomly", ambient_selector)
@@ -221,6 +230,75 @@ def test_spoken_name_triggers_reply_without_gemini_typing(
     history = llm_calls[0][0][3]
     assert "[Message: (сообщение без текста)]" in history[-1]["content"]
     assert "[Audio description: Бер, ты здесь?]" in history[-1]["content"]
+
+
+def test_spoken_name_turn_recovers_from_incomplete_sse(
+    monkeypatch, isolated_db
+):
+    posts = []
+
+    class _FallbackResponse:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "Я здесь."},
+                }],
+                "usage": {},
+            }
+
+    class _Client:
+        async def post(self, url, **kwargs):
+            posts.append((url, kwargs))
+            return _FallbackResponse()
+
+    async def exercise_transport(*args, **kwargs):
+        update, context = args[:2]
+        mentioned = args[-1]
+        assert mentioned is True
+
+        async def incomplete_stream(*stream_args, **stream_kwargs):
+            raise IncompleteSSEError(
+                "truncated",
+                generation_id="gen-voice-1",
+                event_count=3,
+                content_chars=7,
+            )
+
+        runtime = completion_transport.CompletionRuntime(
+            update=update,
+            context=context,
+            mentioned=mentioned,
+            api_url="https://openrouter.test/chat/completions",
+            streaming_enabled=True,
+            update_interval_seconds=0.8,
+            preview_min_chars=12,
+            stream_chat_completion=incomplete_stream,
+        )
+        result = await completion_transport.request_completion(
+            _Client(),
+            {"model": "test", "messages": [{"role": "user", "content": "Бер"}]},
+            {"Authorization": "Bearer test"},
+            SimpleNamespace(status_message=None),
+            runtime,
+        )
+        assert result.status_code == 200
+        assert result.json()["choices"][0]["message"]["content"] == "Я здесь."
+
+    chat, actions_during_transcription, llm_calls = _run_voice_transcript(
+        monkeypatch,
+        "Бер, ты здесь?",
+        lambda *args: False,
+        llm_handler=exercise_transport,
+    )
+
+    assert actions_during_transcription == [[]]
+    assert chat.actions == []
+    assert len(llm_calls) == 1
+    assert len(posts) == 1
 
 
 def test_extract_reply_context_prefers_manual_selected_quote():

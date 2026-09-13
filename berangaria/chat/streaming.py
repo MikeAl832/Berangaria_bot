@@ -18,6 +18,21 @@ ContentCallback = Callable[[str], Awaitable[None]]
 class IncompleteSSEError(RuntimeError):
     """The provider closed a successful SSE response before its terminal event."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        generation_id: str = "unknown",
+        event_count: int = 0,
+        content_chars: int = 0,
+        tool_call_count: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.generation_id = generation_id
+        self.event_count = event_count
+        self.content_chars = content_chars
+        self.tool_call_count = tool_call_count
+
 
 @dataclass
 class StreamedCompletionResponse:
@@ -60,6 +75,15 @@ def _merge_tool_call(target: dict[str, Any], delta: dict[str, Any]) -> None:
         function["arguments"] += function_delta["arguments"]
 
 
+def _provider_error_status(error: dict[str, Any]) -> int:
+    """Return a usable HTTP-equivalent status from an in-band SSE error."""
+    try:
+        status = int(error.get("code", 502))
+    except (TypeError, ValueError):
+        return 502
+    return status if 400 <= status <= 599 else 502
+
+
 async def stream_chat_completion(
     client,
     url: str,
@@ -100,6 +124,7 @@ async def stream_chat_completion(
         role = "assistant"
         usage: dict[str, Any] = {}
         response_meta: dict[str, Any] = {}
+        event_count = 0
 
         async for raw_line in response.aiter_lines():
             line = raw_line.strip()
@@ -114,6 +139,7 @@ async def stream_chat_completion(
             except json.JSONDecodeError:
                 logger.warning("Пропущена некорректная SSE-строка чат-модели: %r", raw_data[:200])
                 continue
+            event_count += 1
 
             if event.get("usage"):
                 usage = event["usage"]
@@ -122,6 +148,37 @@ async def stream_chat_completion(
                     response_meta[field] = event[field]
             if isinstance(event.get("openrouter_metadata"), dict):
                 response_meta["openrouter_metadata"] = event["openrouter_metadata"]
+
+            provider_error = event.get("error")
+            if isinstance(provider_error, dict):
+                metadata = provider_error.get("metadata") or {}
+                error_type = (
+                    metadata.get("error_type")
+                    if isinstance(metadata, dict)
+                    else None
+                )
+                generation_id = str(
+                    event.get("id")
+                    or response_meta.get("id")
+                    or response_headers.get("x-generation-id")
+                    or "unknown"
+                )
+                logger.warning(
+                    "OpenRouter SSE error: generation=%s code=%s type=%s "
+                    "events=%s partial_chars=%s tool_calls=%s",
+                    generation_id,
+                    provider_error.get("code", "unknown"),
+                    error_type or "unknown",
+                    event_count,
+                    sum(len(part) for part in content_parts),
+                    len(tool_calls),
+                )
+                return StreamedCompletionResponse(
+                    status_code=_provider_error_status(provider_error),
+                    headers=response_headers,
+                    text=json.dumps(event, ensure_ascii=False),
+                    data=event,
+                )
 
             choices = event.get("choices") or []
             if not choices:
@@ -160,8 +217,17 @@ async def stream_chat_completion(
                 _merge_tool_call(target, tool_delta)
 
         if not done_received and not finish_reason:
+            generation_id = str(
+                response_meta.get("id")
+                or response_headers.get("x-generation-id")
+                or "unknown"
+            )
             raise IncompleteSSEError(
-                "Chat completion SSE завершился без [DONE] и finish_reason"
+                "Chat completion SSE завершился без [DONE] и finish_reason",
+                generation_id=generation_id,
+                event_count=event_count,
+                content_chars=sum(len(part) for part in content_parts),
+                tool_call_count=len(tool_calls),
             )
 
         message: dict[str, Any] = {
