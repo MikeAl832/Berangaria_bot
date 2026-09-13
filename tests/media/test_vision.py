@@ -50,6 +50,16 @@ def test_image_prompt_album_mentions_count():
     assert "альбом" in album.lower()
 
 
+def test_audio_prompt_hints_configured_spoken_names(monkeypatch):
+    monkeypatch.setattr(vision, "BOT_NAMES", ["Бер", "Ber"])
+
+    prompt = vision._audio_prompt()
+
+    assert "«Бер»" in prompt
+    assert "«Ber»" in prompt
+    assert "только если оно действительно произнесено" in prompt
+
+
 def test_describe_images_single_call_with_multiple_parts(monkeypatch):
     """N images must produce one generateContent request with N inline_data parts."""
     monkeypatch.setattr(vision, "GEMINI_API_KEY", "test-key")

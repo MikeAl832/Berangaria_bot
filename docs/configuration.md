@@ -250,7 +250,7 @@ log_message_preview_chars: 400
 ```
 
 **Parameters:**
-- `bot_names`: Names that trigger bot responses in groups
+- `bot_names`: Names that trigger bot responses in groups, including names found in Gemini voice/audio transcripts. Media analysis does not show `typing`; after the reply gate selects an LLM turn, the bot refreshes `typing` throughout the turn and switches to Telegram's sticker/voice actions while those terminal replies are prepared.
 - `random_reply_chance`: Base probability (0-100) of spontaneous group replies. Runtime changes via `/random` are saved in SQLite and survive restarts. The effective probability is calculated before an LLM call as `base × idle_factor × presence_factor / (1 + 0.5 × recent_turns)`. `idle_factor` grows linearly from `0.1` to `3.0` as the gap since the previous group turn approaches `random_reply_idle_target_seconds`. After Ber successfully answers an explicit mention/reply, `presence_factor` starts at `random_reply_presence_multiplier` and linearly decays to `1.0`. A candidate is discarded when a newer message, group event, or emoji reaction arrives during the debounce window. Values `0` and `100` retain their explicit off/on meaning after these activity and cooldown gates.
 - `summary_interval`: Messages preserved after summarization
 - `summary_min_extra`: Scheduled slots skip a chat unless at least this many messages sit beyond the keep window (shipped: `10`, so about 20+ total with the default interval). `/summarize` and the 85% token path ignore this.

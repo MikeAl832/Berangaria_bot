@@ -6,7 +6,7 @@ import logging
 import httpx
 
 from berangaria.config import (
-    GEMINI_MODEL, GEMINI_API_KEY, FULL_DEBUG_LOGS,
+    BOT_NAMES, GEMINI_MODEL, GEMINI_API_KEY, FULL_DEBUG_LOGS,
     GEMINI_UPLOAD_MAX_WAIT_SEC, GEMINI_UPLOAD_BACKOFF_INITIAL, GEMINI_UPLOAD_BACKOFF_MAX
 )
 
@@ -418,6 +418,19 @@ _AUDIO_PROMPT = (
 )
 
 
+def _audio_prompt() -> str:
+    """Return the transcription prompt with trusted configured bot-name hints."""
+    names = [str(name).strip() for name in BOT_NAMES if str(name).strip()]
+    if not names:
+        return _AUDIO_PROMPT
+    rendered_names = ", ".join(f"«{name}»" for name in names)
+    return (
+        f"{_AUDIO_PROMPT}"
+        f"- Возможные обращения по имени: {rendered_names}. Передавай такое имя "
+        "точно, но только если оно действительно произнесено\n"
+    )
+
+
 async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = "") -> str:
     """Транскрибирует аудио через Gemini. Файл НЕ удаляет — это делает вызывающий код."""
     if not GEMINI_API_KEY:
@@ -429,7 +442,7 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
         return ""
 
     file_size = os.path.getsize(audio_path)
-    user_text = _AUDIO_PROMPT
+    user_text = _audio_prompt()
     if caption:
         user_text += f"\n\nПользователь добавил подпись: «{caption}»"
 

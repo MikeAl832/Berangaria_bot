@@ -14,6 +14,7 @@ import json
 import asyncio
 import logging
 import random
+from contextlib import asynccontextmanager
 
 from io import BytesIO
 
@@ -59,7 +60,7 @@ class ToolTurn:
     витков tool_calls внутри одного send_llm_request).
     """
 
-    def __init__(self):
+    def __init__(self, chat_actions=None):
         self.status_message = None   # статусная плашка поиска/чтения ссылки (переиспользуется)
         self.status_text = None      # what it currently reads (None = unknown)
         self.reacted = False         # бот поставил реакцию — допускаем ответ без текста
@@ -74,6 +75,31 @@ class ToolTurn:
         # (target_mid, text, sid, exact_quote, quote_position) for reply_to_message
         self.pending_reply = None
         self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
+        self.chat_actions = chat_actions  # shared typing/sticker/voice heartbeat
+
+
+async def _set_turn_action(turn, update, action: str) -> None:
+    """Switch the shared heartbeat, with a one-shot fallback for direct callers."""
+    chat_actions = getattr(turn, "chat_actions", None)
+    if chat_actions is not None:
+        await chat_actions.set_action(action)
+        return
+    try:
+        await update.message.chat.send_action(action=action)
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def _tool_action(turn, update, action: str, terminal_attr: str):
+    """Show a tool action until success, then keep it or restore typing."""
+    chat_actions = getattr(turn, "chat_actions", None)
+    await _set_turn_action(turn, update, action)
+    try:
+        yield
+    finally:
+        if chat_actions is not None and not getattr(turn, terminal_attr, False):
+            await chat_actions.set_action("typing")
 
 
 async def _show_status(turn, update, text):
@@ -118,7 +144,7 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
         return
     turn.web_search_calls += 1
 
-    await update.message.chat.send_action(action="typing")
+    await _set_turn_action(turn, update, "typing")
     # The query deliberately stays out of the banner: the banner sits in the chat
     # right next to the answer, and "🔍 Searching: is it true that..." exposes the
     # mechanics exactly where the prompt requires them hidden — and spoils the
@@ -163,7 +189,7 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
 
 async def handle_read_url(turn, payload_messages, update, tool_call, args):
     url = args.get('url', '')
-    await update.message.chat.send_action(action="typing")
+    await _set_turn_action(turn, update, "typing")
     await _show_status(turn, update, "🔗 Читаю ссылку...")
 
     logger.info(f"🔗 [blue]Чтение ссылки:[/] {url}")
@@ -211,77 +237,87 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
         )
     else:
         turn.send_sticker_calls += 1
-        try:
-            await update.message.chat.send_action(action="choose_sticker")
-        except Exception:
-            pass
-        # Search is blocking (embed + Qdrant) — off the event loop.
-        # Turn holds the lock; do not wait on Gemini rate limits for minutes.
-        try:
-            cands = await asyncio.wait_for(
-                asyncio.to_thread(search_stickers, query, STICKER_TOP_K),
-                timeout=15,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("⏳ [yellow]Поиск стикера не уложился в 15 с — пропускаю[/]")
-            cands = []
+        async with _tool_action(
+            turn, update, "choose_sticker", "sticker_sent"
+        ):
+            # Search is blocking (embed + Qdrant) — off the event loop.
+            # Turn holds the lock; do not wait on Gemini rate limits for minutes.
+            try:
+                cands = await asyncio.wait_for(
+                    asyncio.to_thread(search_stickers, query, STICKER_TOP_K),
+                    timeout=15,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⏳ [yellow]Поиск стикера не уложился в 15 с — пропускаю[/]"
+                )
+                cands = []
 
-        remaining = STICKER_SEND_MAX_PER_TURN - turn.send_sticker_calls
-        if not cands:
-            logger.info(f"🎨 [dim]send_sticker '{query}' — ничего выше порога[/]")
-            if remaining > 0:
-                tool_result = (
-                    "Под этот запрос ничего не нашлось. "
-                    f"Можешь один раз сузить query (осталось попыток: {remaining}) "
-                    "или ответь текстом — не описывай стикер словами."
+            remaining = STICKER_SEND_MAX_PER_TURN - turn.send_sticker_calls
+            if not cands:
+                logger.info(
+                    f"🎨 [dim]send_sticker '{query}' — ничего выше порога[/]"
                 )
-            else:
-                tool_result = (
-                    "Под этот запрос ничего не нашлось. "
-                    "Ответь текстом — не описывай стикер словами."
-                )
-        else:
-            # Random among top hits — variety; all already above min_score.
-            pick = random.choice(cands)
-            chosen = {
-                "file_id": pick.get("file_id"),
-                "desc": pick.get("description") or query,
-                "emotion": pick.get("emotion"),
-                "score": pick.get("score"),
-            }
-            if not chosen.get("file_id"):
-                tool_result = "Стикер без file_id — ответь текстом."
-            else:
-                thread_id = getattr(update.message, "message_thread_id", None)
-                try:
-                    kw = {
-                        "chat_id": update.effective_chat.id,
-                        "sticker": chosen["file_id"],
-                    }
-                    if thread_id is not None:
-                        kw["message_thread_id"] = thread_id
-                    await context.bot.send_sticker(**kw)
-                    turn.sticker_sent = True
-                    turn.pending_messages = None
-                    turn.stickers_made.append({
-                        "desc": chosen.get("desc"),
-                        "emotion": chosen.get("emotion"),
-                    })
-                    score = chosen.get("score")
-                    score_s = f" score={score:.3f}" if isinstance(score, (int, float)) else ""
-                    logger.info(
-                        f"🎨 [magenta]Стикер отправлен[/] query='{query[:40]}' "
-                        f"«{(chosen.get('desc') or '')[:40]}»{score_s} "
-                        f"({turn.send_sticker_calls}/{STICKER_SEND_MAX_PER_TURN})"
-                    )
-                    # tool_result kept if path is non-terminal; send_llm_request
-                    # ends the turn on sticker_sent without another API round.
+                if remaining > 0:
                     tool_result = (
-                        "Стикер отправлен. Ход завершён — дополнительный текст не нужен."
+                        "Под этот запрос ничего не нашлось. "
+                        f"Можешь один раз сузить query (осталось попыток: {remaining}) "
+                        "или ответь текстом — не описывай стикер словами."
                     )
-                except Exception as e:
-                    logger.warning(f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}")
-                    tool_result = "Стикер отправить не удалось. Ответь текстом."
+                else:
+                    tool_result = (
+                        "Под этот запрос ничего не нашлось. "
+                        "Ответь текстом — не описывай стикер словами."
+                    )
+            else:
+                # Random among top hits — variety; all already above min_score.
+                pick = random.choice(cands)
+                chosen = {
+                    "file_id": pick.get("file_id"),
+                    "desc": pick.get("description") or query,
+                    "emotion": pick.get("emotion"),
+                    "score": pick.get("score"),
+                }
+                if not chosen.get("file_id"):
+                    tool_result = "Стикер без file_id — ответь текстом."
+                else:
+                    thread_id = getattr(update.message, "message_thread_id", None)
+                    try:
+                        kw = {
+                            "chat_id": update.effective_chat.id,
+                            "sticker": chosen["file_id"],
+                        }
+                        if thread_id is not None:
+                            kw["message_thread_id"] = thread_id
+                        await context.bot.send_sticker(**kw)
+                        turn.sticker_sent = True
+                        turn.pending_messages = None
+                        turn.stickers_made.append({
+                            "desc": chosen.get("desc"),
+                            "emotion": chosen.get("emotion"),
+                        })
+                        score = chosen.get("score")
+                        score_s = (
+                            f" score={score:.3f}"
+                            if isinstance(score, (int, float))
+                            else ""
+                        )
+                        logger.info(
+                            f"🎨 [magenta]Стикер отправлен[/] query='{query[:40]}' "
+                            f"«{(chosen.get('desc') or '')[:40]}»{score_s} "
+                            f"({turn.send_sticker_calls}/{STICKER_SEND_MAX_PER_TURN})"
+                        )
+                        # tool_result kept if path is non-terminal; send_llm_request
+                        # ends the turn on sticker_sent without another API round.
+                        tool_result = (
+                            "Стикер отправлен. Ход завершён — "
+                            "дополнительный текст не нужен."
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ [yellow]Не удалось отправить стикер:[/] {e}"
+                        )
+                        tool_result = "Стикер отправить не удалось. Ответь текстом."
 
     payload_messages.append({
         "role": "tool",
@@ -552,64 +588,63 @@ async def handle_send_voice(turn, payload_messages, update, context, tool_call, 
         )
     else:
         turn.send_voice_calls += 1
-        try:
-            await update.message.chat.send_action(action="record_voice")
-        except Exception:
-            pass
-
-        try:
-            audio = await asyncio.wait_for(
-                asyncio.to_thread(synthesize_speech, spoken, emotion=raw_emotion),
-                timeout=60,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("⏳ [yellow]TTS не уложился в 60 с — пропускаю[/]")
-            tool_result = "Озвучка не успела. Ответь текстом."
-        except TTSError as exc:
-            logger.warning(f"⚠️ [yellow]TTS:[/] {exc}")
-            tool_result = "Озвучка не удалась. Ответь текстом."
-        except Exception as exc:
-            logger.warning(f"⚠️ [yellow]TTS неожиданно:[/] {exc}", exc_info=True)
-            tool_result = "Озвучка не удалась. Ответь текстом."
-        else:
-            thread_id = getattr(update.message, "message_thread_id", None)
-            bio = BytesIO(audio)
-            bio.name = voice_filename(TTS_FORMAT)
+        async with _tool_action(turn, update, "record_voice", "voice_sent"):
             try:
-                try:
-                    await update.message.chat.send_action(action="upload_voice")
-                except Exception:
-                    pass
-                kw = {
-                    "chat_id": update.effective_chat.id,
-                    "voice": bio,
-                }
-                if thread_id is not None:
-                    kw["message_thread_id"] = thread_id
-                # Reply to the trigger message when present (feels like an answer).
-                reply_mid = getattr(update.message, "message_id", None)
-                if reply_mid is not None:
-                    kw["reply_to_message_id"] = reply_mid
-                    kw["allow_sending_without_reply"] = True
-                sent = await context.bot.send_voice(**kw)
-                turn.voice_sent = True
-                turn.pending_messages = None
-                turn.pending_reply = None
-                turn.voices_made.append({
-                    "text": spoken,
-                    "emotion": emotion_key,
-                })
-                emo_s = f" emotion={emotion_key}" if emotion_key else ""
-                logger.info(
-                    f"🔊 [magenta]Голосовое отправлено[/] chars={len(spoken)} "
-                    f"bytes={len(audio)}{emo_s} mid={getattr(sent, 'message_id', '?')}"
+                audio = await asyncio.wait_for(
+                    asyncio.to_thread(synthesize_speech, spoken, emotion=raw_emotion),
+                    timeout=60,
                 )
-                tool_result = (
-                    "Голосовое отправлено. Ход завершён — дополнительный текст не нужен."
-                )
+            except asyncio.TimeoutError:
+                logger.warning("⏳ [yellow]TTS не уложился в 60 с — пропускаю[/]")
+                tool_result = "Озвучка не успела. Ответь текстом."
+            except TTSError as exc:
+                logger.warning(f"⚠️ [yellow]TTS:[/] {exc}")
+                tool_result = "Озвучка не удалась. Ответь текстом."
             except Exception as exc:
-                logger.warning(f"⚠️ [yellow]Не удалось отправить голосовое:[/] {exc}")
-                tool_result = "Голосовое отправить не удалось. Ответь текстом."
+                logger.warning(
+                    f"⚠️ [yellow]TTS неожиданно:[/] {exc}", exc_info=True
+                )
+                tool_result = "Озвучка не удалась. Ответь текстом."
+            else:
+                thread_id = getattr(update.message, "message_thread_id", None)
+                bio = BytesIO(audio)
+                bio.name = voice_filename(TTS_FORMAT)
+                try:
+                    await _set_turn_action(turn, update, "upload_voice")
+                    kw = {
+                        "chat_id": update.effective_chat.id,
+                        "voice": bio,
+                    }
+                    if thread_id is not None:
+                        kw["message_thread_id"] = thread_id
+                    # Reply to the trigger message when present (feels like an answer).
+                    reply_mid = getattr(update.message, "message_id", None)
+                    if reply_mid is not None:
+                        kw["reply_to_message_id"] = reply_mid
+                        kw["allow_sending_without_reply"] = True
+                    sent = await context.bot.send_voice(**kw)
+                    turn.voice_sent = True
+                    turn.pending_messages = None
+                    turn.pending_reply = None
+                    turn.voices_made.append({
+                        "text": spoken,
+                        "emotion": emotion_key,
+                    })
+                    emo_s = f" emotion={emotion_key}" if emotion_key else ""
+                    logger.info(
+                        f"🔊 [magenta]Голосовое отправлено[/] chars={len(spoken)} "
+                        f"bytes={len(audio)}{emo_s} "
+                        f"mid={getattr(sent, 'message_id', '?')}"
+                    )
+                    tool_result = (
+                        "Голосовое отправлено. Ход завершён — "
+                        "дополнительный текст не нужен."
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"⚠️ [yellow]Не удалось отправить голосовое:[/] {exc}"
+                    )
+                    tool_result = "Голосовое отправить не удалось. Ответь текстом."
 
     payload_messages.append({
         "role": "tool",

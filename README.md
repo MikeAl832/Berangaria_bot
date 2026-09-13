@@ -142,10 +142,16 @@ When media is received:
 1. **Images/Stickers**: Gemini analyzes and provides natural conversational description
 2. **Photo albums**: Telegram `media_group_id` photos are gathered briefly, then described in **one** multi-image Gemini call (not N separate calls)
 3. **Videos**: Full video processing (no frame extraction) with timeline understanding
-4. **Voice/Audio**: Speech transcription with diarization support
+4. **Voice/Audio**: Speech transcription with diarization support; in groups, a spoken bot name is treated as an explicit mention
 5. Description injected as `[Image description: ...]`, `[Video description: ...]`, or transcript
 6. Main LLM responds as if it observed the media directly
 7. **Safety/policy blocks**: if Gemini refuses the media, the chat model gets an explicit placeholder (sensitive/NSFW-likely) instead of a generic failure — it must not invent visual details
+
+Gemini analysis itself does not emit Telegram's `typing` action. The indicator
+starts only after mention/ambient gating has selected a real chat-model turn and
+is refreshed for the whole turn. It switches to `choose_sticker` during sticker
+search, `record_voice` during speech synthesis, and `upload_voice` during voice
+delivery. An unselected media message therefore stays silent.
 
 **Supported formats:**
 - Images: JPEG, PNG, WebP (static stickers)

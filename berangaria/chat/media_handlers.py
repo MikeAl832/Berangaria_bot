@@ -505,10 +505,6 @@ async def handle_voice(
     transcript = state.get_cached_media_description(audio_obj.file_unique_id)
     if transcript is None:
         try:
-            await update.message.chat.send_action(action="typing")
-        except Exception:
-            pass
-        try:
             audio_path, mime = await runtime.download_audio_to_file(
                 audio_obj.file_id, context
             )
@@ -547,4 +543,5 @@ async def handle_voice(
         text=caption,
         media_description=transcript,
         media_kind="audio",
+        mention_text=transcript,
     )

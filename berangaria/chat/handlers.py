@@ -619,7 +619,8 @@ def _extract_reply_context(
 
 
 async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                        text: str, media_description: str = None, media_kind: str = None):
+                        text: str, media_description: str = None,
+                        media_kind: str = None, mention_text: str = None):
     await message_queue.queue_message(
         update,
         context,
@@ -627,6 +628,7 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         media_description,
         media_kind,
         _queue_runtime(),
+        mention_text=mention_text,
     )
 
 
@@ -813,7 +815,6 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
             touch_activity(key)
             state.save_history(key)
 
-        await msg.chat.send_action(action="typing")
         # mentioned=True — событие заметное, реагируем всегда; reply ляжет на служебное сообщение
         await send_llm_request(update, context, key, history, user_name, user_id, True)
 

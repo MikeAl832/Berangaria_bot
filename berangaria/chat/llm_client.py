@@ -29,6 +29,7 @@ from berangaria.core import alerts
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
+from berangaria.chat.chat_actions import ChatActionHeartbeat
 from berangaria.chat import (
     assistant_turn,
     completion_transport,
@@ -276,6 +277,31 @@ async def _mark_history_sent_to_provider(history: list, *, key: str) -> None:
 async def send_llm_request(
     update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
     history: list, user_name: str, user_id: int, mentioned: bool = False):
+    """Run one selected model turn while keeping Telegram presence current."""
+    message = update.message
+    chat = getattr(message, "chat", None) or update.effective_chat
+    thread_id = getattr(message, "message_thread_id", None)
+    async with ChatActionHeartbeat(
+        chat,
+        action="typing",
+        message_thread_id=thread_id,
+    ) as chat_actions:
+        return await _run_llm_turn(
+            update,
+            context,
+            key,
+            history,
+            user_name,
+            user_id,
+            mentioned,
+            chat_actions=chat_actions,
+        )
+
+
+async def _run_llm_turn(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
+    history: list, user_name: str, user_id: int, mentioned: bool = False,
+    *, chat_actions: ChatActionHeartbeat):
 
     # Автосуммаризация при достижении 85% от лимита токенов
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
@@ -356,7 +382,7 @@ async def send_llm_request(
 
     # Мутируемое состояние хода (статусная плашка, реакции, стикеры, pending_reply) —
     # см. tool_handlers.ToolTurn. Живёт весь retry-цикл.
-    turn = ToolTurn()
+    turn = ToolTurn(chat_actions=chat_actions)
     used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
 
     async def _request_completion(client, payload, headers):

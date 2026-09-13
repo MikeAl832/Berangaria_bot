@@ -189,8 +189,6 @@ async def process_buffered_messages(
             ):
                 return
 
-        if mentioned:
-            await update.message.chat.send_action(action="typing")
         await runtime.send_llm_request(
             update, context, key, history, user_name, user_id, mentioned
         )
@@ -207,6 +205,7 @@ async def queue_message(
     media_description: str | None,
     media_kind: str | None,
     runtime: QueueRuntime,
+    mention_text: str | None = None,
 ) -> None:
     """Normalize one user update and append it to the debounce buffer."""
     chat_id = update.effective_chat.id
@@ -233,7 +232,10 @@ async def queue_message(
     ) = runtime.extract_reply_context(update.message)
     forward_info = runtime.extract_forward_info(update.message)
 
-    mentioned, _ = runtime.is_bot_mentioned(update, context)
+    if mention_text:
+        mentioned, _ = runtime.is_bot_mentioned(update, context, mention_text)
+    else:
+        mentioned, _ = runtime.is_bot_mentioned(update, context)
     if not is_group:
         mentioned = True
 

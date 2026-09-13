@@ -328,8 +328,17 @@ def should_reply_randomly(
         return True
     return False
 
-def is_bot_mentioned(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Tuple[bool, Optional[str]]:
-    """Проверяет, был ли упомянут бот в сообщении."""
+def is_bot_mentioned(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    additional_text: str | None = None,
+) -> Tuple[bool, Optional[str]]:
+    """Проверяет обращение к боту в Telegram-тексте и дополнительном тексте.
+
+    ``additional_text`` нужен для уже распознанной речи: транскрипт участвует
+    только в выборе отвечать или молчать и не становится пользовательским
+    текстом либо источником долговременной памяти.
+    """
     if update.message is None:
         return False, None
 
@@ -341,21 +350,30 @@ def is_bot_mentioned(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Tupl
         if update.message.reply_to_message.from_user.id == context.bot.id:
             return True, "reply"
 
-    if not message_text:
+    if not message_text and not additional_text:
         return False, None
 
     if message_text.startswith('/'):
         return True, "команда"
 
-    if f"@{bot_username}" in message_text:
-        return True, f"@{bot_username}"
+    searchable_texts = [message_text]
+    if additional_text:
+        searchable_texts.append(additional_text)
 
-    if re.search(rf'\b{re.escape(bot_real_name)}\b', message_text, re.IGNORECASE):
-        return True, bot_real_name
+    for searchable_text in searchable_texts:
+        if bot_username and f"@{bot_username}" in searchable_text:
+            return True, f"@{bot_username}"
 
-    for name in BOT_NAMES:
-        if re.search(rf'\b{re.escape(name)}\b', message_text, re.IGNORECASE):
-            return True, name
+        if bot_real_name and re.search(
+            rf'\b{re.escape(bot_real_name)}\b', searchable_text, re.IGNORECASE
+        ):
+            return True, bot_real_name
+
+        for name in BOT_NAMES:
+            if re.search(
+                rf'\b{re.escape(name)}\b', searchable_text, re.IGNORECASE
+            ):
+                return True, name
 
     return False, None
 

@@ -35,6 +35,17 @@ class FakeChat:
         self.actions.append(action)
 
 
+class FakeActionHeartbeat:
+    def __init__(self):
+        self.action = "typing"
+        self.changes = []
+
+    async def set_action(self, action):
+        if action != self.action:
+            self.action = action
+            self.changes.append(action)
+
+
 class FakeStatusMsg:
     """A status banner that behaves like Telegram: a no-op edit is an error.
 
@@ -269,7 +280,8 @@ def test_handle_send_sticker_searches_and_sends(monkeypatch):
         ],
     )
     monkeypatch.setattr(tool_handlers.random, "choice", lambda seq: seq[0])
-    turn = ToolTurn()
+    actions = FakeActionHeartbeat()
+    turn = ToolTurn(chat_actions=actions)
     ctx, payload = FakeContext(), []
     asyncio.run(
         handle_send_sticker(
@@ -280,6 +292,7 @@ def test_handle_send_sticker_searches_and_sends(monkeypatch):
     assert turn.send_sticker_calls == 1
     assert turn.stickers_made == [{"desc": "uhmy", "emotion": "irony"}]
     assert ctx.bot.stickers[0]["sticker"] == "f1"
+    assert actions.changes == ["choose_sticker"]
     assert "завершён" in payload[-1]["content"]
 
 
@@ -308,7 +321,8 @@ def test_handle_send_sticker_miss_allows_retry_then_cap(monkeypatch):
     monkeypatch.setattr(tool_handlers, "STICKER_ENABLED", True)
     monkeypatch.setattr(tool_handlers, "STICKER_SEND_MAX_PER_TURN", 2)
     monkeypatch.setattr(tool_handlers, "search_stickers", lambda q, n=None: [])
-    turn = ToolTurn()
+    actions = FakeActionHeartbeat()
+    turn = ToolTurn(chat_actions=actions)
     ctx, payload = FakeContext(), []
     asyncio.run(
         handle_send_sticker(turn, payload, FakeUpdate(), ctx, TC, {"query": "q1"})
@@ -325,6 +339,12 @@ def test_handle_send_sticker_miss_allows_retry_then_cap(monkeypatch):
     )
     assert turn.send_sticker_calls == 2
     assert "Лимит" in payload[-1]["content"]
+    assert actions.changes == [
+        "choose_sticker",
+        "typing",
+        "choose_sticker",
+        "typing",
+    ]
 
 
 def test_handle_send_sticker_mutex_with_pending_messages(monkeypatch):
@@ -426,7 +446,8 @@ def test_handle_send_voice_synthesizes_and_sends(monkeypatch):
         "synthesize_speech",
         lambda text, emotion=...: b"OGGFAKE",
     )
-    turn = ToolTurn()
+    actions = FakeActionHeartbeat()
+    turn = ToolTurn(chat_actions=actions)
     ctx, payload = FakeContext(), []
     asyncio.run(
         handle_send_voice(
@@ -444,6 +465,7 @@ def test_handle_send_voice_synthesizes_and_sends(monkeypatch):
     assert turn.voices_made[0]["emotion"] == "sarcastic"
     assert ctx.bot.voices
     assert ctx.bot.voices[0]["chat_id"] == 555
+    assert actions.changes == ["record_voice", "upload_voice"]
     assert "завершён" in payload[-1]["content"]
 
 
