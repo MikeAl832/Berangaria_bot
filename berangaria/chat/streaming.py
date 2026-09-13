@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 ContentCallback = Callable[[str], Awaitable[None]]
 
 
+class IncompleteSSEError(RuntimeError):
+    """The provider closed a successful SSE response before its terminal event."""
+
+
 @dataclass
 class StreamedCompletionResponse:
     """Small response adapter matching the fields used by ``send_llm_request``."""
@@ -156,7 +160,9 @@ async def stream_chat_completion(
                 _merge_tool_call(target, tool_delta)
 
         if not done_received and not finish_reason:
-            raise RuntimeError("Chat completion SSE завершился без [DONE] и finish_reason")
+            raise IncompleteSSEError(
+                "Chat completion SSE завершился без [DONE] и finish_reason"
+            )
 
         message: dict[str, Any] = {
             "role": role,

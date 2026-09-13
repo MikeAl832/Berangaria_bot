@@ -3,7 +3,11 @@ import json
 
 import pytest
 
-from berangaria.chat.streaming import TelegramStreamPreview, stream_chat_completion
+from berangaria.chat.streaming import (
+    IncompleteSSEError,
+    TelegramStreamPreview,
+    stream_chat_completion,
+)
 
 
 def _event(payload):
@@ -267,7 +271,7 @@ def test_stream_rejects_truncated_success_response():
         _event({"choices": [{"delta": {"content": "оборванный ответ"}}]}),
     ])
 
-    with pytest.raises(RuntimeError, match="без \\[DONE\\]"):
+    with pytest.raises(IncompleteSSEError, match="без \\[DONE\\]"):
         asyncio.run(stream_chat_completion(
             _Client(response),
             "https://api.example/chat",
