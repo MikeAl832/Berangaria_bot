@@ -143,3 +143,21 @@ def test_post_init_bridge_boot_is_fail_open(monkeypatch):
     monkeypatch.setattr(main, "start_user_bridge", _boom)
     app = main.build_telegram_application()
     asyncio.run(app.post_init(app))
+
+
+def test_build_application_raises_media_http_timeouts(monkeypatch):
+    """Media getFile/download needs headroom beyond PTB's 5s defaults."""
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "http://127.0.0.1:8081")
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_FILE_URL", "http://127.0.0.1:8081/file")
+    monkeypatch.setattr(main, "TELEGRAM_BOT_API_LOCAL_MODE", True)
+
+    app = main.build_telegram_application()
+    request = app.bot.request
+    timeout = request._client.timeout
+
+    assert request.read_timeout == 60.0
+    assert timeout.read == 60.0
+    assert timeout.write == 60.0
+    assert timeout.connect == 10.0
+    assert timeout.pool == 5.0
+    assert request._media_write_timeout == 120.0
