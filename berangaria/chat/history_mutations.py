@@ -145,3 +145,30 @@ def apply_user_message_delete(
         history.remove(entry)
         return "removed"
     return "missing"
+
+
+def apply_history_message_delete(
+    history: list[dict[str, Any]],
+    *,
+    message_id: int,
+    is_group: bool,
+) -> DeleteResult:
+    """Remove one Telegram message from any unfrozen history row.
+
+    User rows may be merged debounce batches (``telegram_messages``). Assistant
+    and event rows are matched by ``mid`` only.
+    """
+    user_result = apply_user_message_delete(
+        history, message_id=message_id, is_group=is_group
+    )
+    if user_result != "missing":
+        return user_result
+
+    for entry in reversed(history):
+        if entry.get("mid") != message_id:
+            continue
+        if not is_history_row_mutable(entry):
+            return "frozen"
+        history.remove(entry)
+        return "removed"
+    return "missing"

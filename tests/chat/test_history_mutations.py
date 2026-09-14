@@ -80,3 +80,33 @@ def test_delete_updates_merged_buffer_row():
     assert history[0]["telegram_messages"] == [{"mid": 11, "text": "two"}]
     assert history[0]["mid"] == 11
     assert "[Message: two]" in history[0]["content"]
+
+
+def test_delete_unsent_assistant_row():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [{
+        "role": "assistant",
+        "content": "ответ",
+        "mid": 55,
+        "provider_sent": False,
+    }]
+    assert apply_history_message_delete(
+        history, message_id=55, is_group=True
+    ) == "removed"
+    assert history == []
+
+
+def test_delete_frozen_assistant_row():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [{
+        "role": "assistant",
+        "content": "ответ",
+        "mid": 55,
+        "provider_sent": True,
+    }]
+    assert apply_history_message_delete(
+        history, message_id=55, is_group=True
+    ) == "frozen"
+    assert len(history) == 1

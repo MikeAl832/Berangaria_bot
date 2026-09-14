@@ -80,3 +80,22 @@ def message_mentions_bot(
         if re.search(rf"\b{re.escape(name)}\b", message_text, re.IGNORECASE):
             return True
     return False
+
+
+def decide_bridge_delete(
+    *,
+    chat_id: int,
+    is_group: bool,
+    allowed_chat_ids: tuple[int, ...],
+) -> PolicyDecision:
+    """Accept MessageDeleted for allowlisted groups (any sender).
+
+    Deletes are not bot-only: humans and other bots both remove history rows.
+    """
+    if not is_group:
+        return PolicyDecision(False, "not_group")
+    if allowed_chat_ids and chat_id not in allowed_chat_ids:
+        return PolicyDecision(False, "chat_not_allowed")
+    if not allowed_chat_ids:
+        return PolicyDecision(False, "empty_allowlist")
+    return PolicyDecision(True, "ok")
