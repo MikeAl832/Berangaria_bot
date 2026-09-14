@@ -120,6 +120,7 @@ def test_wrong_host_cannot_deploy(deployment):
     _, run = deployment
     result, calls = run(MOCK_HOST="old-vps")
     assert result.returncode != 0
+    assert "runner host is not cursor" in result.stdout
     assert "git " not in calls
     assert "docker " not in calls
 
@@ -129,6 +130,7 @@ def test_missing_database_cannot_deploy(deployment):
     (directory / "bot_data" / "bot_state.db").unlink()
     result, calls = run()
     assert result.returncode != 0
+    assert "production database is missing or empty" in result.stdout
     assert "git " not in calls
     assert "docker " not in calls
 

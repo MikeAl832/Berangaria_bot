@@ -1,19 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-test "$(hostname)" = cursor
-test "$(id -un)" = box
-[[ "${DEPLOY_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
-cd /opt/Berangaria_bot
+test "$(hostname)" = cursor || {
+  echo "Deploy preflight failed: runner host is not cursor."
+  exit 1
+}
+test "$(id -un)" = box || {
+  echo "Deploy preflight failed: runner user is not box."
+  exit 1
+}
+[[ "${DEPLOY_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "Deploy preflight failed: DEPLOY_SHA is invalid."
+  exit 1
+}
+cd /opt/Berangaria_bot || {
+  echo "Deploy preflight failed: /opt/Berangaria_bot is unavailable."
+  exit 1
+}
 
 # Require the migrated installation; never create an empty production database.
-test -d .git
-test -s .env
-test -s bot_data/bot_state.db
-test -d qdrant_storage
-test -d /var/lib/telegram-bot-api
-git diff --quiet
-git diff --cached --quiet
+test -d .git || {
+  echo "Deploy preflight failed: production Git checkout is missing."
+  exit 1
+}
+test -s .env || {
+  echo "Deploy preflight failed: production .env is missing or empty."
+  exit 1
+}
+test -s bot_data/bot_state.db || {
+  echo "Deploy preflight failed: production database is missing or empty."
+  exit 1
+}
+test -d qdrant_storage || {
+  echo "Deploy preflight failed: Qdrant storage is missing."
+  exit 1
+}
+test -d /var/lib/telegram-bot-api || {
+  echo "Deploy preflight failed: Telegram Bot API storage is missing."
+  exit 1
+}
+git diff --quiet || {
+  echo "Deploy preflight failed: production checkout has unstaged tracked changes."
+  exit 1
+}
+git diff --cached --quiet || {
+  echo "Deploy preflight failed: production checkout has staged changes."
+  exit 1
+}
 git fetch origin "$DEPLOY_SHA"
 git checkout --detach "$DEPLOY_SHA"
 test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
