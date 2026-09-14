@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from berangaria.chat.chat_actions import effective_message_thread_id
 from berangaria.core.utils import strip_internal_tags
 
 logger = logging.getLogger(__name__)
@@ -332,7 +333,7 @@ class TelegramStreamPreview:
                     "draft_id": self.draft_id,
                     "text": preview,
                 }
-                thread_id = getattr(self.update.message, "message_thread_id", None)
+                thread_id = effective_message_thread_id(self.update.message)
                 if thread_id is not None:
                     kwargs["message_thread_id"] = thread_id
                 await self.context.bot.send_message_draft(**kwargs)

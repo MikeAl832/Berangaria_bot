@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from io import BytesIO
 
+from berangaria.chat.chat_actions import effective_message_thread_id
 from berangaria.analytics import store as analytics_store
 from berangaria.config import (
     STICKER_ENABLED,
@@ -345,7 +346,7 @@ async def handle_send_sticker(turn, payload_messages, update, context, tool_call
                 if not chosen.get("file_id"):
                     tool_result = "Стикер без file_id — ответь текстом."
                 else:
-                    thread_id = getattr(update.message, "message_thread_id", None)
+                    thread_id = effective_message_thread_id(update.message)
                     try:
                         kw = {
                             "chat_id": update.effective_chat.id,
@@ -670,7 +671,7 @@ async def handle_send_voice(turn, payload_messages, update, context, tool_call, 
                 )
                 tool_result = "Озвучка не удалась. Ответь текстом."
             else:
-                thread_id = getattr(update.message, "message_thread_id", None)
+                thread_id = effective_message_thread_id(update.message)
                 bio = BytesIO(audio)
                 bio.name = voice_filename(TTS_FORMAT)
                 try:

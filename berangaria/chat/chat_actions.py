@@ -9,6 +9,23 @@ logger = logging.getLogger(__name__)
 
 CHAT_ACTION_REFRESH_SECONDS = 4.0
 
+def effective_message_thread_id(message: Any) -> int | None:
+    """Forum topic id for outbound Telegram calls, else None.
+
+    Non-forum reply chains can still carry ``message_thread_id`` while
+    ``is_topic_message`` is unset. Passing that id to ``sendChatAction``
+    (and some sends) hides typing/choose_sticker from the main group timeline.
+    Only real forum-topic messages should keep the thread id.
+    """
+    if message is None:
+        return None
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is None:
+        return None
+    if not getattr(message, "is_topic_message", False):
+        return None
+    return thread_id
+
 
 class ChatActionHeartbeat:
     """Keep one Telegram chat action alive and allow atomic action switches."""

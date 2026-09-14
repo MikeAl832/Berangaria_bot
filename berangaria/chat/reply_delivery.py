@@ -9,6 +9,7 @@ from typing import Any
 from telegram import ReplyParameters
 from telegram.error import BadRequest
 
+from berangaria.chat.chat_actions import effective_message_thread_id
 from berangaria.chat.reply_formatting import (
     markdown_to_html,
     split_for_telegram,
@@ -60,7 +61,7 @@ async def deliver(
     reply_html = markdown_to_html(text)
     reply_plain = strip_markdown(text)
     chat_id = update.effective_chat.id
-    thread_id = getattr(update.message, "message_thread_id", None)
+    thread_id = effective_message_thread_id(update.message)
 
     if status_message is not None:
         if (
@@ -205,7 +206,7 @@ async def deliver_multi(
             pass
 
     chat_id = update.effective_chat.id
-    thread_id = getattr(update.message, "message_thread_id", None)
+    thread_id = effective_message_thread_id(update.message)
     first_mid = None
     delivered: list[str] = []
     slept_total = 0.0
