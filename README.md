@@ -192,6 +192,13 @@ Vision prompts redesigned for conversational output instead of structured report
 
 \* When `admin_mode: true` in config
 
+## Deployment
+
+GitHub Actions deploys `main` directly on the `cursor` self-hosted runner after
+the test job passes. The deployment does not depend on the old VPS or its SSH
+tunnel. See [docs/deployment-cursor.md](docs/deployment-cursor.md) for setup,
+runner registration and manual operations.
+
 ## Logs
 
 Docker writes the full audit stream to `/data/bot.log`, mounted on the host as `./bot_data/bot.log`. Production currently includes prompts, replies, memory facts, and vision descriptions by operator choice; the Dozzle endpoint must remain access-controlled. The file rotates at 10 MB and keeps 5 backups by default.

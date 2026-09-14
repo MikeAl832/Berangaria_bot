@@ -1,0 +1,33 @@
+# cursor uses Docker without bridge NAT. Keep private services on loopback.
+# Dependency images were copied from VPS; do not pull newer versions implicitly.
+services:
+  bot:
+    image: berangaria-bot:cursor
+    build:
+      context: .
+      network: host
+    pull_policy: never
+  qdrant:
+    image: berangaria-migration/qdrant:20260914
+    pull_policy: never
+    network_mode: host
+    ports: !reset []
+    environment:
+      QDRANT__SERVICE__HOST: 127.0.0.1
+  telegram-bot-api:
+    image: berangaria-migration/telegram-bot-api:20260914
+    pull_policy: never
+    network_mode: host
+    ports: !reset []
+    environment:
+      TELEGRAM_HTTP_IP_ADDRESS: 127.0.0.1
+  dozzle:
+    image: berangaria-migration/dozzle:20260914
+    pull_policy: never
+    network_mode: host
+    ports: !reset []
+    environment:
+      DOZZLE_ADDR: 127.0.0.1:9999
+  log-tail:
+    image: berangaria-migration/log-tail:20260914
+    pull_policy: never

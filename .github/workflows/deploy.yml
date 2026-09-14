@@ -3,10 +3,11 @@ name: Deploy Bot
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
-# Два push подряд иначе запускают docker compose одновременно в одном каталоге
-# на VPS. Очередь, а не отмена: незавершённый деплой оставил бы прод в
-# промежуточном состоянии.
+permissions:
+  contents: read
+
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -28,36 +29,32 @@ jobs:
         run: python -m py_compile $(git ls-files '*.py')
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          # Версии проверочных инструментов закреплены: без пина релиз ruff
-          # ломает сборку push'а, который ничего относящегося не менял.
-          pip install -r requirements-dev.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Lint (ruff)
         run: ruff check .
 
-      # AGENTS.md makes bandit part of the mandatory gate; any medium/high
-      # finding must be resolved before hand-off, so CI has to enforce it.
       - name: Security scan (bandit)
         run: bandit -q -ll -r . -x ./.venv,./tests
 
       - name: Run tests
-        run: |
-          if [ -d tests ]; then pytest -q; else echo "No tests yet — skipping"; fi
+        run: pytest -q
 
   deploy:
+    # Only trusted main pushes/manual runs may reach the production runner.
+    if: github.ref == 'refs/heads/main'
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, berangaria-cursor]
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Deploy on cursor
         env:
-          # Secrets upserted into the VPS .env (untracked; survives git reset --hard).
-          # Values never printed — only key names in deploy logs.
+          DEPLOY_SHA: ${{ github.sha }}
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
           FISH_VOICE_ID: ${{ secrets.FISH_VOICE_ID }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -65,124 +62,4 @@ jobs:
           USER_BRIDGE_SESSION: ${{ secrets.USER_BRIDGE_SESSION }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          # This VPS exposes SSH on its non-default hardening port.
-          port: ${{ secrets.VPS_PORT }}
-          timeout: 60s
-          command_timeout: 10m
-          # Forward env into the remote script (appleboy does not pass `env:` alone).
-          envs: FISH_API_KEY,FISH_VOICE_ID,TELEGRAM_API_ID,TELEGRAM_API_HASH,USER_BRIDGE_SESSION,OPENROUTER_API_KEY,XAI_API_KEY
-          
-          script: |
-            set -eu
-
-            mkdir -p ~/.ssh
-            ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-            
-            mkdir -p ~/apps/Berangaria_bot
-            cd ~/apps/Berangaria_bot
-            
-            if [ ! -d ".git" ]; then
-              echo "Repository not found. Cloning..."
-              # The repository is public; HTTPS avoids requiring a second
-              # deploy key on the target VPS just to fetch the source.
-              git clone https://github.com/${{ github.repository }}.git .
-            else
-              # This used to be `git pull --ff-only origin main`. It refuses to run
-              # after any history rewrite on main: the server's branch stops being an
-              # ancestor of origin/main, the step fails, and shipping then needs a
-              # manual SSH session — which is the opposite of what CD is for.
-              # The server checkout is a mirror of origin/main, not somebody's working
-              # tree: the very next line already demands an exact match with
-              # github.sha, so a hard sync loses nothing.
-              # `reset --hard` does not touch untracked files, so the bind-mounted
-              # bot_data/ and qdrant_storage/ state survives.
-              echo "Repository exists. Syncing to origin/main..."
-              git fetch --prune origin main
-              git reset --hard FETCH_HEAD
-            fi
-
-            test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-
-            # --- Secrets → server .env (untracked; survives git reset --hard) ---
-            # Empty GitHub secret leaves any existing line alone, so a missing
-            # Actions secret cannot wipe a working key already on the VPS.
-            #
-            # Compose interpolates ${VAR:?...} with shell env taking precedence
-            # over the project .env file. appleboy still forwards empty secrets
-            # as VAR= into this SSH session; that empty shell value would hide a
-            # correct server .env line and fail required vars (TELEGRAM_API_ID).
-            # After optional upsert, drop empty exports so .env can supply them.
-            upsert_env() {
-              key="$1"
-              value="$2"
-              touch .env
-              if [ -z "$value" ]; then
-                echo "Skipping ${key} (GitHub secret empty/unset — keeping server .env as-is)"
-                unset "$key" || true
-                return 0
-              fi
-              if grep -qE "^${key}=" .env 2>/dev/null; then
-                grep -vE "^${key}=" .env > .env.upsert.tmp || true
-                mv .env.upsert.tmp .env
-              fi
-              # printf only; never echo the value (would land in Actions logs).
-              printf '%s=%s\n' "$key" "$value" >> .env
-              echo "Upserted ${key} into .env"
-            }
-            upsert_env FISH_API_KEY "${FISH_API_KEY:-}"
-            upsert_env FISH_VOICE_ID "${FISH_VOICE_ID:-}"
-            upsert_env TELEGRAM_API_ID "${TELEGRAM_API_ID:-}"
-            upsert_env TELEGRAM_API_HASH "${TELEGRAM_API_HASH:-}"
-            upsert_env USER_BRIDGE_SESSION "${USER_BRIDGE_SESSION:-}"
-            upsert_env OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}"
-            upsert_env XAI_API_KEY "${XAI_API_KEY:-}"
-
-            docker compose up -d --build --remove-orphans --force-recreate
-
-            # `up -d` returns as soon as containers are created. Under
-            # `restart: always` a crash-looping bot still produced a green
-            # workflow, so wait for the startup banner from berangaria/app.py.
-            echo "Waiting for the bot to report a successful Telegram initialization..."
-            ready=0
-            for attempt in $(seq 1 30); do
-              if docker compose logs bot --since 120s 2>/dev/null | grep -q 'Бот запущен'; then
-                ready=1
-                break
-              fi
-              if [ "$(docker compose ps -q bot | xargs -r docker inspect -f '{{.State.Restarting}}')" = "true" ]; then
-                echo "Bot container is restarting — deployment failed."
-                docker compose logs bot --tail 100
-                exit 1
-              fi
-              sleep 4
-            done
-
-            if [ "$ready" -ne 1 ]; then
-              echo "Bot did not report a successful start within the timeout."
-              docker compose logs bot --tail 100
-              exit 1
-            fi
-
-            # The marker is emitted after PTB authenticates with Telegram. Keep
-            # watching briefly so a polling bootstrap failure cannot turn a
-            # crash-looping container into a green deployment.
-            bot_id="$(docker compose ps -q bot)"
-            test -n "$bot_id"
-            initial_restarts="$(docker inspect -f '{{.RestartCount}}' "$bot_id")"
-            for attempt in $(seq 1 5); do
-              sleep 4
-              status="$(docker inspect -f '{{.State.Status}}' "$bot_id")"
-              restarting="$(docker inspect -f '{{.State.Restarting}}' "$bot_id")"
-              restart_count="$(docker inspect -f '{{.RestartCount}}' "$bot_id")"
-              if [ "$status" != "running" ] || [ "$restarting" = "true" ] || [ "$restart_count" != "$initial_restarts" ]; then
-                echo "Bot did not remain stable after initialization."
-                docker compose logs bot --tail 100
-                exit 1
-              fi
-            done
-
-            echo "Bot initialized and remained stable."
+        run: bash scripts/deploy-cursor.sh
