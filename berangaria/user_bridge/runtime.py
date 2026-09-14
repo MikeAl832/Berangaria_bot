@@ -14,6 +14,7 @@ from berangaria.config import (
     USER_BRIDGE_DEDUP_TTL_SECONDS,
     USER_BRIDGE_ENABLED,
     USER_BRIDGE_MEDIA_TIMEOUT_SECONDS,
+    USER_BRIDGE_PORT,
     USER_BRIDGE_RECONNECT_SECONDS,
     USER_BRIDGE_SESSION,
 )
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _bridge_task: Optional[asyncio.Task] = None
 _stop_event: Optional[asyncio.Event] = None
+_CLIENT_START_TIMEOUT = 30.0
 
 
 def _credentials_ok() -> bool:
@@ -154,7 +156,22 @@ async def _run_client_once(
 
     deduper = MessageDeduper(ttl_seconds=USER_BRIDGE_DEDUP_TTL_SECONDS)
     session = StringSession(USER_BRIDGE_SESSION)
-    client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    if USER_BRIDGE_PORT:
+        if not 1 <= USER_BRIDGE_PORT <= 65535:
+            raise ValueError("USER_BRIDGE_PORT must be 0 (session default) or 1..65535")
+        session.set_dc(session.dc_id, session.server_address, USER_BRIDGE_PORT)
+    # The supervisor owns retries. Telethon's internal reconnect callback starts
+    # an untracked get_me task on every successful TCP reconnect, even when the
+    # peer immediately rejects MTProto. That can grow without bound on gateways.
+    client = TelegramClient(
+        session,
+        TELEGRAM_API_ID,
+        TELEGRAM_API_HASH,
+        auto_reconnect=False,
+        connection_retries=0,
+        request_retries=0,
+        timeout=10,
+    )
 
     our_bot_id = await _resolve_our_bot_id(bot)
 
@@ -176,14 +193,16 @@ async def _run_client_once(
             logger.exception("user_bridge: event handler error")
 
     try:
-        await client.connect()
-        if not await client.is_user_authorized():
-            logger.error(
-                "👀 [red]User bridge: session не авторизована "
-                "(перелогиньтесь через scripts/user_bridge_login.py)[/]"
-            )
-            return
-        me = await client.get_me()
+        # Telethon's socket timeout doesn't bound its initialization RPCs.
+        async with asyncio.timeout(_CLIENT_START_TIMEOUT):
+            await client.connect()
+            if not await client.is_user_authorized():
+                logger.error(
+                    "👀 [red]User bridge: session не авторизована "
+                    "(перелогиньтесь через scripts/user_bridge_login.py)[/]"
+                )
+                return
+            me = await client.get_me()
         logger.info(
             "👀 [green]User bridge подключён как %s (id=%s)[/]",
             getattr(me, "username", None) or getattr(me, "first_name", "?"),
@@ -192,15 +211,14 @@ async def _run_client_once(
         # Run until stop. disconnect on exit.
         wait_stop = asyncio.create_task(stop_event.wait())
         try:
-            # Telethon keeps handlers alive while connected; wait for stop or disconnect.
-            while client.is_connected() and not stop_event.is_set():
-                done, _pending = await asyncio.wait(
-                    {wait_stop},
-                    timeout=1.0,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if wait_stop in done:
-                    break
+            # Observe the disconnection future, including its network exception.
+            # Polling is_connected alone loses those errors.
+            disconnected = client.disconnected
+            done, _pending = await asyncio.wait(
+                {wait_stop, disconnected}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if disconnected in done:
+                await disconnected
         finally:
             if not wait_stop.done():
                 wait_stop.cancel()
@@ -212,7 +230,12 @@ async def _run_client_once(
         try:
             await client.disconnect()
         except Exception:
-            pass
+            logger.exception("user_bridge: disconnect failed")
+        finally:
+            # A failed connect can set this future before we start waiting on it.
+            disconnected = client.disconnected
+            if disconnected.done() and not disconnected.cancelled():
+                disconnected.exception()
 
 
 async def _handle_event(
