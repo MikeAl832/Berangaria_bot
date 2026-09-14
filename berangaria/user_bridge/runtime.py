@@ -19,10 +19,14 @@ from berangaria.config import (
     USER_BRIDGE_SESSION,
 )
 from berangaria.user_bridge.dedup import MessageDeduper
-from berangaria.user_bridge.ingest import ingest_bridge_message
+from berangaria.user_bridge.ingest import ingest_bridge_deletions, ingest_bridge_message
 from berangaria.user_bridge.media import describe_bridge_media
 from berangaria.user_bridge.models import BridgeEventMeta, BridgeMessage
-from berangaria.user_bridge.policy import decide_bridge_event, resolve_bridge_chat_ids
+from berangaria.user_bridge.policy import (
+    decide_bridge_delete,
+    decide_bridge_event,
+    resolve_bridge_chat_ids,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -192,6 +196,18 @@ async def _run_client_once(
         except Exception:
             logger.exception("user_bridge: event handler error")
 
+    @client.on(events.MessageDeleted(chats=list(allowed_chat_ids)))
+    async def _on_message_deleted(event) -> None:  # type: ignore[no-untyped-def]
+        if stop_event.is_set():
+            return
+        try:
+            await _handle_deleted_event(
+                event,
+                allowed_chat_ids=allowed_chat_ids,
+            )
+        except Exception:
+            logger.exception("user_bridge: delete handler error")
+
     try:
         # Telethon's socket timeout doesn't bound its initialization RPCs.
         async with asyncio.timeout(_CLIENT_START_TIMEOUT):
@@ -237,6 +253,49 @@ async def _run_client_once(
             if disconnected.done() and not disconnected.cancelled():
                 disconnected.exception()
 
+
+
+
+async def _handle_deleted_event(
+    event: Any,
+    *,
+    allowed_chat_ids: tuple[int, ...],
+) -> None:
+    """Apply MessageDeleted to group history when Telegram notifies the user session."""
+    chat_id = getattr(event, "chat_id", None)
+    if chat_id is None:
+        return
+    chat_id = int(chat_id)
+    deleted_ids = [int(mid) for mid in (getattr(event, "deleted_ids", None) or []) if int(mid) > 0]
+    if not deleted_ids:
+        return
+
+    is_group = bool(getattr(event, "is_group", False)) or (
+        bool(getattr(event, "is_channel", False)) and chat_id in allowed_chat_ids
+    )
+    # Supergroups are channels in MTProto; allowlisted chats count as groups.
+    if not is_group and chat_id in allowed_chat_ids:
+        is_group = True
+
+    decision = decide_bridge_delete(
+        chat_id=chat_id,
+        is_group=is_group,
+        allowed_chat_ids=allowed_chat_ids,
+    )
+    if not decision.accept:
+        logger.debug(
+            "user_bridge: delete skipped chat=%s reason=%s",
+            chat_id,
+            decision.reason,
+        )
+        return
+
+    logger.info(
+        "🗑️ [magenta]User bridge delete[/] chat=%s ids=%s",
+        chat_id,
+        deleted_ids,
+    )
+    await ingest_bridge_deletions(chat_id, deleted_ids)
 
 async def _handle_event(
     event: Any,

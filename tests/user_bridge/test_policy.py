@@ -136,3 +136,26 @@ def test_no_mention():
         reply_to_user_id=99,
         bot_names=["Бер"],
     )
+
+
+def test_decide_bridge_delete_accepts_allowlisted_group():
+    from berangaria.user_bridge.policy import decide_bridge_delete
+
+    d = decide_bridge_delete(
+        chat_id=-1001,
+        is_group=True,
+        allowed_chat_ids=(-1001,),
+    )
+    assert d.accept is True
+
+
+def test_decide_bridge_delete_rejects_outside_allowlist():
+    from berangaria.user_bridge.policy import decide_bridge_delete
+
+    d = decide_bridge_delete(
+        chat_id=-1002,
+        is_group=True,
+        allowed_chat_ids=(-1001,),
+    )
+    assert d.accept is False
+    assert d.reason == "chat_not_allowed"
