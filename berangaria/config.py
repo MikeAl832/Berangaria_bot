@@ -412,6 +412,9 @@ OWNER_USER_ID = (
 # ========================================
 # Optional: when disabled or secrets missing, the bot never starts Telethon.
 USER_BRIDGE_ENABLED = _bool_setting("USER_BRIDGE_ENABLED", "user_bridge_enabled", False)
+USER_BRIDGE_PORT = _as_int(
+    os.environ.get("USER_BRIDGE_PORT", config_yaml.get("user_bridge_port", 0)), 0
+)
 _raw_bridge_chats = config_yaml.get("user_bridge_chat_ids", [])
 if not isinstance(_raw_bridge_chats, (list, tuple)):
     _raw_bridge_chats = []

@@ -2,6 +2,26 @@
 
 Berangaria uses a local Dozzle instance for browser-based log viewing.
 
+## Current deployment on cursor
+
+`logs.titlo10.fun` connects through Cloudflare Tunnel directly to Dozzle at
+`http://127.0.0.1:9999`. The old VPS Nginx password is not used on this route.
+`deploy/compose.cursor.yml` enables Dozzle's `simple` authentication provider.
+The `logs` account must sign in before accessing the UI or log streams.
+
+The password hash is stored outside the repository in
+`/opt/box-access/dozzle-auth/users.yml`, mounted read-only at `/data/users.yml`.
+The generated login credentials are in
+`/opt/box-access/dozzle-auth/credentials.txt` (mode `0600`). Keep both files out
+of Git and retain them when redeploying. Login sessions last 24 hours.
+
+The connector runs independently as Docker container `berangaria-cloudflared`;
+its Compose file and operating instructions are in
+`/opt/box-access/cloudflared/`. Its service URL must use HTTP for the local
+Dozzle endpoint; the public website uses HTTPS.
+
+The sections below describe the previous VPS setup.
+
 ## Runtime layout
 
 ```text

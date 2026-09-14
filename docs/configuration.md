@@ -664,6 +664,7 @@ and injects those messages into the normal debounce → LLM → Bot API reply pa
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | `user_bridge_enabled` | `false` | Master switch (`USER_BRIDGE_ENABLED` env override) |
+| `user_bridge_port` | `0` | Keep the session port; set `5222` if a gateway intercepts raw MTProto on 443 (`USER_BRIDGE_PORT` env override) |
 | `user_bridge_chat_ids` | `[]` | Empty = use `allowed_groups`; else explicit chat ids |
 | `user_bridge_reconnect_seconds` | `5` | Pause after bridge disconnect |
 | `user_bridge_media_timeout_seconds` | `60` | Cap for download + vision per bot media |
@@ -677,6 +678,16 @@ Rules enforced in code:
 - replies / tools stay on Bot API
 - starts after Bot API `initialize` (so the first session is not a reconnect)
 - bridge errors reconnect; they never stop Bot API polling
+- only the bridge supervisor reconnects, with the configured pause; Telethon's
+  internal automatic reconnect is disabled to prevent accumulating background RPCs
+- connection and authorization share a 30-second deadline; failed attempts close
+  the client and consume its disconnection error before the next attempt
+
+Telegram supports raw MTProto TCP on ports 80, 443 and 5222
+([transport documentation](https://core.telegram.org/mtproto/transports)).
+If port 443 returns HTTP errors (for example, `HTTP 400` from a gateway), use
+`USER_BRIDGE_PORT=5222`. This keeps the existing session and its data-center IP;
+it does not require a new login or change the Bot API connection.
 
 One-time session: `python scripts/user_bridge_login.py` → put `USER_BRIDGE_SESSION=…`
 in `.env` and the matching GitHub Actions secret.

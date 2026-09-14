@@ -28,6 +28,10 @@ services:
     ports: !reset []
     environment:
       DOZZLE_ADDR: 127.0.0.1:9999
+      DOZZLE_AUTH_PROVIDER: simple
+      DOZZLE_AUTH_TTL: 24h
+    volumes:
+      - /opt/box-access/dozzle-auth/users.yml:/data/users.yml:ro
   log-tail:
     image: berangaria-migration/log-tail:20260914
     pull_policy: never
