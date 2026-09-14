@@ -92,6 +92,8 @@
 # 🔍 SEARCH
 # ========================================
 "web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The DDG limit is process-global
+"read_url_max_per_turn": 4               # Max pages fetched per reply; page bodies expand every following LLM request
+"web_tool_max_per_turn": 6               # Combined web_search + read_url ceiling for one reply
 
 # ========================================
 # 💬 MULTI-MESSAGE (send_messages tool)

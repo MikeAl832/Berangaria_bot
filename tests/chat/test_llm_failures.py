@@ -11,11 +11,11 @@ from berangaria.analytics import store as analytics_store
 
 
 class _Response:
-    def __init__(self, status_code, payload=None, text=""):
+    def __init__(self, status_code, payload=None, text="", headers=None):
         self.status_code = status_code
         self._payload = payload or {}
         self.text = text
-        self.headers = {}
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
@@ -36,6 +36,39 @@ def _client_returning(response):
             return response
 
     return Client
+
+
+def test_rate_limit_backoff_honors_header_and_grows_without_one(monkeypatch):
+    monkeypatch.setattr(llm_client.random, "uniform", lambda low, high: 1.0)
+
+    assert llm_client._rate_limit_retry_delay(
+        _Response(429, headers={"Retry-After": "17"}), 4
+    ) == (17.0, "retry-after")
+    assert [
+        llm_client._rate_limit_retry_delay(_Response(429), failure)[0]
+        for failure in range(1, 5)
+    ] == [5.0, 10.0, 20.0, 30.0]
+
+
+def test_provider_error_summary_is_compact_and_structured():
+    response = _Response(429, {
+        "id": "gen-rate-1",
+        "error": {
+            "message": "Rate limit\nexceeded " + ("x" * 300),
+            "metadata": {
+                "error_type": "rate_limit_exceeded",
+                "provider_code": "rate_limited",
+            },
+        },
+    })
+
+    summary = llm_client._provider_error_summary(response)
+
+    assert summary["generation_id"] == "gen-rate-1"
+    assert summary["error_type"] == "rate_limit_exceeded"
+    assert summary["provider_code"] == "rate_limited"
+    assert "\n" not in summary["message"]
+    assert len(summary["message"]) == 160
 
 
 class _Message:
@@ -670,6 +703,140 @@ def test_search_round_cools_when_reasoning_is_off(monkeypatch, tmp_path):
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
     assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
+
+
+def test_exhausted_read_url_is_removed_from_following_provider_round(monkeypatch, tmp_path):
+    from berangaria.tools import dispatch as tool_handlers
+
+    monkeypatch.setattr(tool_handlers, "READ_URL_MAX_PER_TURN", 1)
+    monkeypatch.setattr(tool_handlers, "WEB_TOOL_MAX_PER_TURN", 6)
+    monkeypatch.setattr(tool_handlers, "read_url", lambda url: "page")
+
+    posts, _ = _run_turn_with_tool(
+        monkeypatch, tmp_path, "read_url", '{"url": "https://e.com"}'
+    )
+
+    first_names = {
+        tool["function"]["name"] for tool in posts[0]["tools"]
+    }
+    continuation_names = {
+        tool["function"]["name"] for tool in posts[1]["tools"]
+    }
+    assert "read_url" in first_names
+    assert "read_url" not in continuation_names
+    assert "web_search" in continuation_names
+
+
+def test_exhausted_combined_web_budget_forces_final_answer(monkeypatch, tmp_path):
+    from berangaria.tools import dispatch as tool_handlers
+
+    posts = []
+    responses = [
+        _tool_call_response("web_search", '{"query": "курс евро"}'),
+        _tool_call_response("read_url", '{"url": "https://e.com"}'),
+        _Response(200, {
+            "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
+            "usage": {},
+        }),
+    ]
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 1)
+    monkeypatch.setattr(tool_handlers, "READ_URL_MAX_PER_TURN", 1)
+    monkeypatch.setattr(tool_handlers, "WEB_TOOL_MAX_PER_TURN", 2)
+    monkeypatch.setattr(
+        tool_handlers,
+        "web_search",
+        lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт",
+    )
+    monkeypatch.setattr(tool_handlers, "read_url", lambda url: "page")
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _sequenced_client(posts, responses))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: курс евро]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+
+    asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    assert len(posts) == 3
+    assert "tool_choice" not in posts[0]
+    assert "tool_choice" not in posts[1]
+    assert posts[2]["tool_choice"] == "none"
+    final_tool_names = {
+        tool["function"]["name"] for tool in posts[2]["tools"]
+    }
+    assert "web_search" not in final_tool_names
+    assert "read_url" not in final_tool_names
+    assert history[-1]["content"] == "ответ"
+
+
+def test_successful_tool_round_resets_transport_retry_budget(monkeypatch, tmp_path, caplog):
+    from berangaria.tools import dispatch as tool_handlers
+
+    caplog.set_level(logging.WARNING, logger="berangaria.chat.llm_client")
+    posts = []
+    rate_limits = [
+        _Response(429, {
+            "id": f"gen-rate-{index}",
+            "error": {
+                "code": 429,
+                "message": "Rate limit exceeded",
+                "metadata": {
+                    "error_type": "rate_limit_exceeded",
+                    "provider_code": "rate_limited",
+                },
+            },
+        })
+        for index in range(5)
+    ]
+    responses = [
+        rate_limits[0],
+        _tool_call_response("web_search", '{"query": "курс евро"}'),
+        *rate_limits[1:],
+        _Response(200, {
+            "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
+            "usage": {},
+        }),
+    ]
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        tool_handlers,
+        "web_search",
+        lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт",
+    )
+    monkeypatch.setattr(llm_client.httpx, "AsyncClient", _sequenced_client(posts, responses))
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_client.random, "uniform", lambda low, high: 1.0)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "state.db"))
+    state.init_db()
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: курс евро]", "sid": 1, "mid": 10}]
+    state.histories.clear()
+    state.histories[key] = history
+    state.chat_tokens.pop(key, None)
+
+    asyncio.run(llm_client._run_llm_turn(
+        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+        chat_actions=None,
+    ))
+
+    assert len(posts) == 7
+    assert sleeps == [5.0, 5.0, 10.0, 20.0, 30.0]
+    assert history[-1]["content"] == "ответ"
+    assert "provider_code=rate_limited" in caplog.text
+    assert "tool_rounds=1 web_search=1 read_url=0" in caplog.text
+    assert "payload_chars=" in caplog.text
 
 
 def test_terminal_reply_persists_valid_exact_provider_trace(monkeypatch, tmp_path):

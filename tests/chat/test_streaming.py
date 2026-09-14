@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -266,7 +267,8 @@ def test_stream_preserves_http_error_for_existing_retry_logic():
     assert result.text == "rate limited"
 
 
-def test_stream_surfaces_error_without_accepting_partial_as_completion():
+def test_stream_surfaces_error_without_accepting_partial_as_completion(caplog):
+    caplog.set_level(logging.WARNING, logger="berangaria.chat.streaming")
     response = _StreamResponse([
         _event({
             "id": "gen-context-1",
@@ -281,7 +283,10 @@ def test_stream_surfaces_error_without_accepting_partial_as_completion():
             "error": {
                 "code": 400,
                 "message": "Context length exceeded",
-                "metadata": {"error_type": "context_length_exceeded"},
+                "metadata": {
+                    "error_type": "context_length_exceeded",
+                    "provider_code": "context_window_exceeded",
+                },
             },
             "choices": [{
                 "index": 0,
@@ -310,6 +315,8 @@ def test_stream_surfaces_error_without_accepting_partial_as_completion():
     assert result.json()["id"] == "gen-context-1"
     assert previews == ["частичный текст"]
     assert "частичный текст" not in result.text
+    assert "provider_code=context_window_exceeded" in caplog.text
+    assert "message='Context length exceeded'" in caplog.text
 
 
 def test_stream_rejects_truncated_success_response():

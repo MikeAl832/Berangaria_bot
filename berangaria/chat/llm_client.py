@@ -2,6 +2,7 @@ import logging
 import asyncio
 import copy
 import hashlib
+import json
 import random
 import httpx
 from telegram import Update
@@ -27,7 +28,7 @@ from berangaria.memory import store as memory_store
 from berangaria.core import state
 from berangaria.core import alerts
 from berangaria.tools.schemas import TOOLS
-from berangaria.tools.dispatch import ToolTurn, dispatch_tool_call
+from berangaria.tools.dispatch import ToolTurn, available_tools_for_turn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
 from berangaria.chat.chat_actions import ChatActionHeartbeat
 from berangaria.chat import (
@@ -60,6 +61,51 @@ strip_markdown = _strip_markdown
 _split_for_telegram = split_for_telegram
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_error_value(value, *, max_chars=160):
+    """Compact one provider error field for logs without dumping the raw body."""
+    text = " ".join(str(value or "unknown").split())
+    return text[:max_chars]
+
+
+def _provider_error_summary(response):
+    """Extract stable OpenRouter error fields from HTTP or in-band responses."""
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    error = data.get("error")
+    if not isinstance(error, dict):
+        error = {}
+    metadata = error.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    headers = getattr(response, "headers", {}) or {}
+    generation_id = data.get("id") or headers.get("x-generation-id") or "unknown"
+    return {
+        "generation_id": _safe_error_value(generation_id, max_chars=96),
+        "error_type": _safe_error_value(metadata.get("error_type"), max_chars=64),
+        "provider_code": _safe_error_value(metadata.get("provider_code"), max_chars=64),
+        "message": _safe_error_value(error.get("message")),
+    }
+
+
+def _rate_limit_retry_delay(response, failure_number):
+    """Honor Retry-After, otherwise use bounded exponential backoff with jitter."""
+    headers = getattr(response, "headers", {}) or {}
+    raw_retry_after = headers.get("Retry-After")
+    if raw_retry_after is None:
+        raw_retry_after = headers.get("retry-after")
+    if raw_retry_after not in (None, ""):
+        try:
+            return min(60.0, max(1.0, float(raw_retry_after))), "retry-after"
+        except (TypeError, ValueError):
+            pass
+    base_delay = min(30.0, 5.0 * (2 ** max(0, failure_number - 1)))
+    return min(30.0, max(1.0, base_delay * random.uniform(0.9, 1.1))), "backoff"
 
 
 def _message_reasoning_len(message: dict) -> int:
@@ -526,14 +572,23 @@ async def _run_llm_turn(
                 gen_params["temperature"] = FACTUAL_TEMPERATURE
 
             session_id = _chat_session_id(key)
+            turn_tools = available_tools_for_turn(turn, TOOLS)
+            request_body = {
+                "model": MODEL,
+                "messages": payload_messages,
+                "max_tokens": MAX_REPLY_TOKENS,
+                "tools": turn_tools,
+                **gen_params,
+            }
+            available_tool_names = {
+                (tool.get("function") or {}).get("name") for tool in turn_tools
+            }
+            if not {"web_search", "read_url"} & available_tool_names:
+                # Once no web action remains, force one final answer from the
+                # collected evidence instead of allowing a hallucinated tool loop.
+                request_body["tool_choice"] = "none"
             payload = apply_chat_gateway(
-                {
-                    "model": MODEL,
-                    "messages": payload_messages,
-                    "max_tokens": MAX_REPLY_TOKENS,
-                    "tools": TOOLS,
-                    **gen_params
-                },
+                request_body,
                 session_id=session_id,
             )
 
@@ -557,21 +612,51 @@ async def _run_llm_turn(
                 # Обработка rate limiting
                 if response.status_code == 429:
                     api_failures += 1
+                    error_summary = _provider_error_summary(response)
+                    payload_chars = len(json.dumps(payload, ensure_ascii=False, default=str))
                     if api_failures >= MAX_API_RETRIES:
+                        logger.error(
+                            "Rate limit (429) exhausted: generation=%s type=%s provider_code=%s "
+                            "message=%r; tool_rounds=%s web_search=%s read_url=%s "
+                            "messages=%s payload_chars=%s",
+                            error_summary["generation_id"],
+                            error_summary["error_type"],
+                            error_summary["provider_code"],
+                            error_summary["message"],
+                            tool_rounds,
+                            turn.web_search_calls,
+                            turn.read_url_calls,
+                            len(payload_messages),
+                            payload_chars,
+                        )
                         await _delete_turn_status()
-                        await _alert("LLM rate limit", "исчерпаны повторы после HTTP 429")
+                        await _alert(
+                            "LLM rate limit",
+                            "исчерпаны повторы после HTTP 429; "
+                            f"generation={error_summary['generation_id']} "
+                            f"type={error_summary['error_type']} "
+                            f"provider_code={error_summary['provider_code']}",
+                        )
                         await update.message.reply_text("❌ API временно перегружен. Попробуйте позже.")
                         return
-                    try:
-                        retry_after = min(
-                            60.0,
-                            max(1.0, float(response.headers.get("Retry-After", 5))),
-                        )
-                    except (TypeError, ValueError):
-                        retry_after = 5.0
+                    retry_after, delay_source = _rate_limit_retry_delay(response, api_failures)
                     logger.warning(
-                        f"⚠️ [yellow]Rate limit (429), ждём {retry_after:g}s перед retry "
-                        f"{api_failures}/{MAX_API_RETRIES}[/]"
+                        "⚠️ Rate limit (429): generation=%s type=%s provider_code=%s "
+                        "message=%r; ждём %gs (%s) перед retry %s/%s; "
+                        "tool_rounds=%s web_search=%s read_url=%s messages=%s payload_chars=%s",
+                        error_summary["generation_id"],
+                        error_summary["error_type"],
+                        error_summary["provider_code"],
+                        error_summary["message"],
+                        retry_after,
+                        delay_source,
+                        api_failures,
+                        MAX_API_RETRIES - 1,
+                        tool_rounds,
+                        turn.web_search_calls,
+                        turn.read_url_calls,
+                        len(payload_messages),
+                        payload_chars,
                     )
                     await asyncio.sleep(retry_after)
                     continue
@@ -590,6 +675,9 @@ async def _run_llm_turn(
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
                     return
 
+                # A successful provider round starts a fresh transport-retry budget;
+                # tool rounds have their own independent MAX_TOOL_ROUNDS ceiling.
+                api_failures = 0
                 data = response.json()
                 choice = data['choices'][0]
                 finish_reason = choice.get('finish_reason', '')

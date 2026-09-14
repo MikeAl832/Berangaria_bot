@@ -23,7 +23,9 @@ from berangaria.config import (
     STICKER_ENABLED,
     STICKER_SEND_MAX_PER_TURN,
     STICKER_TOP_K,
+    READ_URL_MAX_PER_TURN,
     WEB_SEARCH_MAX_PER_TURN,
+    WEB_TOOL_MAX_PER_TURN,
     MULTI_MESSAGE_MAX,
     MULTI_MESSAGE_MAX_CHARS,
     MULTI_MESSAGE_MAX_TOTAL_CHARS,
@@ -71,11 +73,36 @@ class ToolTurn:
         self.voice_sent = False      # бот отправил голосовое — терминальный путь
         self.voices_made = []        # [{"text", "emotion"}] — голосовые этого хода
         self.send_voice_calls = 0    # send_voice attempts this turn
-        self.web_search_calls = 0     # how many times web_search ran in this turn
+        self.web_search_calls = 0    # how many times web_search ran in this turn
+        self.read_url_calls = 0      # how many pages read_url fetched in this turn
         # (target_mid, text, sid, exact_quote, quote_position) for reply_to_message
         self.pending_reply = None
         self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
         self.chat_actions = chat_actions  # shared typing/sticker/voice heartbeat
+
+    @property
+    def web_tool_calls(self):
+        """Combined search/page budget consumed by this turn."""
+        return self.web_search_calls + self.read_url_calls
+
+
+def available_tools_for_turn(turn, tools):
+    """Hide exhausted web tools from later provider rounds without mutating TOOLS."""
+    blocked = set()
+    if turn.web_tool_calls >= WEB_TOOL_MAX_PER_TURN:
+        blocked.update(("web_search", "read_url"))
+    else:
+        if turn.web_search_calls >= WEB_SEARCH_MAX_PER_TURN:
+            blocked.add("web_search")
+        if turn.read_url_calls >= READ_URL_MAX_PER_TURN:
+            blocked.add("read_url")
+    if not blocked:
+        return tools
+    return [
+        tool
+        for tool in tools
+        if (tool.get("function") or {}).get("name") not in blocked
+    ]
 
 
 async def _set_turn_action(turn, update, action: str) -> None:
@@ -125,6 +152,18 @@ async def _show_status(turn, update, text):
 
 async def handle_web_search(turn, payload_messages, update, tool_call, args):
     query = str(args.get("query") or "").strip()
+
+    if turn.web_tool_calls >= WEB_TOOL_MAX_PER_TURN:
+        logger.info("🔍 [dim]лимит веб-инструментов %s/ход — web_search отклонён[/]", WEB_TOOL_MAX_PER_TURN)
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call['id'],
+            "content": (
+                f"Общий лимит веб-инструментов в этом ходе ({WEB_TOOL_MAX_PER_TURN}) исчерпан. "
+                "Больше не вызывай web_search/read_url; отвечай по уже собранным данным."
+            ),
+        })
+        return
 
     # The prompt allows at most two searches per turn (a query plus one retry).
     # Prompt text alone is not enough: the rate limiter in tools.web is
@@ -189,6 +228,31 @@ async def handle_web_search(turn, payload_messages, update, tool_call, args):
 
 async def handle_read_url(turn, payload_messages, update, tool_call, args):
     url = args.get('url', '')
+
+    if turn.web_tool_calls >= WEB_TOOL_MAX_PER_TURN:
+        logger.info("🔗 [dim]лимит веб-инструментов %s/ход — read_url отклонён[/]", WEB_TOOL_MAX_PER_TURN)
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call['id'],
+            "content": (
+                f"Общий лимит веб-инструментов в этом ходе ({WEB_TOOL_MAX_PER_TURN}) исчерпан. "
+                "Больше не вызывай web_search/read_url; отвечай по уже собранным данным."
+            ),
+        })
+        return
+    if turn.read_url_calls >= READ_URL_MAX_PER_TURN:
+        logger.info("🔗 [dim]read_url лимит %s/ход — отказ[/]", READ_URL_MAX_PER_TURN)
+        payload_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call['id'],
+            "content": (
+                f"Лимит чтения страниц в этом ходе ({READ_URL_MAX_PER_TURN}) исчерпан. "
+                "Не открывай новые ссылки; отвечай по уже собранным данным."
+            ),
+        })
+        return
+    turn.read_url_calls += 1
+
     await _set_turn_action(turn, update, "typing")
     await _show_status(turn, update, "🔗 Читаю ссылку...")
 

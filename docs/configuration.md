@@ -283,6 +283,8 @@ log_message_preview_chars: 400
 ```yaml
 factual_temperature: 0.4
 web_search_max_per_turn: 2
+read_url_max_per_turn: 4
+web_tool_max_per_turn: 6
 multi_message_max: 5
 multi_message_max_chars: 280
 multi_message_max_total_chars: 900
@@ -307,6 +309,12 @@ sticker_index_version: 3
   (10/min in `berangaria/tools/web.py`) is process-global, so one runaway turn would otherwise
   break search for every chat. On overflow the tool returns a refusal telling the model to answer
   with what it already has.
+- `read_url_max_per_turn`: Ceiling on full page downloads in one reply. Page bodies are much larger
+  than search snippets and remain in every later provider round of the same turn.
+- `web_tool_max_per_turn`: Combined `web_search` + `read_url` ceiling. Exhausted tools are removed
+  from later provider requests; when neither remains, the next request forces a final answer from
+  the evidence already collected instead of allowing another tool call.
+  HTTP 429 retries honor `Retry-After`; without it they use a jittered 5/10/20/30-second backoff.
 - `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–5 short
   Telegram bubbles with `typing` between them). Delays scale with bubble length and are capped by
   `multi_message_delay_total_cap`. Mutex with `reply_to_message` and `send_sticker`.

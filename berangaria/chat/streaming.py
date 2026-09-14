@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 ContentCallback = Callable[[str], Awaitable[None]]
 
 
+def _safe_error_value(value: Any, *, max_chars: int) -> str:
+    """Keep provider identifiers useful without allowing multiline log injection."""
+    return " ".join(str(value or "unknown").split())[:max_chars]
+
+
 class IncompleteSSEError(RuntimeError):
     """The provider closed a successful SSE response before its terminal event."""
 
@@ -152,23 +157,34 @@ async def stream_chat_completion(
             provider_error = event.get("error")
             if isinstance(provider_error, dict):
                 metadata = provider_error.get("metadata") or {}
-                error_type = (
+                error_type = _safe_error_value((
                     metadata.get("error_type")
                     if isinstance(metadata, dict)
                     else None
+                ), max_chars=64)
+                provider_code = _safe_error_value((
+                    metadata.get("provider_code")
+                    if isinstance(metadata, dict)
+                    else None
+                ), max_chars=64)
+                error_message = _safe_error_value(
+                    provider_error.get("message"), max_chars=160
                 )
-                generation_id = str(
+                generation_id = _safe_error_value(
                     event.get("id")
                     or response_meta.get("id")
                     or response_headers.get("x-generation-id")
-                    or "unknown"
+                    or "unknown",
+                    max_chars=96,
                 )
                 logger.warning(
                     "OpenRouter SSE error: generation=%s code=%s type=%s "
-                    "events=%s partial_chars=%s tool_calls=%s",
+                    "provider_code=%s message=%r events=%s partial_chars=%s tool_calls=%s",
                     generation_id,
                     provider_error.get("code", "unknown"),
-                    error_type or "unknown",
+                    error_type,
+                    provider_code,
+                    error_message,
                     event_count,
                     sum(len(part) for part in content_parts),
                     len(tool_calls),

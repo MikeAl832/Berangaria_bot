@@ -13,6 +13,7 @@ from berangaria.analytics import store as analytics_store
 from berangaria.tools import dispatch as tool_handlers
 from berangaria.tools.dispatch import (
     ToolTurn,
+    available_tools_for_turn,
     handle_reply,
     handle_react,
     handle_send_sticker,
@@ -606,6 +607,69 @@ def test_handle_web_search_respects_per_turn_limit(monkeypatch):
     assert turn.web_search_calls == 2
     assert "Лимит поисков" in payload[-1]["content"]
     assert payload[-1]["tool_call_id"] == TC["id"]
+
+
+def test_handle_read_url_respects_per_turn_limit(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_read_url(url):
+        calls["n"] += 1
+        return f"page {url}"
+
+    monkeypatch.setattr(tool_handlers, "READ_URL_MAX_PER_TURN", 2)
+    monkeypatch.setattr(tool_handlers, "WEB_TOOL_MAX_PER_TURN", 6)
+    monkeypatch.setattr(tool_handlers, "read_url", fake_read_url)
+    turn = ToolTurn()
+    payload = []
+
+    for i in range(2):
+        asyncio.run(tool_handlers.handle_read_url(
+            turn, payload, FakeUpdate(), TC, {"url": f"https://e.com/{i}"}
+        ))
+    asyncio.run(tool_handlers.handle_read_url(
+        turn, payload, FakeUpdate(), TC, {"url": "https://e.com/overflow"}
+    ))
+
+    assert calls["n"] == 2
+    assert turn.read_url_calls == 2
+    assert "Не открывай новые ссылки" in payload[-1]["content"]
+
+
+def test_combined_web_budget_refuses_network_and_hides_both_tools(monkeypatch):
+    monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 2)
+    monkeypatch.setattr(tool_handlers, "READ_URL_MAX_PER_TURN", 4)
+    monkeypatch.setattr(tool_handlers, "WEB_TOOL_MAX_PER_TURN", 2)
+    search_calls = _stub_search(monkeypatch)
+    read_calls = {"n": 0}
+
+    def fake_read_url(url):
+        read_calls["n"] += 1
+        return "page"
+
+    monkeypatch.setattr(tool_handlers, "read_url", fake_read_url)
+    turn = ToolTurn()
+    payload = []
+    update = FakeUpdate()
+
+    asyncio.run(handle_web_search(turn, payload, update, TC, {"query": "one"}))
+    asyncio.run(tool_handlers.handle_read_url(
+        turn, payload, update, TC, {"url": "https://e.com"}
+    ))
+    asyncio.run(handle_web_search(turn, payload, update, TC, {"query": "overflow"}))
+
+    assert search_calls["n"] == 1
+    assert read_calls["n"] == 1
+    assert turn.web_tool_calls == 2
+    assert "Больше не вызывай web_search/read_url" in payload[-1]["content"]
+
+    tools = [
+        {"function": {"name": "web_search"}},
+        {"function": {"name": "read_url"}},
+        {"function": {"name": "send_messages"}},
+    ]
+    available = available_tools_for_turn(turn, tools)
+    assert [(tool["function"]["name"]) for tool in available] == ["send_messages"]
+    assert len(tools) == 3
 
 
 def test_handle_web_search_rate_limit_is_not_a_miss(monkeypatch):

@@ -260,6 +260,10 @@ TTS_ENABLED = bool(_tts_yaml_enabled and FISH_API_KEY and FISH_VOICE_ID)
 # fact-checking, and without a ceiling a single runaway turn eats the
 # process-global rate limit (10/min), i.e. breaks search for every other chat.
 WEB_SEARCH_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("web_search_max_per_turn", 2), 2), 10))
+# Page bodies are much larger than search snippets and are echoed into every
+# following provider round, so cap both page reads and the combined web budget.
+READ_URL_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("read_url_max_per_turn", 4), 4), 20))
+WEB_TOOL_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("web_tool_max_per_turn", 6), 6), 30))
 
 # ========================================
 # 💬 MULTI-MESSAGE REPLIES (send_messages)
