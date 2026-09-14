@@ -708,11 +708,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Apply Telegram edits until the first provider turn freezes history.
+
+    Order: debounce buffer first, then unsent history rows (``provider_sent is
+    False``). Rows already marked sent stay frozen — same rule as reactions.
     """
-    Пользователь отредактировал сообщение. Если оно ещё НЕ ушло в DeepSeek
-    (лежит в дебаунс-буфере), обновляем его текст по message_id, чтобы модель
-    увидела финальную версию. Уже сброшенные в историю/отправленные — не трогаем.
-    """
+    from berangaria.chat.history_mutations import apply_user_message_edit
+
     edited = update.edited_message
     if edited is None or edited.from_user is None:
         return
@@ -721,23 +723,53 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     chat_id = edited.chat.id
     user_id = edited.from_user.id
+    is_group = edited.chat.type in ["group", "supergroup"]
     new_text = strip_tiktok_urls(edited.text or edited.caption or "")
     buffer_key = f"{chat_id}_{user_id}"
 
     async with _buffer_lock:
         data = message_buffer.get(buffer_key)
-        if not data:
-            # Буфер уже сброшен — правка опоздала, ничего не делаем
-            return
-        for m in data["messages"]:
-            if m.get("message_id") == edited.message_id:
-                old_text = m.get("text", "")
-                m["text"] = new_text
-                logger.info(
-                    f"✏️ [cyan]Правка в буфере[/] (msg_id={edited.message_id}): "
-                    f"'{old_text[:40]}' → '{new_text[:40]}'"
+        if data:
+            for m in data["messages"]:
+                if m.get("message_id") == edited.message_id:
+                    old_text = m.get("text", "")
+                    m["text"] = new_text
+                    if "telegram_text" in m:
+                        m["telegram_text"] = new_text
+                    logger.info(
+                        f"✏️ [cyan]Правка в буфере[/] (msg_id={edited.message_id}): "
+                        f"'{old_text[:40]}' → '{new_text[:40]}'"
+                    )
+                    return
+
+    key = get_history_key(chat_id, not is_group, user_id)
+    async with get_history_lock(key):
+        history = histories.get(key) or []
+        result = apply_user_message_edit(
+            history,
+            message_id=edited.message_id,
+            new_text=new_text,
+            is_group=is_group,
+        )
+        if result == "updated":
+            histories[key] = history
+            touch_activity(key)
+            save_history(key)
+            if new_text.strip():
+                state.update_memory_source_text(
+                    scope=key,
+                    message_id=edited.message_id,
+                    text=new_text,
                 )
-                break
+            logger.info(
+                f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
+                f"→ '{new_text[:40]}'"
+            )
+        elif result == "frozen":
+            logger.info(
+                f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
+                f"msg_id={edited.message_id} key={key}"
+            )
 
 
 async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):

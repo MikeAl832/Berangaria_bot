@@ -363,6 +363,54 @@ def insert_memory_source(
         conn.close()
 
 
+
+def update_memory_source_text(
+    *,
+    scope: str,
+    message_id: int,
+    text: str,
+) -> bool:
+    """Rewrite waiting/pending source text after a Telegram edit.
+
+    Completed/processing/abandoned rows stay untouched so already-extracted
+    facts are not rewritten out from under the worker.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "UPDATE memory_sources SET text=?, updated_at=? "
+            "WHERE scope=? AND message_id=? AND status IN ('waiting', 'pending')",
+            (clean, time.time(), scope, int(message_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def abandon_memory_source_by_message(
+    *,
+    scope: str,
+    message_id: int,
+) -> bool:
+    """Abandon a waiting/pending source when the Telegram message is deleted."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "UPDATE memory_sources SET status='abandoned', text='', "
+            "last_error='source message deleted before extraction', updated_at=? "
+            "WHERE scope=? AND message_id=? AND status IN ('waiting', 'pending')",
+            (time.time(), scope, int(message_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def release_memory_sources(source_ids: list[int]) -> int:
     """Делает источники доступными worker после завершения Telegram-хода."""
     ids = [int(source_id) for source_id in source_ids if source_id is not None]
