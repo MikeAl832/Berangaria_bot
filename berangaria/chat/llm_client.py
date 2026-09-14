@@ -30,7 +30,7 @@ from berangaria.core import alerts
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, available_tools_for_turn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
-from berangaria.chat.chat_actions import ChatActionHeartbeat
+from berangaria.chat.chat_actions import ChatActionHeartbeat, effective_message_thread_id
 from berangaria.chat import (
     assistant_turn,
     completion_transport,
@@ -326,7 +326,7 @@ async def send_llm_request(
     """Run one selected model turn while keeping Telegram presence current."""
     message = update.message
     chat = getattr(message, "chat", None) or update.effective_chat
-    thread_id = getattr(message, "message_thread_id", None)
+    thread_id = effective_message_thread_id(message)
     async with ChatActionHeartbeat(
         chat,
         action="typing",

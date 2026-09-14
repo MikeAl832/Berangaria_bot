@@ -2,7 +2,10 @@ import asyncio
 from types import SimpleNamespace
 
 from berangaria.chat import llm_client
-from berangaria.chat.chat_actions import ChatActionHeartbeat
+from berangaria.chat.chat_actions import (
+    ChatActionHeartbeat,
+    effective_message_thread_id,
+)
 
 
 class _Chat:
@@ -97,3 +100,63 @@ def test_send_llm_request_keeps_typing_for_the_selected_turn(monkeypatch):
     assert result == "done"
     assert len(chat.actions) == stopped_at
     assert {item["action"] for item in chat.actions} == {"typing"}
+
+
+def test_effective_message_thread_id_only_for_forum_topics():
+    assert effective_message_thread_id(None) is None
+    assert effective_message_thread_id(SimpleNamespace(message_thread_id=None)) is None
+    # Non-forum reply chain: Telegram may set message_thread_id without topic flag.
+    assert (
+        effective_message_thread_id(
+            SimpleNamespace(message_thread_id=74910, is_topic_message=None)
+        )
+        is None
+    )
+    assert (
+        effective_message_thread_id(
+            SimpleNamespace(message_thread_id=74910, is_topic_message=False)
+        )
+        is None
+    )
+    assert (
+        effective_message_thread_id(
+            SimpleNamespace(message_thread_id=42, is_topic_message=True)
+        )
+        == 42
+    )
+
+
+def test_send_llm_request_ignores_non_topic_thread_id(monkeypatch):
+    chat = _Chat()
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat=chat,
+            message_thread_id=74910,
+            is_topic_message=None,
+        ),
+        effective_chat=chat,
+    )
+    context = SimpleNamespace()
+
+    captured = {}
+
+    class _CaptureHeartbeat(ChatActionHeartbeat):
+        def __init__(self, chat, **kwargs):
+            captured["message_thread_id"] = kwargs.get("message_thread_id")
+            super().__init__(chat, **kwargs, interval_seconds=0.002)
+
+    monkeypatch.setattr(llm_client, "ChatActionHeartbeat", _CaptureHeartbeat)
+
+    async def fake_turn(*args, chat_actions, **kwargs):
+        return "done"
+
+    monkeypatch.setattr(llm_client, "_run_llm_turn", fake_turn)
+
+    result = asyncio.run(
+        llm_client.send_llm_request(
+            update, context, "group_-100", [], "Миша", 42, True
+        )
+    )
+
+    assert result == "done"
+    assert captured["message_thread_id"] is None
