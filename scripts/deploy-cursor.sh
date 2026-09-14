@@ -41,6 +41,8 @@ test -d /var/lib/telegram-bot-api || {
 }
 git diff --quiet || {
   echo "Deploy preflight failed: production checkout has unstaged tracked changes."
+  echo "Changed tracked files:"
+  git diff --name-only
   exit 1
 }
 git diff --cached --quiet || {

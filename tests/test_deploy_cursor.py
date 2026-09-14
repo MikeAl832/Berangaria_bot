@@ -21,6 +21,10 @@ if name == "hostname":
     print(os.environ.get("MOCK_HOST", "cursor"))
 elif name == "id":
     print("box")
+elif name == "git" and args[:2] == ["diff", "--quiet"] and os.environ.get("MOCK_GIT_DIRTY"):
+    sys.exit(1)
+elif name == "git" and args[:2] == ["diff", "--name-only"]:
+    print("config.yaml")
 elif name == "git" and args[:1] == ["rev-parse"]:
     print(os.environ["DEPLOY_SHA"])
 elif name == "docker":
@@ -140,6 +144,16 @@ def test_failed_build_does_not_replace_running_containers(deployment):
     result, calls = run(MOCK_BUILD_FAIL="1")
     assert result.returncode != 0
     assert " up " not in calls
+
+
+def test_dirty_checkout_reports_filenames_without_deploying(deployment):
+    _, run = deployment
+    result, calls = run(MOCK_GIT_DIRTY="1")
+    assert result.returncode != 0
+    assert "unstaged tracked changes" in result.stdout
+    assert "config.yaml" in result.stdout
+    assert "git fetch" not in calls
+    assert "docker " not in calls
 
 
 def test_stopped_bot_fails_without_publishing_private_logs(deployment):
