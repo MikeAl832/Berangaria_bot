@@ -308,9 +308,17 @@ async def periodic_memory_flush(bot=None):
 
 def build_telegram_application() -> Application:
     """Build the PTB application for either Telegram cloud or a local Bot API."""
+    # PTB defaults are connect/read/write=5s and media_write=20s. On the cursor
+    # host (AWS us-west-2) local Bot API getFile/download often waits on Telegram
+    # DC fetch and exceeds 5s, surfacing as TimedOut on photos/stickers/videos.
     builder = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
+        .connect_timeout(10.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .pool_timeout(5.0)
+        .media_write_timeout(120.0)
         .post_init(_telegram_post_init)
     )
     if TELEGRAM_BOT_API_BASE_URL:
