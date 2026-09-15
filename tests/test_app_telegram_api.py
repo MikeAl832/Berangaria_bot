@@ -17,7 +17,6 @@ def test_passive_handlers_do_not_hold_the_update_slot(monkeypatch):
     берут turn-lock чата, поэтому блокирующая регистрация морозит весь бот на
     время LLM-хода в любом одном чате.
     """
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
     main.register_handlers(app)
 
@@ -39,7 +38,6 @@ def test_message_intake_stays_serialized(monkeypatch):
     Debounce-буфер собирает combined_text в порядке прихода, поэтому
     распараллеливать сам приём (в т.ч. через concurrent_updates) нельзя.
     """
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
     main.register_handlers(app)
 
@@ -61,7 +59,6 @@ def test_message_intake_stays_serialized(monkeypatch):
     ["start", "clear", "stats", "top", "dashboard", "random", "summarize"],
 )
 def test_documented_commands_are_registered(command, monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
     main.register_handlers(app)
 
@@ -72,7 +69,6 @@ def test_documented_commands_are_registered(command, monkeypatch):
 
 
 def test_reaction_handler_is_registered(monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
     main.register_handlers(app)
 
@@ -80,7 +76,6 @@ def test_reaction_handler_is_registered(monkeypatch):
 
 
 def test_dashboard_callback_handler_is_registered(monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     app = main.build_telegram_application()
     main.register_handlers(app)
 
@@ -91,20 +86,7 @@ def test_dashboard_callback_handler_is_registered(monkeypatch):
     )
 
 
-def test_build_application_uses_local_bot_api(monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "http://127.0.0.1:8081")
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_FILE_URL", "http://127.0.0.1:8081/file")
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_LOCAL_MODE", True)
-
-    app = main.build_telegram_application()
-
-    assert app.bot.base_url == "http://127.0.0.1:8081/bottest-token"
-    assert app.bot.base_file_url == "http://127.0.0.1:8081/file/bottest-token"
-    assert app.bot.local_mode is True
-
-
 def test_build_application_uses_cloud_defaults_without_override(monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
 
     app = main.build_telegram_application()
 
@@ -114,7 +96,6 @@ def test_build_application_uses_cloud_defaults_without_override(monkeypatch):
 
 
 def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
     started = {}
 
     async def _fake_start(application):
@@ -135,7 +116,6 @@ def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
 
 
 def test_post_init_bridge_boot_is_fail_open(monkeypatch):
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "")
 
     async def _boom(_application):
         raise RuntimeError("bridge boot exploded")
@@ -146,10 +126,7 @@ def test_post_init_bridge_boot_is_fail_open(monkeypatch):
 
 
 def test_build_application_raises_media_http_timeouts(monkeypatch):
-    """Media getFile/download needs headroom beyond PTB's 5s defaults."""
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_URL", "http://127.0.0.1:8081")
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_BASE_FILE_URL", "http://127.0.0.1:8081/file")
-    monkeypatch.setattr(main, "TELEGRAM_BOT_API_LOCAL_MODE", True)
+    """Outgoing media uploads need headroom beyond PTB defaults."""
 
     app = main.build_telegram_application()
     request = app.bot.request
@@ -161,3 +138,8 @@ def test_build_application_raises_media_http_timeouts(monkeypatch):
     assert timeout.connect == 10.0
     assert timeout.pool == 5.0
     assert request._media_write_timeout == 120.0
+
+
+def test_media_client_shutdown_is_registered():
+    app = main.build_telegram_application()
+    assert app.post_shutdown is main.stop_media_downloader

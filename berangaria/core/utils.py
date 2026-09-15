@@ -11,9 +11,8 @@ from datetime import datetime
 from typing import Tuple, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
-import httpx
+import asyncio
 from berangaria.config import (
-    TELEGRAM_TOKEN,
     BOT_NAMES,
     RANDOM_REPLY_COOLDOWN,
     RANDOM_REPLY_IDLE_TARGET_SECONDS,
@@ -25,6 +24,7 @@ from berangaria.config import (
 )
 from berangaria.core.state import random_reply_cooldown
 from berangaria.core import state
+from berangaria.media.telegram_download import get_downloader, media_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -380,32 +380,6 @@ def is_bot_mentioned(
     return False, None
 
 
-async def _fetch_telegram_file_via_cloud(file_id: str) -> tuple[bytes, str]:
-    """Download a bot file through api.telegram.org.
-
-    Local Bot API getFile on the cursor host (us-west-2) often blocks on the
-    MTProto DC fetch until PTB raises TimedOut. Cloud HTTPS getFile+file URL
-    stays within a few seconds for typical photos/stickers, so media helpers
-    prefer this path and only fall back to the local server.
-    """
-    timeout = httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        meta = await client.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile",
-            params={"file_id": file_id},
-        )
-        meta.raise_for_status()
-        payload = meta.json()
-        if not payload.get("ok"):
-            raise RuntimeError(f"cloud getFile failed: {payload}")
-        file_path = payload["result"]["file_path"]
-        response = await client.get(
-            f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-        )
-        response.raise_for_status()
-        return response.content, file_path
-
-
 def _mime_from_media_path(path: str, default: str = "image/jpeg") -> str:
     lower = (path or "").lower()
     if lower.endswith((".jpg", ".jpeg")):
@@ -420,21 +394,32 @@ def _mime_from_media_path(path: str, default: str = "image/jpeg") -> str:
 
 
 async def _download_media_bytes(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[bytes, str]:
-    """Prefer cloud file download; fall back to local Bot API on failure."""
-    try:
-        raw, path = await _fetch_telegram_file_via_cloud(file_id)
-        return raw, path
-    except Exception as cloud_exc:
-        logger.warning(
-            "cloud media download failed (%s: %s); trying local Bot API",
-            type(cloud_exc).__name__,
-            cloud_exc,
-        )
+    """Download directly from Telegram DCs using the bot's Telethon session."""
+    raw = await get_downloader(context).download(file_id)
+    if not raw:
+        raise RuntimeError("Telegram returned empty media")
+    return raw, "media" + media_suffix(raw[:4096])
 
-    file = await context.bot.get_file(file_id)
-    buf = bytearray()
-    await file.download_as_bytearray(buf)
-    return bytes(buf), file.file_path or ""
+
+async def _download_media_tempfile(file_id: str, context) -> tuple[str, str]:
+    """Stream large media to disk; remove partial files even on cancellation."""
+    fd, path = tempfile.mkstemp()
+    os.close(fd)
+    try:
+        await get_downloader(context).download(file_id, file=path)
+
+        def read_header():
+            with open(path, "rb") as handle:
+                return handle.read(4096)
+
+        header = await asyncio.to_thread(read_header)
+        if not header:
+            raise RuntimeError("Telegram returned empty media")
+        return path, "media" + media_suffix(header)
+    except BaseException:
+        os.remove(path)
+        raise
+
 
 async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_TYPE,
                                    return_bytes: bool = False) -> Tuple[bytes | str, str]:
@@ -534,7 +519,7 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
     
     ВАЖНО: Вызывающий код должен самостоятельно удалить временный файл после использования!
     """
-    raw, file_path = await _download_media_bytes(file_id, context)
+    tmp_path, file_path = await _download_media_tempfile(file_id, context)
 
     suffix = ".mp4"
     mime = "video/mp4"
@@ -551,12 +536,9 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
         elif ext in (".mp4",):
             suffix, mime = ".mp4", "video/mp4"
 
-    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-
     try:
-        with open(tmp_path, "wb") as handle:
-            handle.write(raw)
+        os.replace(tmp_path, tmp_path + suffix)
+        tmp_path += suffix
 
         # Длительность проверяется в handle_video через метаданные Telegram
         duration = 0.0
@@ -580,7 +562,7 @@ async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
 
     ВАЖНО: Вызывающий код должен удалить временный файл после использования!
     """
-    raw, file_path = await _download_media_bytes(file_id, context)
+    tmp_path, file_path = await _download_media_tempfile(file_id, context)
 
     # Голосовые Telegram приходят как .oga (OGG/opus)
     suffix, mime = ".oga", "audio/ogg"
@@ -595,12 +577,9 @@ async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
         if ext in audio_map:
             suffix, mime = ext, audio_map[ext]
 
-    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-
     try:
-        with open(tmp_path, "wb") as handle:
-            handle.write(raw)
+        os.replace(tmp_path, tmp_path + suffix)
+        tmp_path += suffix
         return tmp_path, mime
     except Exception:
         try:

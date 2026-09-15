@@ -80,7 +80,7 @@ GEMINI_API_KEY=your_gemini_api_key
 # Optional: Fish Audio TTS for send_voice tool
 FISH_API_KEY=your_fish_api_key
 FISH_VOICE_ID=your_voice_model_id
-# Telegram API application credentials for the local Bot API server:
+# Telegram API application credentials for Telethon media downloads:
 TELEGRAM_API_ID=your_telegram_api_id
 TELEGRAM_API_HASH=your_telegram_api_hash
 # Optional: read-only user bridge (see other bots in groups)
@@ -88,11 +88,13 @@ TELEGRAM_API_HASH=your_telegram_api_hash
 # and set user_bridge_enabled: true in config.yaml
 ```
 
-The production Compose configuration starts the local Telegram Bot API server
-at `127.0.0.1:8081` in local mode and mounts its persistent file directory
-read-only into the bot. `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are required
-for this service. This allows media larger than the cloud Bot API `getFile`
-limit to be processed.
+All incoming media is downloaded through Telethon (MTProto), including files
+larger than the HTTP Bot API download limit. `TELEGRAM_API_ID` and
+`TELEGRAM_API_HASH` are required. The bot authenticates with its existing token
+and keeps a separate media session in `/data/telegram_media.session`; the
+optional user bridge retains its own read-only user session. Updates and
+outgoing messages use the cloud Bot API. No local Bot API server is needed.
+See [migration instructions](docs/configuration.md#telegram-media-downloads).
 
 API keys:
 - Telegram: [@BotFather](https://t.me/botfather)
@@ -244,7 +246,7 @@ Berangaria_bot/
 ├── deploy/                      # Nginx config for the log viewer
 ├── config.yaml                  # Main configuration
 ├── .env                         # Secrets (not committed)
-├── docker-compose.yml           # Bot, Qdrant, local Bot API, log viewer
+├── docker-compose.yml           # Bot, Qdrant, log viewer
 └── requirements.txt             # Python dependencies
 ```
 

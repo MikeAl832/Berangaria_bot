@@ -34,7 +34,7 @@
 "gemini_model": "gemini-3.5-flash-lite"  # Gemini model (GA since 2026-07-21, free tier available).
                                          # gemini-3.1-flash-lite is deprecated, shutdown 2027-05-07 — this is its official replacement.
                                          # gemini-2.0-flash is already shut down; gemini-2.5-flash shuts down 2026-10-16.
-"video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — video_max_file_size_bytes: 20 МБ в облачном Bot API, 2 ГиБ в local mode
+"video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Потолок по весу — video_max_file_size_bytes: 2 ГиБ по умолчанию (скачивание через Telethon)
 "audio_max_duration_sec": 300            # Максимальная длительность голосовых/аудио (секунды)
 
 # Настройки загрузки видео в Gemini Files API

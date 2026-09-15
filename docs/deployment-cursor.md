@@ -44,7 +44,7 @@ authentication and a subsequent stability check. Failure output contains
 container status, not private chat logs.
 
 `deploy/compose.cursor.yml` uses host networking for builds and services because
-cursor's Docker daemon has bridge NAT disabled. Qdrant, Telegram Bot API and
+cursor's Docker daemon has bridge NAT disabled. Qdrant and
 Dozzle bind only to loopback. Dependency image tags point to the exact images
 copied during the 2026-09-14 migration; deployment does not pull newer versions.
 
@@ -56,8 +56,9 @@ docker compose -f docker-compose.yml -f deploy/compose.cursor.yml ps
 docker compose -f docker-compose.yml -f deploy/compose.cursor.yml logs --tail 100 bot
 ```
 
-SQLite and logs remain in `bot_data/`, Qdrant in `qdrant_storage/`, and Telegram
-Bot API data in `/var/lib/telegram-bot-api`. Never run the old VPS bot alongside
+SQLite, logs and the bot Telethon media session remain in `bot_data/`, Qdrant
+in `qdrant_storage/`. The local Bot API server has been removed; follow the
+[one-time migration](configuration.md#telegram-media-downloads) before the first deploy. Never run the old VPS bot alongside
 this installation. The old `VPS_*` GitHub secrets are no longer used by the
 workflow and may be removed separately.
 

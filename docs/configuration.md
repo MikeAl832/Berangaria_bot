@@ -20,24 +20,43 @@ GEMINI_API_KEY=<gemini_key>
 # Optional Fish Audio TTS (send_voice tool). Without both, voice stays off.
 FISH_API_KEY=<fish_key>
 FISH_VOICE_ID=<voice_model_id>
-# Telegram API application credentials for the local Bot API server:
+# Telegram API application credentials for Telethon media downloads:
 TELEGRAM_API_ID=<api_id>
 TELEGRAM_API_HASH=<api_hash>
-# Optional local Telegram Bot API server:
-TELEGRAM_BOT_API_BASE_URL=http://127.0.0.1:8081
-TELEGRAM_BOT_API_LOCAL_MODE=true
 BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
 # Optional user bridge (read-only MTProto — see other bots in groups):
 # USER_BRIDGE_SESSION=<string from scripts/user_bridge_login.py>
 # USER_BRIDGE_ENABLED=true   # or set user_bridge_enabled in config.yaml
 ```
 
-The production Compose file starts `aiogram/telegram-bot-api` with
-`TELEGRAM_LOCAL=1` and persists its files under `/var/lib/telegram-bot-api`.
-When local mode is enabled, `TELEGRAM_BOT_API_BASE_FILE_URL` defaults to
-`<TELEGRAM_BOT_API_BASE_URL>/file`. The bot container must be able to read the
-same absolute file paths returned by the API server; the provided Compose file
-mounts `/var/lib/telegram-bot-api` read-only and uses host networking.
+### Telegram media downloads
+
+All downloads use Telethon over MTProto. Updates, replies and uploads use the
+cloud Bot API. The media client signs in with `TELEGRAM_BOT_TOKEN` and shares
+`TELEGRAM_API_ID` / `TELEGRAM_API_HASH` with the optional user bridge. It uses a
+separate **bot** identity because file access hashes belong to that account;
+private chats work even when the user bridge is disabled. No interactive login
+or new secret is required. The media client does not consume message updates.
+
+- `TELEGRAM_MEDIA_SESSION_PATH`: defaults to `telegram_media.session` beside
+  `BOT_DB_PATH` (`/data/telegram_media.session` in Docker). Keep this private
+  persistent session; never point it at a user bridge session.
+- `TELEGRAM_MEDIA_PORT`: defaults to `USER_BRIDGE_PORT`, or 443 when unset.
+- `TELEGRAM_MEDIA_TIMEOUT_SECONDS`: whole-download timeout, default 300 seconds,
+  including waiting for a download slot. Failed downloads surface through the
+  existing media-error handling; there is no HTTP download fallback.
+- Video/audio downloads stream to temporary files and remove partial files on
+  failure or cancellation. Content signatures determine the file format.
+
+When migrating an existing installation, first build the new bot image, then
+stop the old bot, call `logOut` on the old local Bot API endpoint, and stop that
+server before starting the new bot. Keep the token out of shell arguments and
+logs. See [Telegram's migration guidance](https://github.com/tdlib/telegram-bot-api#moving-a-bot-from-one-local-server-to-another).
+The first deployment needs this one-time logout; the regular deploy script
+assumes it is already complete. Compose `--remove-orphans` removes the obsolete
+container. The old `/var/lib/telegram-bot-api` data can be archived separately;
+it is no longer mounted or required. Remove obsolete `TELEGRAM_BOT_API_*`
+variables from `.env` (the application no longer reads them).
 
 ### berangaria/config.py
 
@@ -125,9 +144,7 @@ video_max_duration_sec: 300
 - `vision_mode`: Enable/disable image and video understanding
 - `gemini_model`: Gemini model for vision tasks
 - `video_max_duration_sec`: Maximum video length in seconds (shipped: 300)
-- `video_max_file_size_bytes`: Weight ceiling for a downloaded video. Defaults to 20 MB on
-  the cloud Bot API and to 2 GiB when `TELEGRAM_BOT_API_LOCAL_MODE=true`, which is what the
-  production Compose file runs. Override with `BOT_VIDEO_MAX_FILE_SIZE_BYTES`.
+- `video_max_file_size_bytes`: Weight ceiling for a downloaded video. Defaults to 2 GiB for MTProto downloads. Override with `BOT_VIDEO_MAX_FILE_SIZE_BYTES`.
 - `audio_max_duration_sec`: Maximum voice/audio length in seconds (shipped: 300)
 - `gemini_upload_max_wait_sec` / `gemini_upload_backoff_initial` / `gemini_upload_backoff_max`:
   Files API upload polling budget and backoff
@@ -645,13 +662,13 @@ and empty shell exports are unset so Compose still reads the server `.env`
 (shell environment wins over the project file for `${VAR}` interpolation):
 
 - `FISH_API_KEY` / `FISH_VOICE_ID` (TTS)
-- `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (local Bot API + user bridge)
+- `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` (Telethon media + user bridge)
 - `USER_BRIDGE_SESSION` (Telethon StringSession for the optional user bridge)
 - `OPENROUTER_API_KEY` (chat and summarization)
 
 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` must exist either as GitHub secrets or
-already in the VPS `.env` — `docker-compose.yml` requires them for
-`telegram-bot-api`. Other bot keys may still live only in the server `.env`
+already in the server `.env` — `docker-compose.yml` requires them for
+Telethon media downloads. Other bot keys may still live only in the server `.env`
 until the same pattern is extended. Do not commit `.env` or put keys in
 `config.yaml`.
 
@@ -727,7 +744,7 @@ Berangaria_bot/
 │   └── tools/                       # schemas.py, web.py, dispatch.py
 ├── data/stickers_clean.json         # Sticker catalogue (JSON array; .jsonl also supported)
 ├── scripts/                         # start.sh, start.bat, logs.sh, sticker CLI, fish_tts_smoke.py
-├── docker-compose.yml               # Bot, Qdrant, local Bot API, log viewer
+├── docker-compose.yml               # Bot, Qdrant, log viewer
 ├── requirements.txt                 # Python dependencies
 └── qdrant_storage/                  # Vector DB data (auto-created)
 ```

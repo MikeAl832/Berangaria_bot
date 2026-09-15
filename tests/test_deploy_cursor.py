@@ -80,11 +80,7 @@ def deployment(tmp_path):
         # Production's absolute directory checks are mapped to this fixture.
         harness = '''
 cd() { builtin cd "$DEPLOY_TEST_DIR"; }
-test() {
-  if [[ "$*" == "-d /var/lib/telegram-bot-api" ]]; then return 0; fi
-  builtin test "$@"
-}
-export -f cd test
+export -f cd
 bash "$1"
 '''
         result = subprocess.run(

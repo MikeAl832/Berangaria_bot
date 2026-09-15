@@ -45,8 +45,6 @@ from berangaria.config import (
     SUMMARY_HOURS, SUMMARY_INTERVAL, SUMMARY_MIN_EXTRA, SUMMARY_QUIET_SECONDS,
     TIMEZONE_NAME,
     STREAMING_ENABLED, MODEL, CHAT_API_URL,
-    TELEGRAM_BOT_API_BASE_URL, TELEGRAM_BOT_API_BASE_FILE_URL,
-    TELEGRAM_BOT_API_LOCAL_MODE,
 )
 from berangaria.core import state
 from berangaria.core import alerts
@@ -59,6 +57,7 @@ from berangaria.chat.handlers import (
 )
 from berangaria.core.utils import now_local, next_summary_run
 from berangaria.user_bridge import start_user_bridge, stop_user_bridge
+from berangaria.media.telegram_download import stop_media_downloader
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -307,10 +306,8 @@ async def periodic_memory_flush(bot=None):
 
 
 def build_telegram_application() -> Application:
-    """Build the PTB application for either Telegram cloud or a local Bot API."""
-    # PTB defaults are connect/read/write=5s and media_write=20s. On the cursor
-    # host (AWS us-west-2) local Bot API getFile/download often waits on Telegram
-    # DC fetch and exceeds 5s, surfacing as TimedOut on photos/stickers/videos.
+    """Use Telegram's cloud Bot API for updates and outgoing messages."""
+    # Leave enough time for outgoing media uploads and slow Telegram responses.
     builder = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
@@ -320,11 +317,8 @@ def build_telegram_application() -> Application:
         .pool_timeout(5.0)
         .media_write_timeout(120.0)
         .post_init(_telegram_post_init)
+        .post_shutdown(stop_media_downloader)
     )
-    if TELEGRAM_BOT_API_BASE_URL:
-        builder = builder.base_url(f"{TELEGRAM_BOT_API_BASE_URL}/bot")
-        builder = builder.base_file_url(f"{TELEGRAM_BOT_API_BASE_FILE_URL}/bot")
-        builder = builder.local_mode(TELEGRAM_BOT_API_LOCAL_MODE)
     return builder.build()
 
 
@@ -400,12 +394,6 @@ def main():
     )
     logger.info(f"💾 [green]Загружено историй из БД:[/] [yellow]{loaded_chats}[/] чатов")
 
-    if TELEGRAM_BOT_API_BASE_URL:
-        logger.info(
-            "📡 Telegram Bot API: локальный сервер %s (local_mode=%s)",
-            TELEGRAM_BOT_API_BASE_URL,
-            TELEGRAM_BOT_API_LOCAL_MODE,
-        )
     app = build_telegram_application()
     register_handlers(app)
 

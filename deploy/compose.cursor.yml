@@ -14,13 +14,6 @@ services:
     ports: !reset []
     environment:
       QDRANT__SERVICE__HOST: 127.0.0.1
-  telegram-bot-api:
-    image: berangaria-migration/telegram-bot-api:20260914
-    pull_policy: never
-    network_mode: host
-    ports: !reset []
-    environment:
-      TELEGRAM_HTTP_IP_ADDRESS: 127.0.0.1
   dozzle:
     image: berangaria-migration/dozzle:20260914
     pull_policy: never

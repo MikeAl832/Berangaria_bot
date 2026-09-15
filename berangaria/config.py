@@ -77,15 +77,6 @@ def _str_setting(env_name: str, yaml_key: str, default: str) -> str:
 # 🔑 API КЛЮЧИ
 # ========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_BOT_API_BASE_URL = os.environ.get("TELEGRAM_BOT_API_BASE_URL", "").rstrip("/")
-TELEGRAM_BOT_API_BASE_FILE_URL = os.environ.get(
-    "TELEGRAM_BOT_API_BASE_FILE_URL",
-    f"{TELEGRAM_BOT_API_BASE_URL}/file" if TELEGRAM_BOT_API_BASE_URL else "",
-).rstrip("/")
-TELEGRAM_BOT_API_LOCAL_MODE = _as_bool(
-    os.environ.get("TELEGRAM_BOT_API_LOCAL_MODE"),
-    bool(TELEGRAM_BOT_API_BASE_URL),
-)
 DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Fish Audio TTS (optional — voice notes via send_voice). Prefer FISH_API_KEY.
@@ -144,9 +135,8 @@ VISION_MODE = config_yaml.get("vision_mode", False)
 GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-3.5-flash-lite")
 VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 300)
 AUDIO_MAX_DURATION_SEC = config_yaml.get("audio_max_duration_sec", 300)
-# Облачный Telegram Bot API отдаёт через getFile только до 20 МБ. В local mode
-# сервер снимает этот предел; оставляем настраиваемый предохранитель для диска/RAM.
-_video_file_limit_default = 2 * 1024 * 1024 * 1024 if TELEGRAM_BOT_API_LOCAL_MODE else 20 * 1024 * 1024
+# MTProto downloads bypass the HTTP getFile limit; keep a resource ceiling.
+_video_file_limit_default = 2 * 1024 * 1024 * 1024
 VIDEO_MAX_FILE_SIZE_BYTES = max(
     1,
     _int_setting("BOT_VIDEO_MAX_FILE_SIZE_BYTES", "video_max_file_size_bytes", _video_file_limit_default),
@@ -435,7 +425,7 @@ USER_BRIDGE_DEDUP_TTL_SECONDS = max(
     30.0,
     _float_setting("USER_BRIDGE_DEDUP_TTL_SECONDS", "user_bridge_dedup_ttl_seconds", 300.0),
 )
-# api_id/api_hash are also used by the local Bot API compose service; session is bridge-only.
+# Application credentials are shared by the bot media client and the user bridge.
 _raw_telegram_api_id = (os.environ.get("TELEGRAM_API_ID") or "").strip()
 try:
     TELEGRAM_API_ID = int(_raw_telegram_api_id) if _raw_telegram_api_id else 0
@@ -443,6 +433,17 @@ except ValueError:
     TELEGRAM_API_ID = 0
 TELEGRAM_API_HASH = (os.environ.get("TELEGRAM_API_HASH") or "").strip()
 USER_BRIDGE_SESSION = (os.environ.get("USER_BRIDGE_SESSION") or "").strip()
+TELEGRAM_MEDIA_SESSION_PATH = project_path(
+    os.environ.get("TELEGRAM_MEDIA_SESSION_PATH")
+    or os.path.join(os.path.dirname(os.environ.get("BOT_DB_PATH") or "bot_state.db"), "telegram_media.session")
+)
+TELEGRAM_MEDIA_PORT = _int_setting("TELEGRAM_MEDIA_PORT", "telegram_media_port", USER_BRIDGE_PORT or 443)
+if not 1 <= TELEGRAM_MEDIA_PORT <= 65535:
+    raise ValueError("TELEGRAM_MEDIA_PORT must be 1..65535")
+TELEGRAM_MEDIA_TIMEOUT_SECONDS = max(
+    5.0, _float_setting("TELEGRAM_MEDIA_TIMEOUT_SECONDS", "telegram_media_timeout_seconds", 300.0)
+)
+
 
 # Явный чат для критических алертов; null означает личный чат OWNER_USER_ID.
 _admin_alert_chat_id = config_yaml.get("admin_alert_chat_id", None)

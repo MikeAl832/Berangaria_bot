@@ -35,10 +35,6 @@ test -d qdrant_storage || {
   echo "Deploy preflight failed: Qdrant storage is missing."
   exit 1
 }
-test -d /var/lib/telegram-bot-api || {
-  echo "Deploy preflight failed: Telegram Bot API storage is missing."
-  exit 1
-}
 git diff --quiet || {
   echo "Deploy preflight failed: production checkout has unstaged tracked changes."
   echo "Changed tracked files:"

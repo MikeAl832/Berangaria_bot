@@ -17,6 +17,8 @@ qdrant_storage/
 *.db
 *.sqlite
 *.sqlite3
+*.session
+*.session-journal
 
 # Logs carry full prompts and user message text at DEBUG level. `COPY . .`
 # would bake them into an image layer on any local build.
