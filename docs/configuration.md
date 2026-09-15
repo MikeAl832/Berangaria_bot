@@ -74,10 +74,10 @@ Prompt texts live separately in `berangaria/prompts.py`.
 
 ## config.yaml Parameters
 
-### Main LLM (OpenRouter → OpenAI Sol Flex)
+### Main LLM (OpenRouter → Meta Muse Spark 1.3)
 
 ```yaml
-model: "openai/gpt-5.6-sol"
+model: "meta/muse-spark-1.3"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 max_context_tokens: 32000
 max_reply_tokens: 4096
@@ -88,19 +88,19 @@ generation_params:
 ```
 
 **Parameters:**
-- `model`: Chat Completions model id used for chat and summarization (shipped: `openai/gpt-5.6-sol`)
+- `model`: Chat Completions model id used for chat and summarization (shipped: `meta/muse-spark-1.3`)
 - `chat_api_url`: OpenRouter Chat Completions endpoint (`CHAT_API_URL` env override)
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
-- `generation_params`: Model sampling parameters. Sol accepts `reasoning.effort`
-  (`none` / `low` / `medium` / `high` / `xhigh` / `max`). Shipped chat uses
-  `temperature: 1.0` with `low`. Do not add `top_k`, `min_p`, or `top_p`.
-  Summarization overrides effort to `high` on its own request.
+- `generation_params`: Model sampling parameters. Muse Spark 1.3 requires reasoning and
+  accepts `minimal` / `low` / `medium` / `high` / `xhigh` / `max`. Shipped chat uses
+  `temperature: 1.0` with `low`; summarization overrides effort to `high` on its own request.
+  Add another sampling control only after an equivalent live A/B demonstrates a benefit.
 
-`temperature: 1.0` is intentional: it is the project's preferred native sampling point
-for Sol, retaining intelligence while giving normal conversation more wit and
-variation. Do not lower it as a generic anti-hallucination measure. Turns that actually
-used `web_search` or `read_url` are cooled separately by `factual_temperature`.
+`temperature: 1.0` is intentional: it is the project's initial Muse baseline for
+normal conversation, wit, and variation. Do not lower it as a generic
+anti-hallucination measure; factual answers rely on the existing search/read tools and
+their evidence contract.
 
 The shipped system prompt is likewise intentionally compact and uncensored. Do not add
 back exhaustive forbidden-phrase lists, anti-swearing/anti-insult rules, or step-by-step
@@ -114,22 +114,22 @@ Secret: `OPENROUTER_API_KEY` (or `CHAT_API_KEY`). DeepSeek `API_KEY` is still re
 extraction/verification. Gemini is vision and embeddings only.
 
 Chat Completions have one gateway: OpenRouter. See [openrouter-chat.md](openrouter-chat.md)
-for the cache fields on each request.
+for the exact route and request fields.
 
 Each chat request carries a deterministic, opaque conversation id derived from the
 persisted history key. It contains no raw Telegram ID. OpenRouter receives it as
-top-level `service_tier: "flex"`, plus `session_id` / `x-session-id` and
-`provider.only: ["openai/flex"]`, so price and the OpenAI Flex prompt cache stay on one
-endpoint. Fallbacks are disabled. A returned non-Flex tier triggers an owner alert.
+`session_id` / `x-session-id` plus `provider.only: ["meta"]`. Fallbacks are disabled and
+`require_parameters: true` rejects any route that cannot honor the request surface. A
+returned provider other than Meta triggers an owner alert.
 Completed assistant `reasoning_details` (or the legacy reasoning string when structured
 details are unavailable) are stored with the confirmed history turn and echoed back
 unmodified. The same row stores Telegram-visible `content` separately from the exact
 `provider_messages` assistant/tool transcript. Display cleanup, including removal of a
 final full stop, therefore never changes the next provider prefix; tool calls and their
 results are also replayed in their original order. Opaque reasoning and provider-only
-tool data are never sent to Telegram, memory extraction, or the summarizer. Provider
-cache entries may still be evicted after an idle period; a cold request affects price
-and latency, not the conversation context.
+tool data are never sent to Telegram, memory extraction, or the summarizer. The exact
+transcript is ready for provider-side caching where the selected endpoint supports it;
+returned `cached_tokens` and `usage.cost` are the evidence for actual cache behavior.
 
 Persisted history also records whether each new row has crossed its first provider-send
 boundary. A user reaction is stored beside a newly delivered assistant reply until that
@@ -304,7 +304,6 @@ log_message_preview_chars: 400
 ### Tools: Search and Stickers
 
 ```yaml
-factual_temperature: 0.4
 web_search_max_per_turn: 2
 read_url_max_per_turn: 4
 web_tool_max_per_turn: 6
@@ -323,10 +322,6 @@ sticker_index_version: 3
 ```
 
 **Parameters:**
-- `factual_temperature`: Sampling temperature used for the rest of a turn once `web_search` or
-  `read_url` ran — lower means fewer invented numbers. It is applied *only* for those two tools:
-  reactions and sticker searches no longer cool the turn down, because that silently flattened the
-  persona every time the bot merely looked for a sticker.
 - `web_search_max_per_turn`: Ceiling on `web_search` calls in one reply (one query plus one refined
   retry). The prompt asks the bot to verify facts aggressively, and the DuckDuckGo rate limiter
   (10/min in `berangaria/tools/web.py`) is process-global, so one runaway turn would otherwise
@@ -387,20 +382,21 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 1.00
-price_prompt_cache_hit: 0.10
+price_prompt_cache_miss: 1.25
+price_prompt_cache_hit: 0.15
 price_prompt_cache_write: 1.25
-price_completion: 5.00
+price_completion: 4.25
 ```
 
 **Parameters (per 1M tokens):**
 - `price_prompt_cache_miss`: Regular input tokens
 - `price_prompt_cache_hit`: Cached input tokens (cache read)
-- `price_prompt_cache_write`: Tokens written into the prompt cache (OpenAI bills this; xAI does not)
+- `price_prompt_cache_write`: Conservative fallback for cache-write tokens when no separate list price is published
 - `price_completion`: Output tokens
 
-Shipped values are the current promotional OpenRouter prices for `openai/gpt-5.6-sol`
-on the `openai/flex` endpoint. Requests also explicitly send `service_tier: "flex"`.
+Shipped values are the current OpenRouter prices for `meta/muse-spark-1.3` on Meta.
+The published price lists regular input, cached input, and output; the fallback therefore
+treats any separately reported cache write as regular input.
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate,
 and the log labels which source was used.
 Update the yaml prices when the model slug or exclusive discount changes.
@@ -519,17 +515,16 @@ Use `/summarize` command to compress chat history immediately. Token-budget comp
 
 ### High API Costs
 
-**Symptoms:** Unexpected OpenRouter / OpenAI charges
+**Symptoms:** Unexpected OpenRouter / Meta charges
 
 **Solutions:**
-1. Check cache hit rate in logs (target: 80-90% after warmup); occasional cold requests after idle
-   eviction are normal
-2. Confirm the shipped `openai/gpt-5.6-sol` slug, OpenRouter URL, and that
+1. Check returned `cached_tokens` and `usage.cost`; do not assume that a stable Meta route
+   implies an active prompt cache
+2. Confirm the shipped `meta/muse-spark-1.3` slug, OpenRouter URL, and that
    `generation_params.reasoning.effort` is `low`
-3. Confirm requests send `service_tier: "flex"`, a stable `session_id`, and
-   `provider.only: ["openai/flex"]`. The route log must report `service_tier=flex`; a
-   90%→0% sawtooth with an unchanged prompt prefix means the endpoint changed, not that
-   history was rewritten
+3. Confirm requests send a stable `session_id`, `provider.only: ["meta"]`,
+   `allow_fallbacks: false`, and `require_parameters: true`. The route log must report
+   `provider=Meta`
 4. Reduce `max_context_tokens` if conversations are too long
 5. Use `/summarize` to compress long chats
 6. Re-check `price_*` yaml if list prices changed
@@ -603,7 +598,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
+- OpenRouter `meta/muse-spark-1.3` pinned to Meta is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -758,8 +753,8 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter](https://openrouter.ai/docs)
-- [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol)
-- [OpenRouter chat cache](openrouter-chat.md)
+- [Muse Spark 1.3](https://openrouter.ai/meta/muse-spark-1.3)
+- [OpenRouter chat route](openrouter-chat.md)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)
 - [Mem0 Documentation](https://docs.mem0.ai)

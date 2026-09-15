@@ -253,11 +253,12 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
     assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
-    assert payloads[0]["service_tier"] == "flex"
     assert payloads[0]["provider"] == {
-        "only": ["openai/flex"],
+        "only": ["meta"],
         "allow_fallbacks": False,
+        "require_parameters": True,
     }
+    assert "service_tier" not in payloads[0]
     assert captured_headers[0]["x-session-id"] == llm_client._chat_session_id(key)
     assert "x-grok-conv-id" not in captured_headers[0]
 
@@ -274,10 +275,9 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
 
 def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path, caplog):
     response = _Response(200, {
-        "id": "gen-flex-1",
-        "provider": "OpenAI",
-        "model": "openai/gpt-5.6-sol-20260709",
-        "service_tier": "flex",
+        "id": "gen-meta-1",
+        "provider": "Meta",
+        "model": "meta/muse-spark-1.3-20260902",
         "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
         "usage": {
             "prompt_tokens": 100,
@@ -318,15 +318,14 @@ def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path, caplog):
     leaders = analytics_store.get_leaderboards("all", chat_id=100)
     assert leaders["replies"][0]["user_id"] == 1
     assert leaders["cost"][0]["value"] == 321
-    assert "provider=OpenAI service_tier=flex" in caplog.text
+    assert "provider=Meta model=meta/muse-spark-1.3-20260902" in caplog.text
 
 
-def test_non_flex_service_tier_alerts_owner(monkeypatch, tmp_path):
+def test_unexpected_provider_alerts_owner(monkeypatch, tmp_path):
     response = _Response(200, {
-        "id": "gen-standard-1",
-        "provider": "OpenAI",
-        "model": "openai/gpt-5.6-sol-20260709",
-        "service_tier": "default",
+        "id": "gen-wrong-provider-1",
+        "provider": "Other",
+        "model": "meta/muse-spark-1.3-20260902",
         "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
         "usage": {},
     })
@@ -356,10 +355,10 @@ def test_non_flex_service_tier_alerts_owner(monkeypatch, tmp_path):
     ))
 
     assert len(alerts) == 1
-    assert alerts[0]["category"] == "LLM routing tier"
-    assert "service_tier=default" in alerts[0]["message"]
-    assert "ожидался flex" in alerts[0]["message"]
-    assert "generation=gen-standard-1" in alerts[0]["message"]
+    assert alerts[0]["category"] == "LLM routing provider"
+    assert "provider=Other" in alerts[0]["message"]
+    assert "ожидался meta" in alerts[0]["message"]
+    assert "generation=gen-wrong-provider-1" in alerts[0]["message"]
 
 
 def test_telegram_cleanup_does_not_change_provider_history(monkeypatch, tmp_path):
@@ -656,17 +655,15 @@ def _run_turn_with_tool(monkeypatch, tmp_path, name, arguments):
 
 
 def test_reaction_round_keeps_the_warm_temperature(monkeypatch, tmp_path):
-    """The cold temperature is the price of retelling looked-up facts, not of any
-    tool at all. Reactions and stickers must not flatten the rest of the turn."""
+    """Tool rounds retain the shipped Muse sampling parameters."""
     posts, _ = _run_turn_with_tool(
         monkeypatch, tmp_path, "react_to_message", '{"emoji": "\\ud83d\\udd25"}'
     )
     assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
-    assert posts[1]["temperature"] != llm_client.FACTUAL_TEMPERATURE
 
 
 def test_search_round_keeps_temperature_when_reasoning_is_on(monkeypatch, tmp_path):
-    """With effort other than none, OpenAI rejects a cooled temperature on Completions."""
+    """Grounded Muse rounds keep the same temperature and reasoning baseline."""
     from berangaria.tools import dispatch as tool_handlers
 
     monkeypatch.setattr(
@@ -677,7 +674,7 @@ def test_search_round_keeps_temperature_when_reasoning_is_on(monkeypatch, tmp_pa
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
     assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
-    assert posts[1]["temperature"] != llm_client.FACTUAL_TEMPERATURE
+    assert posts[1]["reasoning"] == {"effort": "low"}
     provider_messages = history[-1]["provider_messages"]
     assert [message["role"] for message in provider_messages] == [
         "assistant", "tool", "assistant",
@@ -685,25 +682,6 @@ def test_search_round_keeps_temperature_when_reasoning_is_on(monkeypatch, tmp_pa
     assert provider_messages[0]["tool_calls"][0]["function"]["name"] == "web_search"
     assert provider_messages[1]["tool_call_id"] == "call_1"
     assert provider_messages[-1]["content"] == "ответ"
-
-
-def test_search_round_cools_when_reasoning_is_off(monkeypatch, tmp_path):
-    from berangaria.tools import dispatch as tool_handlers
-
-    monkeypatch.setattr(
-        llm_client,
-        "GENERATION_PARAMS",
-        {**llm_client.GENERATION_PARAMS, "reasoning": {"effort": "none"}},
-    )
-    monkeypatch.setattr(
-        tool_handlers, "web_search",
-        lambda query, max_results=5, timelimit=None, region="ru-ru": "1. факт\nтекст\nhttps://e.com",
-    )
-    posts, _ = _run_turn_with_tool(
-        monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
-    )
-    assert posts[1]["temperature"] == llm_client.FACTUAL_TEMPERATURE
-
 
 def test_exhausted_read_url_is_removed_from_following_provider_round(monkeypatch, tmp_path):
     from berangaria.tools import dispatch as tool_handlers

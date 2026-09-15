@@ -87,7 +87,7 @@ FISH_API_KEY = (
 FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
 
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Sol chat + DeepSeek Mem0)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Meta Muse + DeepSeek Mem0)
 # ========================================
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 CHAT_API_URL = _str_setting(
@@ -95,8 +95,8 @@ CHAT_API_URL = _str_setting(
     "chat_api_url",
     "https://openrouter.ai/api/v1/chat/completions",
 )
-MODEL = config_yaml.get("model", "openai/gpt-5.6-sol")
-CHAT_SERVICE_TIER = "flex"
+MODEL = config_yaml.get("model", "meta/muse-spark-1.3")
+CHAT_PROVIDER = "meta"
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
 CHAT_API_KEY = (
@@ -115,9 +115,10 @@ if not CHAT_API_KEY:
 
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
 MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
-GENERATION_PARAMS = config_yaml.get("generation_params", {"temperature": 0.9, "top_p": 0.95})
-# Пониженная температура для фактических ответов (после web_search/read_url) — меньше галлюцинаций
-FACTUAL_TEMPERATURE = config_yaml.get("factual_temperature", 0.3)
+GENERATION_PARAMS = config_yaml.get(
+    "generation_params",
+    {"temperature": 1.0, "reasoning": {"effort": "low"}},
+)
 STREAMING_ENABLED = _bool_setting("BOT_STREAMING_ENABLED", "streaming_enabled", True)
 STREAM_UPDATE_INTERVAL_SECONDS = max(
     0.25,
@@ -460,11 +461,11 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match the current promotional OpenRouter prices for Sol on OpenAI Flex.
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 1.00)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.10)
+# Defaults match the current OpenRouter prices for Meta Muse Spark 1.3.
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 1.25)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.15)
 PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 1.25)
-PRICE_COMPLETION = config_yaml.get("price_completion", 5.00)
+PRICE_COMPLETION = config_yaml.get("price_completion", 4.25)
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
@@ -481,16 +482,13 @@ def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
 
 
 def apply_chat_gateway(payload: dict, *, session_id: str | None) -> dict:
-    """Pin chat to OpenAI Flex so price and prompt-cache routing stay stable."""
-    # `service_tier` is OpenRouter's authoritative capacity-tier selector.
-    # Keep the exact provider endpoint pin below as a second fail-closed guard.
-    payload["service_tier"] = CHAT_SERVICE_TIER
-    if not session_id:
-        return payload
-    payload["session_id"] = session_id
+    """Pin chat to Meta's Muse endpoint and reject incompatible fallbacks."""
+    if session_id:
+        payload["session_id"] = session_id
     payload["provider"] = {
-        "only": ["openai/flex"],
+        "only": [CHAT_PROVIDER],
         "allow_fallbacks": False,
+        "require_parameters": True,
     }
     return payload
 

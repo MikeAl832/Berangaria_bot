@@ -87,24 +87,29 @@ def test_chat_headers_send_openrouter_session_affinity():
     assert "x-grok-conv-id" not in pinned
 
 
-def test_apply_chat_gateway_pins_openai_flex():
+def test_apply_chat_gateway_pins_meta_with_required_parameters():
     payload = bot_config.apply_chat_gateway(
         {"model": MODEL, "messages": []},
         session_id="berangaria-abc",
     )
     assert payload["session_id"] == "berangaria-abc"
-    assert payload["service_tier"] == "flex"
     assert payload["provider"] == {
-        "only": ["openai/flex"],
+        "only": ["meta"],
         "allow_fallbacks": False,
+        "require_parameters": True,
     }
+    assert "service_tier" not in payload
 
 
-def test_apply_chat_gateway_skips_without_session_id():
+def test_apply_chat_gateway_keeps_provider_pin_without_session_id():
     payload = bot_config.apply_chat_gateway({"model": MODEL, "messages": []}, session_id=None)
-    assert payload["service_tier"] == "flex"
     assert "session_id" not in payload
-    assert "provider" not in payload
+    assert payload["provider"] == {
+        "only": ["meta"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    assert "service_tier" not in payload
 
 
 def test_markdown_html_escapes_special_chars():
@@ -662,7 +667,7 @@ def _summary_history(n=12):
     ]
 
 
-def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
+def test_successful_summary_returns_new_list_and_pins_meta(monkeypatch):
     captured = {}
 
     class OkClient:
@@ -710,7 +715,7 @@ def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
     assert captured["payload"]["model"] == llm_client.MODEL
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert captured["payload"]["temperature"] == 0.3
-    assert captured["payload"]["service_tier"] == "flex"
+    assert "service_tier" not in captured["payload"]
     assert "thinking" not in captured["payload"]
     assert "reasoning_effort" not in captured["payload"]
     assert captured["payload"]["max_tokens"] == 8192
@@ -719,8 +724,9 @@ def test_successful_summary_returns_new_list_and_pins_openrouter(monkeypatch):
     assert "min_p" not in captured["payload"]
     assert captured["timeout"] == 120.0
     assert captured["payload"]["provider"] == {
-        "only": ["openai/flex"],
+        "only": ["meta"],
         "allow_fallbacks": False,
+        "require_parameters": True,
     }
     assert captured["payload"]["session_id"] == llm_client._chat_session_id("private_1")
 
@@ -856,16 +862,16 @@ def test_usage_log_labels_fallback_estimate_for_invalid_provider_cost(caplog):
     assert "источник=локальная оценка" in caplog.text
 
 
-def test_shipped_chat_model_is_sol_with_low_reasoning():
-    assert MODEL == "openai/gpt-5.6-sol"
+def test_shipped_chat_model_is_muse_spark_with_low_reasoning():
+    assert MODEL == "meta/muse-spark-1.3"
     assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
-    assert bot_config.CHAT_SERVICE_TIER == "flex"
-    assert llm_client.PRICE_PROMPT_CACHE_MISS == 1.00
-    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.10
+    assert bot_config.CHAT_PROVIDER == "meta"
+    assert llm_client.PRICE_PROMPT_CACHE_MISS == 1.25
+    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.15
     assert llm_client.PRICE_PROMPT_CACHE_WRITE == 1.25
-    assert llm_client.PRICE_COMPLETION == 5.00
+    assert llm_client.PRICE_COMPLETION == 4.25
     assert "top_p" not in GENERATION_PARAMS
     assert "top_k" not in GENERATION_PARAMS
     assert "min_p" not in GENERATION_PARAMS

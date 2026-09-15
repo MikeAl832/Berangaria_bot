@@ -11,9 +11,9 @@ from telegram.ext import ContextTypes
 from berangaria.config import (
     CHAT_API_URL, SUMMARY_INTERVAL as _SUMMARY_INTERVAL, VISION_MODE,
     MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FACTUAL_TEMPERATURE, FULL_DEBUG_LOGS,
+    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FULL_DEBUG_LOGS,
     PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_PROMPT_CACHE_WRITE,
-    PRICE_COMPLETION, CHAT_SERVICE_TIER,
+    PRICE_COMPLETION, CHAT_PROVIDER,
     MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
     MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
     MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
@@ -429,7 +429,6 @@ async def _run_llm_turn(
     # Мутируемое состояние хода (статусная плашка, реакции, стикеры, pending_reply) —
     # см. tool_handlers.ToolTurn. Живёт весь retry-цикл.
     turn = ToolTurn(chat_actions=chat_actions)
-    used_tool = False  # после вызова инструмента (поиск/ссылка) отвечаем с пониженной температурой
 
     async def _request_completion(client, payload, headers):
         runtime = completion_transport.CompletionRuntime(
@@ -562,14 +561,6 @@ async def _run_llm_turn(
         tool_rounds = 0
         while True:
             gen_params = dict(GENERATION_PARAMS)
-            reasoning = gen_params.get("reasoning")
-            reasoning_effort = (
-                reasoning.get("effort") if isinstance(reasoning, dict) else None
-            )
-            if used_tool and reasoning_effort in (None, "none"):
-                # GPT-5.6 with reasoning.effort other than none rejects non-default
-                # temperature on Chat Completions. Cool only the no-thinking path.
-                gen_params["temperature"] = FACTUAL_TEMPERATURE
 
             session_id = _chat_session_id(key)
             turn_tools = available_tools_for_turn(turn, TOOLS)
@@ -685,25 +676,25 @@ async def _run_llm_turn(
                 usage = data.get('usage', {})
                 llm_diagnostics.log_router_metadata(data, response.headers)
 
-                raw_service_tier = data.get("service_tier")
-                service_tier = str(raw_service_tier or "unknown").lower()
-                if raw_service_tier is None:
+                raw_provider = data.get("provider")
+                provider_name = str(raw_provider or "unknown")
+                if raw_provider is None:
                     logger.warning(
-                        "OpenRouter не вернул service_tier; ожидался %s",
-                        CHAT_SERVICE_TIER,
+                        "OpenRouter не вернул provider; ожидался %s",
+                        CHAT_PROVIDER,
                     )
-                elif service_tier != CHAT_SERVICE_TIER:
+                elif provider_name.strip().lower() != CHAT_PROVIDER:
                     generation_id = str(data.get("id") or "unknown")
                     logger.error(
-                        "OpenRouter нарушил pin тарифа: expected=%s actual=%s generation=%s",
-                        CHAT_SERVICE_TIER,
-                        service_tier,
+                        "OpenRouter нарушил pin провайдера: expected=%s actual=%s generation=%s",
+                        CHAT_PROVIDER,
+                        provider_name,
                         generation_id,
                     )
                     await _alert(
-                        "LLM routing tier",
-                        f"OpenRouter вернул service_tier={service_tier}, "
-                        f"ожидался {CHAT_SERVICE_TIER}; generation={generation_id}",
+                        "LLM routing provider",
+                        f"OpenRouter вернул provider={provider_name}, "
+                        f"ожидался {CHAT_PROVIDER}; generation={generation_id}",
                     )
 
                 if usage:
@@ -714,7 +705,6 @@ async def _run_llm_turn(
                         estimate_request_cost=_estimate_request_cost,
                     )
                     details = usage.get("prompt_tokens_details") or {}
-                    provider_name = str(data.get("provider") or "openrouter")
                     model_name = str(data.get("model") or MODEL)
                     prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
                     cached_tokens = max(0, int(details.get("cached_tokens", 0) or 0))
@@ -724,10 +714,8 @@ async def _run_llm_turn(
                         else 0.0
                     )
                     logger.info(
-                        "🧭 Маршрут: provider=%s service_tier=%s model=%s "
-                        "session=%s cache=%.1f%%",
+                        "🧭 Маршрут: provider=%s model=%s session=%s cache=%.1f%%",
                         provider_name,
-                        service_tier,
                         model_name,
                         session_id[-12:],
                         cache_ratio,
@@ -764,16 +752,6 @@ async def _run_llm_turn(
                         )
                         return
                     payload_messages.append(message)
-                    # The cold temperature is only right where the reply retells
-                    # facts that were looked up. It used to be switched on by ANY
-                    # tool, so a sticker search or a reaction silently flattened the
-                    # rest of the turn — punishing the model for exactly the
-                    # behaviour the prompt is trying to encourage.
-                    if any(
-                        (tc.get("function") or {}).get("name") in ("web_search", "read_url")
-                        for tc in message["tool_calls"]
-                    ):
-                        used_tool = True
                     turn.pending_reply = None
                     turn.pending_messages = None  # list[str] если send_messages
 

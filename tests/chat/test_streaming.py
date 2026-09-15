@@ -51,7 +51,7 @@ class _Client:
         return _StreamContext(self.response)
 
 
-def test_stream_aggregates_openai_reasoning_without_previewing_it():
+def test_stream_aggregates_reasoning_alias_without_previewing_it():
     response = _StreamResponse([
         ": keep-alive",
         _event({"choices": [{"delta": {"role": "assistant", "reasoning": "секрет"}}]}),
@@ -69,7 +69,7 @@ def test_stream_aggregates_openai_reasoning_without_previewing_it():
     result = asyncio.run(stream_chat_completion(
         client,
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "openai/gpt-5.6-luna", "messages": []},
+        payload={"model": "meta/muse-spark-1.3", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
@@ -142,9 +142,8 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     response = _StreamResponse([
         _event({
             "id": "generation-1",
-            "model": "openai/gpt-5.6-sol",
-            "provider": "OpenAI",
-            "service_tier": "flex",
+            "model": "meta/muse-spark-1.3",
+            "provider": "Meta",
             "choices": [{"delta": {
             "role": "assistant",
             "reasoning": "плоская копия, которую не надо дублировать",
@@ -169,16 +168,16 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "openai/gpt-5.6-sol", "messages": []},
+        payload={"model": "meta/muse-spark-1.3", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
 
     message = result.json()["choices"][0]["message"]
     assert result.json()["id"] == "generation-1"
-    assert result.json()["model"] == "openai/gpt-5.6-sol"
-    assert result.json()["provider"] == "OpenAI"
-    assert result.json()["service_tier"] == "flex"
+    assert result.json()["model"] == "meta/muse-spark-1.3"
+    assert result.json()["provider"] == "Meta"
+    assert "service_tier" not in result.json()
     assert message["reasoning_details"] == detail_chunks
     assert "reasoning_content" not in message
     assert message["tool_calls"][0]["function"]["name"] == "web_search"
@@ -192,8 +191,8 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
         "attempt": 1,
         "endpoints": {
             "available": [{
-                "provider": "OpenAI",
-                "model": "openai/gpt-5.6-sol",
+                "provider": "Meta",
+                "model": "meta/muse-spark-1.3",
                 "selected": True,
             }],
         },
@@ -213,7 +212,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "openai/gpt-5.6-sol", "messages": []},
+        payload={"model": "meta/muse-spark-1.3", "messages": []},
         headers={"X-OpenRouter-Metadata": "enabled"},
     ))
 
@@ -272,14 +271,14 @@ def test_stream_surfaces_error_without_accepting_partial_as_completion(caplog):
     response = _StreamResponse([
         _event({
             "id": "gen-context-1",
-            "model": "openai/gpt-5.6-sol",
-            "provider": "OpenAI",
+            "model": "meta/muse-spark-1.3",
+            "provider": "Meta",
             "choices": [{"delta": {"content": "частичный текст"}}],
         }),
         _event({
             "id": "gen-context-1",
-            "model": "openai/gpt-5.6-sol",
-            "provider": "OpenAI",
+            "model": "meta/muse-spark-1.3",
+            "provider": "Meta",
             "error": {
                 "code": 400,
                 "message": "Context length exceeded",

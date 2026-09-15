@@ -1,24 +1,26 @@
-# OpenRouter chat cache
+# OpenRouter chat route
 
 Один шлюз: `https://openrouter.ai/api/v1/chat/completions`, модель
-`openai/gpt-5.6-sol` с `service_tier=flex` на endpoint `openai/flex`, ключ
-`OPENROUTER_API_KEY`.
-Прямого xAI в коде нет.
+`meta/muse-spark-1.3`, хостер Meta, ключ `OPENROUTER_API_KEY`.
+Другого chat-шлюза в коде нет.
 
-Кэш здесь двухслойный. OpenRouter клеит запросы к **одному хостеру**. OpenAI
-кэширует **байт-стабильный префикс** messages. Без первого слоя второй живёт
-только пока балансировщик случайно попадёт на ту же машину.
+Модель поддерживает tools, structured outputs, `temperature` и
+настраиваемый reasoning. Reasoning обязателен; обычный чат
+использует `low`, суммаризация — `high`.
 
 ## Что уходит в каждый запрос
 
-Тело (чат и суммаризация):
+Тело чата:
 
 ```json
 {
-  "model": "openai/gpt-5.6-sol",
-  "service_tier": "flex",
+  "model": "meta/muse-spark-1.3",
   "session_id": "berangaria-<sha256(history_key)>",
-  "provider": { "only": ["openai/flex"], "allow_fallbacks": false },
+  "provider": {
+    "only": ["meta"],
+    "allow_fallbacks": false,
+    "require_parameters": true
+  },
   "reasoning": { "effort": "low" },
   "messages": [ ... ],
   "tools": [ ... ]
@@ -27,58 +29,60 @@
 
 Заголовки:
 
-```
+```text
 Authorization: Bearer <OPENROUTER_API_KEY>
 x-session-id: <тот же session_id>
 HTTP-Referer: https://github.com/MikeAl832/Berangaria_bot
 X-Title: Berangaria
 ```
 
-`session_id` в теле важнее заголовка, если вдруг разойдутся. Один id на весь
-чат (`private_X` / `group_Y`), не на ход и не на tool-round. Длина ≤256.
+`session_id` один на весь чат (`private_X` / `group_Y`), а не на ход или
+tool-round. В теле и заголовке используется одно значение.
 
 | Поле | Зачем |
 |---|---|
-| `service_tier: "flex"` | официальный request-level выбор дешёвого OpenAI Flex tier |
-| `session_id` / `x-session-id` | sticky routing с первого успешного ответа, не после первого cache hit |
-| `provider.only: ["openai/flex"]` | держать скидочную цену и KV-кэш на OpenAI Flex |
-| `allow_fallbacks: false` | не переходить на другой tier/Azure/Bedrock ценой холодного кэша |
-| `reasoning.effort: low` | чат+tools по гайду OpenAI; `none` — если снова упрётесь в CoT-налог |
-| суммаризация `high` | отдельный запрос, как на Grok/Luna; не наследует low чата |
+| `session_id` / `x-session-id` | стабильная routing affinity и диагностика одного чата |
+| `provider.only: ["meta"]` | разрешить только хостер Meta |
+| `allow_fallbacks: false` | не переходить на другого хостера |
+| `require_parameters: true` | отклонить маршрут, который не поддерживает поля запроса |
+| `reasoning.effort: low` | баланс tool-надёжности, цены и задержки |
+| суммаризация `high` | отдельный запрос для точного сжатия фактов |
 
-В логе: `🧭 Маршрут: provider=OpenAI service_tier=flex ... cache=`. Строка токенов
-разделяет cache read и cache write, а строка стоимости отмечает `usage.cost` либо
-локальную оценку. Явный ответ не с Flex создаёт критический алерт владельцу.
-После прогрева цель cache hit — 80–90%.
-Первый запрос чата холодный. Пила 90/0/90 при том же `session_id` — хостер сменился
-или префикс messages переписали.
+В логе: `🧭 Маршрут: provider=Meta model=... session=... cache=...`.
+Ответ с другим provider создаёт критический алерт владельцу. Строка
+токенов разделяет cache read и cache write, а строка цены отмечает
+`usage.cost` или локальную оценку.
 
-Не путай с Mem0: `🧠 Память` к prompt cache не относится.
+Текущий Meta endpoint не объявляет implicit caching. Нельзя считать
+стабильный `session_id` доказательством cache hit: его подтверждают
+только `usage.prompt_tokens_details.cached_tokens` и фактический
+`usage.cost`.
+
+Не путать с Mem0: `🧠 Память` к prompt cache не относится.
 
 ## Что держит сам префикс messages
 
-Это уже не поля OpenRouter, а как собран prompt. Ломать нельзя:
-
 - Personality system — первое сообщение, без даты.
-- Календарный день — вторым `system`, не внутри personality.
-- Память дописывается в **последнее** user-сообщение, не в начало.
-- Уже отправленный префикс не переписывается (реакции — в хвост).
-- `provider_messages` — сырой assistant/tool след, `content` — то, что ушло в Telegram.
-
-OpenAI автоматически кэширует префикс, если он ≥1024 токенов. System prompt + tools
-это закрывают. Меняется хвост (новый user, tool results текущего хода) — это
-нормальный miss только на хвосте; начало должно оставаться cache hit.
+- Календарный день — вторым `system`, а не внутри personality.
+- Память дописывается в последнее user-сообщение, а не в начало.
+- Уже отправленный префикс не переписывается; реакции добавляются в хвост.
+- `provider_messages` хранит точный assistant/tool след, `content` — текст из Telegram.
+- `reasoning_details` передаётся обратно без пересборки или сокращения.
 
 ## Чего не делать
 
 | Делать | Не делать |
 |---|---|
-| `service_tier: "flex"` | полагаться на неявный/default tier |
-| `provider.only: ["openai/flex"]` | `provider.order` — выключает sticky routing |
-| `allow_fallbacks: false` | `sort: "price"` — прыжки OpenAI ↔ Azure ↔ Bedrock |
-| Один `session_id` на history key | Новый id на ход или tool-round |
-| `reasoning.effort: low` в чате | `medium`/`high` на каждый пинг в группе |
-| `high` только в суммаризации | `top_k` / `min_p` — OpenAI их не ест |
+| `provider.only: ["meta"]` | `provider.order` или `sort`, разрешающие дрейф endpoint |
+| `allow_fallbacks: false` | скрыто переходить к другому хостеру |
+| `require_parameters: true` | молча терять неподдерживаемые поля |
+| один `session_id` на history key | новый id на ход или tool-round |
+| `reasoning.effort: low` в чате | `none`, который Muse не поддерживает |
+| `high` только в суммаризации | поднимать весь обычный чат до `medium`/`high` |
+| обычный `meta/muse-spark-1.3` | `-contributor` без отдельного решения о data policy |
 
-Точки в коде: `berangaria/config.py` (`chat_api_headers`, `apply_chat_gateway`),
-`berangaria/chat/llm_client.py`, `berangaria/chat/summarization.py`.
+Точки в коде: `berangaria/config.py` (`chat_api_headers`,
+`apply_chat_gateway`), `berangaria/chat/llm_client.py`,
+`berangaria/chat/summarization.py`.
+
+Актуальные capabilities и цены: [OpenRouter Muse Spark 1.3](https://openrouter.ai/meta/muse-spark-1.3).

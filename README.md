@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **Main LLM**: OpenRouter `meta/muse-spark-1.3` pinned to Meta (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -15,7 +15,8 @@ The system prompt is deliberately compact and uncensored. It gives the strong
 chat model positive direction toward wit, jokes, banter, and equal-participant behavior
 without weak-model catchphrase bans, anti-swearing rules, or step-by-step personality
 cookbooks. Security, metadata, memory, web-trust, and terminal-tool invariants remain
-explicit. Chat reasoning stays off: hidden CoT is billed and then replayed into later turns.
+explicit. Chat reasoning stays at `low`; opaque reasoning returned by the provider is billed
+and replayed unchanged when continuity requires it, but never shown in Telegram.
 
 ## Key Features
 
@@ -107,9 +108,9 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: chat model (shipped: `openai/gpt-5.6-sol` on OpenRouter)
-- `chat_api_url`: OpenRouter Completions; each request sends `service_tier: "flex"`, while `session_id` and `provider.only: ["openai/flex"]` keep price and prompt cache on OpenAI Flex with fallbacks disabled
-- `generation_params`: normal Sol chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`; do not add `top_k` / `min_p` / `top_p`
+- `model`: chat model (shipped: `meta/muse-spark-1.3` on OpenRouter)
+- `chat_api_url`: OpenRouter Chat Completions; `session_id` and `provider.only: ["meta"]` pin Meta, while fallbacks are disabled and every request requires support for all sent parameters
+- `generation_params`: normal Muse chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`
 - `vision_mode`: enable/disable vision
 - `embedding_model`: Gemini embedding model
 - `mem0_llm_model`: DeepSeek model used by the strict memory extractor and verifier
@@ -252,11 +253,11 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `openai/gpt-5.6-sol` on OpenAI Flex (per 1M tokens, promotional prices)
-- Regular input: $1.00
-- Cached input: $0.10
-- Cache write: $1.25
-- Output: $5.00
+### OpenRouter `meta/muse-spark-1.3` on Meta (per 1M tokens)
+- Regular input: $1.25
+- Cached input: $0.15
+- Cache write fallback estimate: $1.25 (no separate list price is published)
+- Output: $4.25
 - Provider `usage.cost` is preferred when the response includes it
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
@@ -270,7 +271,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **GPT-5.6 Sol**: shipped chat model on OpenRouter through OpenAI Flex (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **Muse Spark 1.3**: shipped chat model on OpenRouter through Meta (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - **Gemini**: vision and embeddings only
 
@@ -296,11 +297,11 @@ Set `debug: true` in config.yaml for detailed logging:
 - Check Qdrant logs: `docker logs qdrant`
 
 **High costs**: 
-- Check cache hit rate in logs (should be 80-90% after warmup on OpenAI)
+- Check actual `cached_tokens` and `usage.cost` in logs; Muse's current Meta endpoint does not advertise implicit caching, so do not assume a warm-cache target
 - Confirm `OPENROUTER_API_KEY` is set, chat `reasoning.effort` is `low`, and requests
-  send `service_tier: "flex"` plus a stable `session_id` with
-  `provider.only: ["openai/flex"]`. The route log reports the returned tier; an explicit
-  non-Flex response also alerts the owner. Other tiers or Azure/Bedrock split the cache.
+  send a stable `session_id` with `provider.only: ["meta"]`, fallbacks disabled, and
+  `require_parameters: true`. The route log reports the returned provider; an unexpected
+  provider also alerts the owner.
 - Do not rewrite already-sent history to add user reactions; the shipped history lifecycle
   appends those reactions after the cached prefix automatically
 - Telegram cleanup is display-only: persisted `provider_messages` replay the exact raw
