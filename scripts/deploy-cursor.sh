@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-test "$(hostname)" = cursor || {
-  echo "Deploy preflight failed: runner host is not cursor."
-  exit 1
-}
+case "$(hostname)" in
+  cursor|grok-bot-vm-*) ;;
+  *)
+    echo "Deploy preflight failed: runner host is not an allowed production host (cursor or grok-bot-vm-*)."
+    exit 1
+    ;;
+esac
 test "$(id -un)" = box || {
   echo "Deploy preflight failed: runner user is not box."
   exit 1
@@ -13,8 +16,8 @@ test "$(id -un)" = box || {
   echo "Deploy preflight failed: DEPLOY_SHA is invalid."
   exit 1
 }
-cd /opt/Berangaria_bot || {
-  echo "Deploy preflight failed: /opt/Berangaria_bot is unavailable."
+cd /home/box/Berangaria_bot || {
+  echo "Deploy preflight failed: /home/box/Berangaria_bot is unavailable."
   exit 1
 }
 
@@ -100,7 +103,7 @@ check_running() {
   fi
 }
 
-echo "Waiting for Telegram initialization on cursor..."
+echo "Waiting for Telegram initialization..."
 ready=0
 for attempt in $(seq 1 30); do
   check_running
@@ -122,4 +125,4 @@ for attempt in $(seq 1 5); do
   sleep 4
   check_running
 done
-echo "Bot initialized and remained stable on cursor at ${DEPLOY_SHA}."
+echo "Bot initialized and remained stable at ${DEPLOY_SHA}."
