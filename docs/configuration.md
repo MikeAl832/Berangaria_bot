@@ -43,10 +43,16 @@ or new secret is required. The media client does not consume message updates.
   persistent session; never point it at a user bridge session.
 - `TELEGRAM_MEDIA_PORT`: defaults to `USER_BRIDGE_PORT`, or 443 when unset.
 - `TELEGRAM_MEDIA_TIMEOUT_SECONDS`: whole-download timeout, default 300 seconds,
-  including waiting for a download slot. Failed downloads surface through the
-  existing media-error handling; there is no HTTP download fallback.
+  including waiting for a download slot. Downloads use 512 KiB chunks and abort
+  after 30 seconds without new bytes, so a stalled transfer does not occupy the
+  serialized intake queue for the full five-minute budget. Failed downloads
+  surface through the existing media-error handling; there is no HTTP download fallback.
 - Video/audio downloads stream to temporary files and remove partial files on
-  failure or cancellation. Content signatures determine the file format.
+  failure or cancellation. Files with a known size of at least 4 MiB use four
+  parallel range requests; smaller files use one. Short Telegram rate limits
+  (up to 10 seconds) pause all workers before resuming the unwritten chunk,
+  with at most three consecutive retries without progress. Long waits fail
+  immediately. Content signatures determine the file format.
 
 When migrating an existing installation, first build the new bot image, then
 stop the old bot, call `logOut` on the old local Bot API endpoint, and stop that

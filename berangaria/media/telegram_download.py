@@ -11,14 +11,93 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
+import struct
+import time
 from pathlib import Path
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError, FloodPremiumWaitError
 from telethon.extensions import BinaryReader
 from telethon.sessions import SQLiteSession
 from telethon.tl import types
 
 from berangaria import config
+
+logger = logging.getLogger(__name__)
+_DOWNLOAD_IDLE_TIMEOUT = 30.0
+_DOWNLOAD_CHUNK_BYTES = 512 * 1024
+_PARALLEL_DOWNLOAD_WORKERS = 4
+_PARALLEL_DOWNLOAD_MIN_BYTES = 4 * 1024 * 1024
+
+
+async def _download_parallel(client, location, *, file, file_size, dc_id, progress_callback):
+    """Fetch disjoint aligned ranges with bounded memory and verify every byte."""
+    chunks = (file_size + _DOWNLOAD_CHUNK_BYTES - 1) // _DOWNLOAD_CHUNK_BYTES
+    workers = min(_PARALLEL_DOWNLOAD_WORKERS, chunks)
+    received = 0
+    flood_until = 0.0
+    with open(file, 'wb') as output:
+        output.truncate(file_size)
+
+    async def fetch_range(first, last):
+        nonlocal received, flood_until
+        offset = first * _DOWNLOAD_CHUNK_BYTES
+        end = min(last * _DOWNLOAD_CHUNK_BYTES, file_size)
+        # Each worker has its own cursor; no shared seek position can corrupt
+        # the result when network requests finish out of order.
+        with open(file, 'r+b', buffering=0) as output:
+            retries = 0
+            while offset < end:
+                iterator = client.iter_download(
+                    location, offset=offset, limit=last - offset // _DOWNLOAD_CHUNK_BYTES,
+                    request_size=_DOWNLOAD_CHUNK_BYTES, chunk_size=_DOWNLOAD_CHUNK_BYTES,
+                    file_size=file_size, dc_id=dc_id,
+                )
+                try:
+                    async with iterator:
+                        while offset < end:
+                            # A rate limit applies to all workers. Resume at the
+                            # first unwritten chunk after Telegram's requested wait.
+                            while flood_until > time.monotonic():
+                                await asyncio.sleep(flood_until - time.monotonic())
+                            try:
+                                chunk = await anext(iterator)
+                            except StopAsyncIteration:
+                                raise ValueError('Incomplete Telegram media range') from None
+                            expected = min(_DOWNLOAD_CHUNK_BYTES, end - offset)
+                            if len(chunk) != expected:
+                                raise ValueError('Incomplete Telegram media chunk')
+                            output.seek(offset)
+                            if output.write(chunk) != len(chunk):
+                                raise OSError('Incomplete Telegram media write')
+                            offset += len(chunk)
+                            received += len(chunk)
+                            retries = 0
+                            await progress_callback(received, file_size)
+                except (FloodWaitError, FloodPremiumWaitError) as exc:
+                    retries += 1
+                    if exc.seconds > 10 or retries > 3:
+                        raise
+                    flood_until = max(flood_until, time.monotonic() + max(1, exc.seconds))
+                    logger.info('Telegram media rate limit: waiting %ss', max(1, exc.seconds))
+        if offset != end:
+            raise ValueError('Incomplete Telegram media range')
+
+    tasks = [asyncio.create_task(fetch_range(chunks * i // workers, chunks * (i + 1) // workers))
+             for i in range(workers)]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        # A failed/timed-out worker must not leave siblings writing a file
+        # after the caller has removed it or started processing another update.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    if received != file_size:
+        raise ValueError('Incomplete Telegram media download')
+    return file
 
 
 def decode_file_id(file_id: str) -> tuple[object, int]:
@@ -82,7 +161,7 @@ def decode_file_id(file_id: str) -> tuple[object, int]:
                     **args, volume_id=volume_id, local_id=local_id, secret=secret
                 ), dc_id
             raise ValueError
-    except (ValueError, IndexError, StopIteration, BufferError, binascii.Error) as exc:
+    except (ValueError, IndexError, StopIteration, BufferError, binascii.Error, struct.error) as exc:
         raise ValueError('Unsupported or invalid Telegram media file ID') from exc
 
 
@@ -137,7 +216,7 @@ class TelegramMediaDownloader:
         self._client = TelegramClient(
             session, config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH,
             receive_updates=False, auto_reconnect=False, connection_retries=0,
-            request_retries=1, flood_sleep_threshold=0, timeout=10,
+            request_retries=1, flood_sleep_threshold=0, raise_last_call_error=True, timeout=10,
         )
         try:
             async with asyncio.timeout(30):
@@ -152,19 +231,51 @@ class TelegramMediaDownloader:
             await self._disconnect()
             raise
 
-    async def download(self, file_id: str, *, file=None):
+    async def download(self, file_id: str, *, file=None, file_size: int | None = None):
         location, dc_id = decode_file_id(file_id)
-
-        async def check_size(current, total):
-            if current > config.VIDEO_MAX_FILE_SIZE_BYTES:
-                raise ValueError('Telegram media exceeds configured size limit')
-
+        if file_size is not None and (file_size < 0 or file_size > config.VIDEO_MAX_FILE_SIZE_BYTES):
+            raise ValueError('Telegram media exceeds configured size limit')
+        received = 0
         async with asyncio.timeout(config.TELEGRAM_MEDIA_TIMEOUT_SECONDS):
             async with self._lock:
                 client = await self._connect()
-                return await client.download_file(
-                    location, file=file, dc_id=dc_id, progress_callback=check_size,
-                )
+                parallel = file is not None and file_size is not None and file_size >= _PARALLEL_DOWNLOAD_MIN_BYTES
+                started = time.monotonic()
+                logger.info('Telegram media download started: dc=%s, bytes=%s, workers=%s',
+                            dc_id, file_size, _PARALLEL_DOWNLOAD_WORKERS if parallel else 1)
+                try:
+                    async with asyncio.timeout(_DOWNLOAD_IDLE_TIMEOUT) as idle:
+                        async def check_size(current, total):
+                            nonlocal received
+                            if current > config.VIDEO_MAX_FILE_SIZE_BYTES:
+                                raise ValueError('Telegram media exceeds configured size limit')
+                            if current > received:
+                                received = current
+                                idle.reschedule(asyncio.get_running_loop().time() + _DOWNLOAD_IDLE_TIMEOUT)
+
+                        # Without file_size, Telethon defaults to 64 KiB requests.
+                        # Large videos then require thousands of sequential round
+                        # trips. Use Telegram's maximum 512 KiB request size.
+                        if parallel:
+                            result = await _download_parallel(
+                                client, location, file=file, file_size=file_size,
+                                dc_id=dc_id, progress_callback=check_size,
+                            )
+                        else:
+                            result = await client.download_file(
+                                location, file=file, dc_id=dc_id, part_size_kb=512,
+                                file_size=file_size, progress_callback=check_size,
+                            )
+                    if file_size and received != file_size:
+                        raise ValueError('Incomplete Telegram media download')
+                    logger.info('Telegram media download complete: bytes=%s, seconds=%.1f',
+                                received, time.monotonic() - started)
+                    return result
+                except TimeoutError:
+                    raise TimeoutError(
+                        f'Telegram media download made no progress for '
+                        f'{_DOWNLOAD_IDLE_TIMEOUT:g}s (received {received} bytes)'
+                    ) from None
 
     async def _disconnect(self) -> None:
         client, self._client = self._client, None

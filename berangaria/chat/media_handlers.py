@@ -317,7 +317,7 @@ async def handle_video(
     video_path = None
     try:
         video_path, mime, _ = await runtime.download_video_to_file(
-            video_obj.file_id, context
+            video_obj.file_id, context, file_size=video_obj.file_size
         )
         if not video_path:
             video_description = "(не удалось скачать видео)"
@@ -428,7 +428,7 @@ async def handle_sticker(
         if sticker.is_video:
             sticker_kind = "video"
             video_path, mime, duration = await runtime.download_video_to_file(
-                sticker.file_id, context
+                sticker.file_id, context, file_size=sticker.file_size
             )
             if not video_path:
                 sticker_description = "(не удалось скачать стикер)"
@@ -506,7 +506,7 @@ async def handle_voice(
     if transcript is None:
         try:
             audio_path, mime = await runtime.download_audio_to_file(
-                audio_obj.file_id, context
+                audio_obj.file_id, context, file_size=getattr(audio_obj, 'file_size', None)
             )
             if not audio_path:
                 transcript = ""

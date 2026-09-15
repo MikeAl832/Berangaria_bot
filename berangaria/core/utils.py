@@ -401,12 +401,12 @@ async def _download_media_bytes(file_id: str, context: ContextTypes.DEFAULT_TYPE
     return raw, "media" + media_suffix(raw[:4096])
 
 
-async def _download_media_tempfile(file_id: str, context) -> tuple[str, str]:
+async def _download_media_tempfile(file_id: str, context, *, file_size: int | None = None) -> tuple[str, str]:
     """Stream large media to disk; remove partial files even on cancellation."""
     fd, path = tempfile.mkstemp()
     os.close(fd)
     try:
-        await get_downloader(context).download(file_id, file=path)
+        await get_downloader(context).download(file_id, file=path, file_size=file_size)
 
         def read_header():
             with open(path, "rb") as handle:
@@ -505,7 +505,8 @@ def get_video_duration(video_obj) -> float:
         return 0.0
 
 
-async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[str], str, float]:
+async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE,
+                                 *, file_size: int | None = None) -> Tuple[Optional[str], str, float]:
     """
     Скачивает видео из Telegram во временный файл для Gemini.
     
@@ -519,7 +520,7 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
     
     ВАЖНО: Вызывающий код должен самостоятельно удалить временный файл после использования!
     """
-    tmp_path, file_path = await _download_media_tempfile(file_id, context)
+    tmp_path, file_path = await _download_media_tempfile(file_id, context, file_size=file_size)
 
     suffix = ".mp4"
     mime = "video/mp4"
@@ -553,7 +554,8 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
         raise
 
 
-async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[str], str]:
+async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE,
+                                 *, file_size: int | None = None) -> Tuple[Optional[str], str]:
     """
     Скачивает аудио/голосовое из Telegram во временный файл для Gemini.
 
@@ -562,7 +564,7 @@ async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
 
     ВАЖНО: Вызывающий код должен удалить временный файл после использования!
     """
-    tmp_path, file_path = await _download_media_tempfile(file_id, context)
+    tmp_path, file_path = await _download_media_tempfile(file_id, context, file_size=file_size)
 
     # Голосовые Telegram приходят как .oga (OGG/opus)
     suffix, mime = ".oga", "audio/ogg"

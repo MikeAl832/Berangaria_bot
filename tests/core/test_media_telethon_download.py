@@ -13,9 +13,11 @@ class Downloader:
         self.data = data
         self.error = error
         self.paths = []
+        self.file_sizes = []
 
-    async def download(self, file_id, *, file=None):
+    async def download(self, file_id, *, file=None, file_size=None):
         assert file_id == 'file-id'
+        self.file_sizes.append(file_size)
         if file:
             self.paths.append(file)
             Path(file).write_bytes(self.data)
@@ -63,10 +65,11 @@ def test_download_failure_never_falls_back_to_http(error):
 ])
 def test_media_streams_to_disk_and_preserves_format(helper, raw, mime, suffix):
     downloader = Downloader(raw)
-    result = asyncio.run(helper('file-id', context_for(downloader)))
+    result = asyncio.run(helper('file-id', context_for(downloader), file_size=len(raw)))
     path = Path(result[0])
     try:
         assert downloader.paths
+        assert downloader.file_sizes == [len(raw)]
         assert path.read_bytes() == raw
         assert path.suffix == suffix
         assert result[1] == mime
