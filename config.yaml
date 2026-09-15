@@ -141,7 +141,7 @@
 # Secrets: TELEGRAM_API_ID, TELEGRAM_API_HASH, USER_BRIDGE_SESSION в .env / GitHub Secrets.
 # Выключено по умолчанию: без session бот работает как раньше.
 "user_bridge_enabled": true
-"user_bridge_port": 0                    # 0 = порт из session; 5222 для сетей с HTTP-шлюзом на 443
+"user_bridge_port": 5222                 # 0 = порт из session; 5222 для сетей с HTTP-шлюзом на 443
 "user_bridge_chat_ids": []               # пусто = пересечение с allowed_groups; иначе явный allowlist
 "user_bridge_reconnect_seconds": 5       # пауза между reconnect при обрыве session/сети
 "user_bridge_media_timeout_seconds": 60  # таймаут download+vision на одно bot-media

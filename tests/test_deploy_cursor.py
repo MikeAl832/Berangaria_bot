@@ -116,11 +116,18 @@ def test_deploy_updates_secret_without_printing_it(deployment):
     assert (directory / ".env").stat().st_mode & 0o777 == 0o600
 
 
+def test_grok_bot_vm_hostname_can_deploy(deployment):
+    _, run = deployment
+    result, calls = run(MOCK_HOST="grok-bot-vm-412925236")
+    assert result.returncode == 0, result.stderr
+    assert "git fetch origin" in calls
+
+
 def test_wrong_host_cannot_deploy(deployment):
     _, run = deployment
     result, calls = run(MOCK_HOST="old-vps")
     assert result.returncode != 0
-    assert "runner host is not cursor" in result.stdout
+    assert "runner host is not an allowed production host" in result.stdout
     assert "git " not in calls
     assert "docker " not in calls
 
