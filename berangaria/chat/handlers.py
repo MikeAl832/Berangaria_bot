@@ -1,7 +1,8 @@
 import logging
+import httpx
 from functools import wraps
 from telegram import Update, ReactionTypeEmoji
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from berangaria.config import (
@@ -1037,16 +1038,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"❌ [bright_red]Глобальная ошибка:[/] {context.error}", exc_info=True)
+    """PTB entry for handler/job failures.
+
+    Transient Telegram transport blips arrive as NetworkError whose message is
+    often the empty ``httpx.ConnectError:`` string. Those are not application
+    bugs — log and move on without owner alerts or /clear spam.
+    """
+    err = context.error
+    if isinstance(err, (NetworkError, TimedOut, httpx.ConnectError, httpx.TimeoutException)):
+        logger.warning(
+            "Сетевой сбой Telegram/API (игнорируем как transient): %s",
+            err,
+            exc_info=err,
+        )
+        return
+
+    logger.error("❌ [bright_red]Глобальная ошибка:[/] %s", err, exc_info=err)
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text("Произошла ошибка. Попробуйте /clear.")
     except Exception as e:
-        logger.error(f"❌ [red]Не удалось отправить сообщение об ошибке:[/] {e}")
+        logger.error("❌ [red]Не удалось отправить сообщение об ошибке:[/] %s", e)
 
     await alerts.notify_owner(
         context.bot,
         category="Unhandled error",
-        message=str(context.error)[:500],
-        error=context.error,
+        message=str(err)[:500] if err is not None else "unknown",
+        error=err if isinstance(err, BaseException) else None,
     )
