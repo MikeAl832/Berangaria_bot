@@ -15,6 +15,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from berangaria.core import state
+from berangaria.media.vision import (
+    VISION_FAILED_DOWNLOAD_STICKER,
+    VISION_FAILED_DOWNLOAD_VIDEO,
+    is_uncacheable_media_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,7 @@ class MediaRuntime:
     video_max_file_size_bytes: int
     audio_max_duration_sec: float
     vision_failed_image: str
+    vision_failed_video: str
     check_access_permissions: Callable[[int, int, bool], bool]
     queue_message: Callable[..., Awaitable[None]]
     download_media_as_base64: Callable[..., Awaitable[Any]]
@@ -320,7 +326,7 @@ async def handle_video(
             video_obj.file_id, context, file_size=video_obj.file_size
         )
         if not video_path:
-            video_description = "(не удалось скачать видео)"
+            video_description = VISION_FAILED_DOWNLOAD_VIDEO
         else:
             video_description = await runtime.describe_video(
                 video_path=video_path,
@@ -333,7 +339,7 @@ async def handle_video(
         logger.error(
             "❌ [red]Ошибка обработки видео:[/] %s", error, exc_info=True
         )
-        video_description = "(не удалось разобрать видео)"
+        video_description = runtime.vision_failed_video
     finally:
         if video_path:
             try:
@@ -351,7 +357,9 @@ async def handle_video(
                     error,
                 )
 
-    if video_description and not video_description.startswith("(не удалось"):
+    if not video_description:
+        video_description = runtime.vision_failed_video
+    if not is_uncacheable_media_description(video_description):
         state.cache_media_description(video_obj.file_unique_id, video_description)
 
     await runtime.queue_message(
@@ -431,7 +439,7 @@ async def handle_sticker(
                 sticker.file_id, context, file_size=sticker.file_size
             )
             if not video_path:
-                sticker_description = "(не удалось скачать стикер)"
+                sticker_description = VISION_FAILED_DOWNLOAD_STICKER
             else:
                 sticker_description = await runtime.describe_video(
                     video_path=video_path,
@@ -453,9 +461,9 @@ async def handle_sticker(
         sticker_description = (
             f"Стикер с эмодзи {emoji}"
             if emoji
-            else "(не удалось разобрать стикер)"
+            else runtime.vision_failed_video
         )
-    elif not sticker_description.startswith("(не удалось"):
+    elif not is_uncacheable_media_description(sticker_description):
         state.cache_media_description(
             sticker.file_unique_id, sticker_description
         )

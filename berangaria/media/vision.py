@@ -44,9 +44,38 @@ POLICY_BLOCKED_AUDIO = (
     "(модель зрения отказалась разбирать аудио из‑за ограничений безопасности; "
     "содержимое, вероятно, чувствительное — не выдумывай, что было сказано)"
 )
-VISION_FAILED_IMAGE = "(не удалось разобрать изображение)"
-VISION_FAILED_VIDEO = "(не удалось разобрать видео)"
-VISION_FAILED_AUDIO = "(не удалось разобрать аудио)"
+VISION_FAILED_IMAGE = (
+    "(технический сбой: изображение получено, но описание не удалось; "
+    "не выдумывай содержимое; если пользователь настаивает — попроси скинуть ещё раз)"
+)
+VISION_FAILED_VIDEO = (
+    "(технический сбой: видео получено, но описание не удалось; "
+    "не выдумывай содержимое; если пользователь настаивает на описании — "
+    "попроси скинуть это видео ещё раз)"
+)
+VISION_FAILED_AUDIO = (
+    "(технический сбой: аудио получено, но распознать не удалось; "
+    "не выдумывай, что было сказано; если пользователь настаивает — "
+    "попроси скинуть голосовое ещё раз)"
+)
+VISION_FAILED_DOWNLOAD_VIDEO = "(не удалось скачать видео)"
+VISION_FAILED_DOWNLOAD_STICKER = "(не удалось скачать стикер)"
+
+
+def is_uncacheable_media_description(text: str | None) -> bool:
+    """True for technical/download failures that must not be cached as success."""
+    if not text:
+        return True
+    if text in {
+        VISION_FAILED_IMAGE,
+        VISION_FAILED_VIDEO,
+        VISION_FAILED_AUDIO,
+        VISION_FAILED_DOWNLOAD_VIDEO,
+        VISION_FAILED_DOWNLOAD_STICKER,
+    }:
+        return True
+    # Legacy short placeholders still present in older caches / hot patches.
+    return text.startswith("(не удалось")
 
 
 _IMAGE_PROMPT_CORE = (

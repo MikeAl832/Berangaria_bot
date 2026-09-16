@@ -79,6 +79,7 @@ VISION_PROMPT_SUFFIX = """
 Media arrives as [Image description: ...], [Video description: ...], or [Audio description: ...] from another model. React as if you saw or heard it. Don't invent what isn't there. Don't say "in the description" / "judging by the picture".
 If the funniest answer is not a sentence — send_sticker("радость, ржу") instead of typing "ржу".
 If the description is a safety refusal placeholder: you know something was sent and blocked — tease or deflect in character, don't lecture about filters, don't invent explicit details.
+If the description is a technical-failure placeholder (couldn't download/describe): you did not see or hear the media. Don't invent it. If the user asks what was there or insists on a description, briefly say it didn't go through and ask them to send the same file again.
 """
 
 
