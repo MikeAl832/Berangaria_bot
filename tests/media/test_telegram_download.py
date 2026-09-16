@@ -386,3 +386,42 @@ def test_parallel_flood_wait_resumes_or_stops_with_bounded_retries(monkeypatch, 
         assert client.active == 0
         assert asyncio.all_tasks() == {asyncio.current_task()}
     asyncio.run(run())
+
+
+def test_exported_dc_ports_rewritten_to_media_port(monkeypatch, tmp_path):
+    """Cross-DC downloads must not use GetConfig port 443 behind Pingora."""
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(media.config, 'TELEGRAM_MEDIA_SESSION_PATH', str(tmp_path / 'media.session'))
+    monkeypatch.setattr(media.config, 'TELEGRAM_API_ID', 123)
+    monkeypatch.setattr(media.config, 'TELEGRAM_API_HASH', 'test-hash')
+    monkeypatch.setattr(media.config, 'TELEGRAM_TOKEN', '42:test-token')
+    monkeypatch.setattr(media.config, 'TELEGRAM_MEDIA_PORT', 5222)
+
+    async def original_get_dc(dc_id, cdn=False):
+        return SimpleNamespace(id=dc_id, ip_address='149.154.167.91', port=443, cdn=cdn)
+
+    def factory(session, *args, **kwargs):
+        client = SimpleNamespace(
+            session=session,
+            connect=AsyncMock(),
+            disconnect=AsyncMock(),
+            is_connected=Mock(return_value=True),
+            is_user_authorized=AsyncMock(return_value=True),
+            get_me=AsyncMock(return_value=SimpleNamespace(id=42, bot=True)),
+            sign_in=AsyncMock(),
+            _get_dc=original_get_dc,
+        )
+        return client
+
+    monkeypatch.setattr(media, 'TelegramClient', factory)
+
+    async def run():
+        downloader = media.TelegramMediaDownloader()
+        client = await downloader._connect()
+        dc = await client._get_dc(4)
+        assert dc.port == 5222
+        assert client._berangaria_media_port_forced is True
+        await downloader.close()
+
+    asyncio.run(run())
