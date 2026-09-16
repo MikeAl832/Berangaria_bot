@@ -34,6 +34,7 @@ from berangaria.media.vision import (
     describe_video,
     transcribe_audio,
     VISION_FAILED_IMAGE,
+    VISION_FAILED_VIDEO,
 )
 from berangaria.core.utils import (
     escape_user_text, is_bot_mentioned, should_reply_randomly,
@@ -84,6 +85,7 @@ def _media_runtime() -> media_handlers.MediaRuntime:
         video_max_file_size_bytes=VIDEO_MAX_FILE_SIZE_BYTES,
         audio_max_duration_sec=AUDIO_MAX_DURATION_SEC,
         vision_failed_image=VISION_FAILED_IMAGE,
+        vision_failed_video=VISION_FAILED_VIDEO,
         check_access_permissions=_check_access_permissions,
         queue_message=queue_message,
         download_media_as_base64=download_media_as_base64,
