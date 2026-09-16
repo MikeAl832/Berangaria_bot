@@ -1,0 +1,63 @@
+"""Transient Telegram transport errors must not alert the owner."""
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+from telegram.error import NetworkError
+
+from berangaria.chat import handlers
+
+
+def test_network_error_is_logged_without_owner_alert(monkeypatch, caplog):
+    alerts = []
+
+    async def fake_notify_owner(bot, *, category, message, error=None):
+        alerts.append(category)
+
+    monkeypatch.setattr(handlers.alerts, "notify_owner", fake_notify_owner)
+
+    update = SimpleNamespace(effective_message=SimpleNamespace(reply_text=AsyncMock()))
+    context = SimpleNamespace(
+        bot=object(),
+        error=NetworkError("httpx.ConnectError: "),
+    )
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(handlers.error_handler(update, context))
+
+    assert alerts == []
+    update.effective_message.reply_text.assert_not_awaited()
+    assert "Сетевой сбой" in caplog.text
+
+
+def test_unexpected_error_still_alerts_owner(monkeypatch):
+    alerts = []
+
+    async def fake_notify_owner(bot, *, category, message, error=None):
+        alerts.append((category, message))
+
+    monkeypatch.setattr(handlers.alerts, "notify_owner", fake_notify_owner)
+
+    update = SimpleNamespace(effective_message=SimpleNamespace(reply_text=AsyncMock()))
+    context = SimpleNamespace(bot=object(), error=RuntimeError("boom"))
+
+    asyncio.run(handlers.error_handler(update, context))
+
+    assert alerts == [("Unhandled error", "boom")]
+    update.effective_message.reply_text.assert_awaited_once()
+
+
+def test_raw_httpx_connect_error_is_transient(monkeypatch):
+    alerts = []
+
+    async def fake_notify_owner(bot, *, category, message, error=None):
+        alerts.append(category)
+
+    monkeypatch.setattr(handlers.alerts, "notify_owner", fake_notify_owner)
+    context = SimpleNamespace(bot=object(), error=httpx.ConnectError(""))
+    update = SimpleNamespace(effective_message=None)
+
+    asyncio.run(handlers.error_handler(update, context))
+    assert alerts == []
