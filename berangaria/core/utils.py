@@ -24,7 +24,7 @@ from berangaria.config import (
 )
 from berangaria.core.state import random_reply_cooldown
 from berangaria.core import state
-from berangaria.media.telegram_download import get_downloader, media_suffix
+from berangaria.media.telegram_download import download_telegram_file, media_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -393,9 +393,11 @@ def _mime_from_media_path(path: str, default: str = "image/jpeg") -> str:
     return default
 
 
-async def _download_media_bytes(file_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[bytes, str]:
-    """Download directly from Telegram DCs using the bot's Telethon session."""
-    raw = await get_downloader(context).download(file_id)
+async def _download_media_bytes(
+    file_id: str, context: ContextTypes.DEFAULT_TYPE, *, file_size: int | None = None
+) -> tuple[bytes, str]:
+    """Download small files via Bot API and larger files via the bot Telethon session."""
+    raw = await download_telegram_file(context, file_id, file_size=file_size)
     if not raw:
         raise RuntimeError("Telegram returned empty media")
     return raw, "media" + media_suffix(raw[:4096])
@@ -406,7 +408,7 @@ async def _download_media_tempfile(file_id: str, context, *, file_size: int | No
     fd, path = tempfile.mkstemp()
     os.close(fd)
     try:
-        await get_downloader(context).download(file_id, file=path, file_size=file_size)
+        await download_telegram_file(context, file_id, file=path, file_size=file_size)
 
         def read_header():
             with open(path, "rb") as handle:
@@ -422,7 +424,8 @@ async def _download_media_tempfile(file_id: str, context, *, file_size: int | No
 
 
 async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_TYPE,
-                                   return_bytes: bool = False) -> Tuple[bytes | str, str]:
+                                   return_bytes: bool = False,
+                                   file_size: int | None = None) -> Tuple[bytes | str, str]:
     """
     Скачивает медиа-файл из Telegram (используется для изображений).
     
@@ -430,11 +433,12 @@ async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_T
         file_id: ID файла в Telegram
         context: Контекст бота
         return_bytes: Если True, возвращает bytes, иначе base64 строку
+        file_size: Размер из метаданных Telegram, если известен
     
     Returns:
         Tuple из (данные, mime_type)
     """
-    raw, path = await _download_media_bytes(file_id, context)
+    raw, path = await _download_media_bytes(file_id, context, file_size=file_size)
     mime = _mime_from_media_path(path)
     if return_bytes:
         return raw, mime

@@ -68,7 +68,7 @@ def test_album_photos_one_gemini_call(monkeypatch):
     describe_calls = []
     queued = []
 
-    async def fake_download(file_id, context, return_bytes=False):
+    async def fake_download(file_id, context, return_bytes=False, **kwargs):
         return (f"bytes-{file_id}".encode(), "image/jpeg")
 
     async def fake_describe(images, caption=""):
@@ -130,7 +130,7 @@ def test_single_photo_still_uses_describe_image_bytes(monkeypatch):
     single_calls = []
     queued = []
 
-    async def fake_download(file_id, context, return_bytes=False):
+    async def fake_download(file_id, context, return_bytes=False, **kwargs):
         return (b"solo", "image/jpeg")
 
     async def fake_single(image_bytes, mime, caption=""):
@@ -208,7 +208,7 @@ def test_album_policy_block_passed_to_queue(monkeypatch):
 
     queued = []
 
-    async def fake_download(file_id, context, return_bytes=False):
+    async def fake_download(file_id, context, return_bytes=False, **kwargs):
         return (b"x", "image/jpeg")
 
     async def fake_describe(images, caption=""):

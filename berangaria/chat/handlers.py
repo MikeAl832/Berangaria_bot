@@ -811,7 +811,10 @@ async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if VISION_MODE:
             try:
                 photo = msg.new_chat_photo[-1]  # самый крупный размер
-                image_bytes, mime = await download_media_as_base64(photo.file_id, context, return_bytes=True)
+                image_bytes, mime = await download_media_as_base64(
+                    photo.file_id, context, return_bytes=True,
+                    file_size=getattr(photo, "file_size", None),
+                )
                 media_desc = await describe_image_bytes(image_bytes, mime, caption="Это новое фото группы.")
             except Exception as e:
                 logger.error(f"❌ [red]Не удалось разобрать новое фото группы:[/] {e}")

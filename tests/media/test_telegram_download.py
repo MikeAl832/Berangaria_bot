@@ -114,12 +114,12 @@ def test_stalled_download_exits_before_total_deadline(monkeypatch):
 
 
 def test_progress_extends_idle_deadline(monkeypatch):
-    monkeypatch.setattr(media, '_DOWNLOAD_IDLE_TIMEOUT', 0.04)
+    monkeypatch.setattr(media, '_DOWNLOAD_IDLE_TIMEOUT', 0.15)
 
     async def run():
         async def download(*args, progress_callback, **kwargs):
             for count in range(1, 6):
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.04)
                 await progress_callback(count, 5)
             return b'data'
         downloader = media.TelegramMediaDownloader()
@@ -139,6 +139,117 @@ def test_timeout_releases_download_slot(monkeypatch):
         monkeypatch.setattr(downloader, '_connect', stall)
         with pytest.raises(TimeoutError):
             await downloader.download(file_id())
+        assert not downloader._lock.locked()
+    asyncio.run(run())
+
+
+def _client_with_download(download, *, disconnect=None):
+    from unittest.mock import Mock
+
+    return SimpleNamespace(
+        download_file=download,
+        disconnect=disconnect or AsyncMock(),
+        session=SimpleNamespace(close=Mock()),
+        is_connected=Mock(return_value=True),
+    )
+
+
+def test_cancelled_rpc_does_not_cancel_update_task(monkeypatch):
+    """Telethon cancel of a pending GetFile must not kill PTB's update fetcher."""
+
+    async def run():
+        rpc = asyncio.get_running_loop().create_future()
+        waiting = asyncio.Event()
+
+        async def download_file(*args, **kwargs):
+            waiting.set()
+            return await rpc
+
+        downloader = media.TelegramMediaDownloader()
+        client = _client_with_download(download_file)
+        downloader._client = client
+        monkeypatch.setattr(downloader, '_connect', AsyncMock(return_value=client))
+
+        async def drop_connection():
+            await waiting.wait()
+            rpc.cancel()
+
+        drop = asyncio.create_task(drop_connection())
+        task = asyncio.current_task()
+        with pytest.raises(TimeoutError, match='no progress'):
+            await downloader.download(file_id())
+        await drop
+        assert not task.cancelled()
+        assert not task.cancelling()
+        assert not downloader._lock.locked()
+        assert downloader._client is None
+        client.disconnect.assert_awaited()
+        client.session.close.assert_called_once()
+        assert asyncio.all_tasks() == {task}
+    asyncio.run(run())
+
+
+def test_stalled_download_drops_hung_session(monkeypatch):
+    monkeypatch.setattr(media, '_DOWNLOAD_IDLE_TIMEOUT', 0.01)
+
+    async def run():
+        async def stall(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        downloader = media.TelegramMediaDownloader()
+        client = _client_with_download(stall)
+        downloader._client = client
+        monkeypatch.setattr(downloader, '_connect', AsyncMock(return_value=client))
+        with pytest.raises(TimeoutError, match='no progress'):
+            await asyncio.wait_for(downloader.download(file_id()), 1)
+        assert downloader._client is None
+        client.disconnect.assert_awaited()
+        assert not downloader._lock.locked()
+    asyncio.run(run())
+
+
+def test_task_cancellation_still_propagates(monkeypatch):
+    async def run():
+        entered = asyncio.Event()
+
+        async def stall(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        downloader = media.TelegramMediaDownloader()
+        client = _client_with_download(stall)
+        downloader._client = client
+        monkeypatch.setattr(downloader, '_connect', AsyncMock(return_value=client))
+        task = asyncio.create_task(downloader.download(file_id()))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert downloader._client is None
+        client.disconnect.assert_awaited()
+        assert not downloader._lock.locked()
+    asyncio.run(run())
+
+
+def test_disconnect_timeout_does_not_hold_slot(monkeypatch):
+    monkeypatch.setattr(media, '_DOWNLOAD_IDLE_TIMEOUT', 0.01)
+    monkeypatch.setattr(media, '_DISCONNECT_TIMEOUT', 0.01)
+
+    async def run():
+        async def stall(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        async def hang():
+            await asyncio.Event().wait()
+
+        downloader = media.TelegramMediaDownloader()
+        client = _client_with_download(stall, disconnect=hang)
+        downloader._client = client
+        monkeypatch.setattr(downloader, '_connect', AsyncMock(return_value=client))
+        with pytest.raises(TimeoutError, match='no progress'):
+            await asyncio.wait_for(downloader.download(file_id()), 1)
+        assert downloader._client is None
+        client.session.close.assert_called_once()
         assert not downloader._lock.locked()
     asyncio.run(run())
 
@@ -424,4 +535,42 @@ def test_exported_dc_ports_rewritten_to_media_port(monkeypatch, tmp_path):
         assert client._berangaria_media_port_forced is True
         await downloader.close()
 
+    asyncio.run(run())
+
+
+def test_uses_bot_api_threshold(monkeypatch):
+    monkeypatch.setattr(media.config, 'TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES', 20)
+    assert media.uses_bot_api(None) is True
+    assert media.uses_bot_api(20) is True
+    assert media.uses_bot_api(21) is False
+    monkeypatch.setattr(media.config, 'TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES', 0)
+    assert media.uses_bot_api(None) is False
+    assert media.uses_bot_api(1) is False
+
+
+def test_getfile_reported_size_over_limit_uses_mtproto(monkeypatch):
+    monkeypatch.setattr(media.config, 'TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES', 20)
+    telegram_file = SimpleNamespace(
+        file_size=21,
+        download_to_drive=AsyncMock(),
+        download_as_bytearray=AsyncMock(),
+    )
+
+    class Bot:
+        async def get_file(self, file_id):
+            return telegram_file
+
+    mtproto = AsyncMock(return_value=b'data')
+    context = SimpleNamespace(
+        bot=Bot(),
+        application=SimpleNamespace(bot_data={
+            'telegram_media_downloader': SimpleNamespace(download=mtproto),
+        }),
+    )
+
+    async def run():
+        assert await media.download_telegram_file(context, file_id()) == b'data'
+        telegram_file.download_as_bytearray.assert_not_awaited()
+        telegram_file.download_to_drive.assert_not_awaited()
+        mtproto.assert_awaited_once()
     asyncio.run(run())

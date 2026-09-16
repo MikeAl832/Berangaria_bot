@@ -115,7 +115,8 @@ async def process_photo_album(data: dict, runtime: MediaRuntime) -> None:
     for item in items:
         try:
             image_bytes, mime = await runtime.download_media_as_base64(
-                item["file_id"], context, return_bytes=True
+                item["file_id"], context, return_bytes=True,
+                file_size=item.get("file_size"),
             )
             images.append((image_bytes, mime))
         except Exception as error:
@@ -167,6 +168,7 @@ async def buffer_album_photo(
     item = {
         "file_id": photo.file_id,
         "file_unique_id": photo.file_unique_id,
+        "file_size": getattr(photo, "file_size", None),
         "caption": caption or "",
         "update": update,
     }
@@ -233,7 +235,8 @@ async def handle_media(
             image_description = cached
         else:
             image_bytes, mime = await runtime.download_media_as_base64(
-                photo.file_id, context, return_bytes=True
+                photo.file_id, context, return_bytes=True,
+                file_size=getattr(photo, "file_size", None),
             )
             image_description = await runtime.describe_image_bytes(
                 image_bytes, mime, caption=caption
@@ -449,7 +452,8 @@ async def handle_sticker(
                 )
         else:
             image_bytes, mime = await runtime.download_media_as_base64(
-                sticker.file_id, context, return_bytes=True
+                sticker.file_id, context, return_bytes=True,
+                file_size=getattr(sticker, "file_size", None),
             )
             sticker_description = await runtime.describe_image_bytes(
                 image_bytes, mime, caption=hint

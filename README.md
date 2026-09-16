@@ -89,12 +89,13 @@ TELEGRAM_API_HASH=your_telegram_api_hash
 # and set user_bridge_enabled: true in config.yaml
 ```
 
-All incoming media is downloaded through Telethon (MTProto), including files
-larger than the HTTP Bot API download limit. `TELEGRAM_API_ID` and
-`TELEGRAM_API_HASH` are required. The bot authenticates with its existing token
-and keeps a separate media session in `/data/telegram_media.session`; the
-optional user bridge retains its own read-only user session. Updates and
-outgoing messages use the cloud Bot API. No local Bot API server is needed.
+Incoming media at or under 20 MiB uses the cloud Bot API `getFile` path.
+Larger files go through Telethon (MTProto). `TELEGRAM_API_ID` and
+`TELEGRAM_API_HASH` are required for those larger downloads. The bot authenticates
+with its existing token and keeps a separate media session in
+`/data/telegram_media.session`; the optional user bridge retains its own
+read-only user session. Updates and outgoing messages use the cloud Bot API.
+No local Bot API server is needed.
 See [migration instructions](docs/configuration.md#telegram-media-downloads).
 
 API keys:

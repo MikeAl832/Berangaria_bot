@@ -24,6 +24,8 @@ FISH_VOICE_ID=<voice_model_id>
 TELEGRAM_API_ID=<api_id>
 TELEGRAM_API_HASH=<api_hash>
 BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
+# Optional: HTTP getFile ceiling (max 20 MiB). 0 = always Telethon.
+# TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES=20971520
 # Optional user bridge (read-only MTProto — see other bots in groups):
 # USER_BRIDGE_SESSION=<string from scripts/user_bridge_login.py>
 # USER_BRIDGE_ENABLED=true   # or set user_bridge_enabled in config.yaml
@@ -31,22 +33,27 @@ BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
 
 ### Telegram media downloads
 
-All downloads use Telethon over MTProto. Updates, replies and uploads use the
-cloud Bot API. The media client signs in with `TELEGRAM_BOT_TOKEN` and shares
+Files at or under 20 MiB download through the cloud Bot API `getFile` path.
+Larger files use Telethon over MTProto. Updates, replies and uploads always use
+the cloud Bot API. The media client signs in with `TELEGRAM_BOT_TOKEN` and shares
 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` with the optional user bridge. It uses a
 separate **bot** identity because file access hashes belong to that account;
 private chats work even when the user bridge is disabled. No interactive login
 or new secret is required. The media client does not consume message updates.
 
+- `TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES`: HTTP getFile ceiling, default and
+  maximum 20 MiB (`20971520`). `0` sends every download through MTProto.
+  Telegram rejects getFile above 20 MiB; those files, and a `file is too big`
+  response, use Telethon. Other Bot API failures do not fall back to MTProto.
 - `TELEGRAM_MEDIA_SESSION_PATH`: defaults to `telegram_media.session` beside
   `BOT_DB_PATH` (`/data/telegram_media.session` in Docker). Keep this private
   persistent session; never point it at a user bridge session.
 - `TELEGRAM_MEDIA_PORT`: defaults to `USER_BRIDGE_PORT`, or 443 when unset.
 - `TELEGRAM_MEDIA_TIMEOUT_SECONDS`: whole-download timeout, default 300 seconds,
-  including waiting for a download slot. Downloads use 512 KiB chunks and abort
-  after 30 seconds without new bytes, so a stalled transfer does not occupy the
-  serialized intake queue for the full five-minute budget. Failed downloads
-  surface through the existing media-error handling; there is no HTTP download fallback.
+  including waiting for a download slot. MTProto downloads use 512 KiB chunks
+  and abort after 30 seconds without new bytes, so a stalled transfer does not
+  occupy the serialized intake queue for the full five-minute budget. Failed
+  downloads surface through the existing media-error handling.
 - Video/audio downloads stream to temporary files and remove partial files on
   failure or cancellation. Files with a known size of at least 4 MiB use four
   parallel range requests; smaller files use one. Short Telegram rate limits
@@ -150,7 +157,7 @@ video_max_duration_sec: 300
 - `vision_mode`: Enable/disable image and video understanding
 - `gemini_model`: Gemini model for vision tasks
 - `video_max_duration_sec`: Maximum video length in seconds (shipped: 300)
-- `video_max_file_size_bytes`: Weight ceiling for a downloaded video. Defaults to 2 GiB for MTProto downloads. Override with `BOT_VIDEO_MAX_FILE_SIZE_BYTES`.
+- `video_max_file_size_bytes`: Weight ceiling for a downloaded video. Defaults to 2 GiB. Files at or under 20 MiB use Bot API getFile; larger files use MTProto. Override with `BOT_VIDEO_MAX_FILE_SIZE_BYTES`.
 - `audio_max_duration_sec`: Maximum voice/audio length in seconds (shipped: 300)
 - `gemini_upload_max_wait_sec` / `gemini_upload_backoff_initial` / `gemini_upload_backoff_max`:
   Files API upload polling budget and backoff

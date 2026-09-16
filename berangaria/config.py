@@ -444,6 +444,19 @@ if not 1 <= TELEGRAM_MEDIA_PORT <= 65535:
 TELEGRAM_MEDIA_TIMEOUT_SECONDS = max(
     5.0, _float_setting("TELEGRAM_MEDIA_TIMEOUT_SECONDS", "telegram_media_timeout_seconds", 300.0)
 )
+# Cloud Bot API getFile rejects downloads above 20 MiB. 0 disables the HTTP path.
+_TELEGRAM_GETFILE_LIMIT_BYTES = 20 * 1024 * 1024
+TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES = min(
+    _TELEGRAM_GETFILE_LIMIT_BYTES,
+    max(
+        0,
+        _int_setting(
+            "TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES",
+            "telegram_bot_api_download_max_bytes",
+            _TELEGRAM_GETFILE_LIMIT_BYTES,
+        ),
+    ),
+)
 
 
 # Явный чат для критических алертов; null означает личный чат OWNER_USER_ID.
