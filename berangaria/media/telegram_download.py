@@ -190,6 +190,37 @@ def media_suffix(header: bytes) -> str:
     return ''
 
 
+
+def _force_configured_media_port(client) -> None:
+    """Rewrite Telethon DC ports to TELEGRAM_MEDIA_PORT.
+
+    Session home DC is already set to 5222, but downloads from another DC
+    export auth and connect via help.GetConfig ports (usually 443). On this
+    host 443 is an HTTP middlebox (Pingora), which breaks MTProto with
+    IncompleteReadError. Force the configured media port for every DC.
+    """
+    if getattr(client, '_berangaria_media_port_forced', False):
+        return
+    original_get_dc = getattr(client, '_get_dc', None)
+    if original_get_dc is None:
+        return
+
+    async def _get_dc(dc_id, cdn=False):
+        dc = await original_get_dc(dc_id, cdn=cdn)
+        if getattr(dc, 'port', None) != config.TELEGRAM_MEDIA_PORT:
+            logger.info(
+                'Telegram media DC%s port %s -> %s',
+                dc_id,
+                getattr(dc, 'port', None),
+                config.TELEGRAM_MEDIA_PORT,
+            )
+            dc.port = config.TELEGRAM_MEDIA_PORT
+        return dc
+
+    client._get_dc = _get_dc  # type: ignore[method-assign]
+    client._berangaria_media_port_forced = True
+
+
 class TelegramMediaDownloader:
     """One lazy bot session, serialized downloads, bounded network waits."""
 
@@ -218,6 +249,7 @@ class TelegramMediaDownloader:
             receive_updates=False, auto_reconnect=False, connection_retries=0,
             request_retries=1, flood_sleep_threshold=0, raise_last_call_error=True, timeout=10,
         )
+        _force_configured_media_port(self._client)
         try:
             async with asyncio.timeout(30):
                 await self._client.connect()
