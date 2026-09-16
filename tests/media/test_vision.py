@@ -61,13 +61,15 @@ def test_audio_prompt_hints_configured_spoken_names(monkeypatch):
     assert "только если оно действительно произнесено" in prompt
 
 
-def test_gemini_audio_400_returns_empty_and_removes_temp_file(
+def test_gemini_audio_400_retries_then_returns_empty_and_removes_temp_file(
     monkeypatch, tmp_path, caplog
 ):
     monkeypatch.setattr(vision, "GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(vision, "GEMINI_MODEL", "gemini-test")
+    monkeypatch.setattr(vision, "GEMINI_GENERATE_MAX_ATTEMPTS", 3)
     audio_path = tmp_path / "voice.ogg"
     audio_path.write_bytes(b"not-real-audio")
+    posts = {"n": 0}
 
     class _Resp:
         status_code = 400
@@ -81,19 +83,61 @@ def test_gemini_audio_400_returns_empty_and_removes_temp_file(
             return False
 
         async def post(self, url, json=None, headers=None):
+            posts["n"] += 1
             return _Resp()
 
-    monkeypatch.setattr(vision.httpx, "AsyncClient", lambda **kwargs: _Client())
+    async def _no_sleep(_delay):
+        return None
 
-    with caplog.at_level(logging.ERROR):
+    monkeypatch.setattr(vision.httpx, "AsyncClient", lambda **kwargs: _Client())
+    monkeypatch.setattr(vision.asyncio, "sleep", _no_sleep)
+
+    with caplog.at_level(logging.WARNING):
         result = asyncio.run(vision.transcribe_audio(
             audio_path=str(audio_path),
             mime="audio/ogg",
         ))
 
     assert result == ""
+    assert posts["n"] == 3
     assert not audio_path.exists()
     assert "Gemini audio API 400" in caplog.text
+
+
+def test_gemini_generate_content_retries_400_then_succeeds(monkeypatch):
+    posts = {"n": 0}
+
+    class _Resp:
+        def __init__(self, status_code, text="ok", payload=None):
+            self.status_code = status_code
+            self.text = text
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        async def post(self, url, json=None, headers=None):
+            posts["n"] += 1
+            if posts["n"] < 3:
+                return _Resp(400, "invalid argument")
+            return _Resp(200, "ok", {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})
+
+    async def _no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(vision.asyncio, "sleep", _no_sleep)
+    response = asyncio.run(
+        vision._gemini_generate_content(
+            _Client(),
+            "https://example.test",
+            {},
+            {},
+            label="video",
+        )
+    )
+    assert posts["n"] == 3
+    assert response.status_code == 200
 
 
 def test_describe_images_single_call_with_multiple_parts(monkeypatch):

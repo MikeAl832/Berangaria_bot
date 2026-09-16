@@ -114,6 +114,53 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024  # ~18MB inline limit with buffer
 
 
+GEMINI_GENERATE_MAX_ATTEMPTS = 3
+GEMINI_GENERATE_RETRY_STATUSES = frozenset({400, 408, 429, 500, 502, 503, 504})
+
+
+async def _gemini_generate_content(client, url, payload, headers, *, label: str):
+    """POST generateContent with a short retry budget for flaky Gemini errors.
+
+    Includes HTTP 400: some INVALID_ARGUMENT responses are transient around
+    media readiness; permanent bad payloads still fail after the last attempt.
+    """
+    last = None
+    for attempt in range(1, GEMINI_GENERATE_MAX_ATTEMPTS + 1):
+        response = await client.post(url, json=payload, headers=headers)
+        last = response
+        if response.status_code == 200:
+            return response
+        body = response.text[:300]
+        will_retry = (
+            response.status_code in GEMINI_GENERATE_RETRY_STATUSES
+            and attempt < GEMINI_GENERATE_MAX_ATTEMPTS
+        )
+        if will_retry:
+            delay = min(8.0, float(2 ** (attempt - 1)))
+            logger.warning(
+                "Gemini %s API %s (attempt %s/%s), retry in %gs: %s",
+                label,
+                response.status_code,
+                attempt,
+                GEMINI_GENERATE_MAX_ATTEMPTS,
+                delay,
+                body,
+            )
+            await asyncio.sleep(delay)
+            continue
+        logger.error(
+            "Gemini %s API %s (attempt %s/%s): %s",
+            label,
+            response.status_code,
+            attempt,
+            GEMINI_GENERATE_MAX_ATTEMPTS,
+            body,
+        )
+        return response
+    return last
+
+
+
 def _gemini_extract_text(resp_json: dict) -> tuple[str, bool]:
     """Extract text from Gemini response.
 
@@ -186,9 +233,10 @@ async def _gemini_describe_images(
 
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
-            r = await client.post(url, json=payload, headers=headers)
+            r = await _gemini_generate_content(
+                client, url, payload, headers, label="image"
+            )
             if r.status_code != 200:
-                logger.error(f"Gemini image API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             description, blocked = _gemini_extract_text(data)
@@ -375,9 +423,10 @@ async def _gemini_describe_video(video_path: str, mime: str, caption: str, durat
 
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
-            r = await client.post(url, json=payload, headers=headers)
+            r = await _gemini_generate_content(
+                client, url, payload, headers, label="video"
+            )
             if r.status_code != 200:
-                logger.error(f"Gemini video API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             description, blocked = _gemini_extract_text(data)
@@ -480,9 +529,10 @@ async def _gemini_transcribe_audio(audio_path: str, mime: str, caption: str = ""
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            r = await client.post(url, json=payload, headers=headers)
+            r = await _gemini_generate_content(
+                client, url, payload, headers, label="audio"
+            )
             if r.status_code != 200:
-                logger.error(f"Gemini audio API {r.status_code}: {r.text[:300]}")
                 return ""
             data = r.json()
             transcript, blocked = _gemini_extract_text(data)
