@@ -155,8 +155,10 @@ def apply_history_message_delete(
 ) -> DeleteResult:
     """Remove one Telegram message from any unfrozen history row.
 
-    User rows may be merged debounce batches (``telegram_messages``). Assistant
-    and event rows are matched by ``mid`` only.
+    User rows may be merged debounce batches and assistant rows may be merged
+    reply bursts, so both are matched by their ``telegram_messages`` ids as well
+    as by the row ``mid``. Deleting one bubble keeps the remaining confirmed
+    bubbles instead of dropping the whole row.
     """
     user_result = apply_user_message_delete(
         history, message_id=message_id, is_group=is_group
@@ -165,10 +167,29 @@ def apply_history_message_delete(
         return user_result
 
     for entry in reversed(history):
-        if entry.get("mid") != message_id:
+        messages = entry.get("telegram_messages")
+        matched_bubble = next(
+            (
+                item
+                for item in messages or []
+                if isinstance(item, dict) and item.get("mid") == message_id
+            ),
+            None,
+        )
+        if entry.get("mid") != message_id and matched_bubble is None:
             continue
         if not is_history_row_mutable(entry):
             return "frozen"
-        history.remove(entry)
-        return "removed"
+        if matched_bubble is None:
+            history.remove(entry)
+            return "removed"
+
+        remaining = [item for item in messages if item is not matched_bubble]
+        if not remaining:
+            history.remove(entry)
+            return "removed"
+        entry["telegram_messages"] = remaining
+        entry["mid"] = remaining[0].get("mid")
+        entry["content"] = _combined_telegram_text(entry)
+        return "updated"
     return "missing"

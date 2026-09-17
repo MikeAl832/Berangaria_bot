@@ -873,7 +873,13 @@ def _record_incoming_reaction_change(
             message
             for message in history
             if message.get("role") == "assistant"
-            and message.get("mid") == target_mid
+            and (
+                message.get("mid") == target_mid
+                or any(
+                    bubble.get("mid") == target_mid
+                    for bubble in message.get("telegram_messages", [])
+                )
+            )
         ),
         None,
     )
@@ -883,8 +889,12 @@ def _record_incoming_reaction_change(
     # Missing means legacy data. Treat it as already sent: changing such a row
     # could invalidate a provider-side prompt cache created before this field
     # existed.
+    bubbles = target.get("telegram_messages", [])
     if target.get("provider_sent", True) is not False:
-        raw_quote = target.get("content")
+        raw_quote = next(
+            (bubble.get("text") for bubble in bubbles if bubble.get("mid") == target_mid),
+            target.get("content"),
+        )
         quote = raw_quote.strip() if isinstance(raw_quote, str) else ""
         if len(quote) > 40:
             quote = quote[:40] + "…"

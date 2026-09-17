@@ -3,6 +3,8 @@
 import copy
 from typing import Any
 
+from berangaria.chat.outgoing_message import DeliveredMessage
+
 from berangaria.core.state import (
     get_history_lock,
     histories,
@@ -19,6 +21,7 @@ async def save_assistant_turn(
     history: list,
     provider_message: dict | None = None,
     provider_messages: list[dict] | None = None,
+    delivered_messages: list[DeliveredMessage] | None = None,
 ) -> dict | None:
     """Append delivered text plus the byte-stable provider side of the turn.
 
@@ -44,6 +47,17 @@ async def save_assistant_turn(
         # without changing any prefix the provider could have cached.
         "provider_sent": False,
     }
+    if delivered_messages:
+        entry["mid"] = delivered_messages[0].message_id
+        entry["telegram_messages"] = [
+            {
+                "text": message.text,
+                "mid": message.message_id,
+                "reply_mid": message.reply_mid,
+                "reply_sid": message.reply_sid,
+            }
+            for message in delivered_messages
+        ]
     if turn.reactions_made:
         entry["reactions"] = list(turn.reactions_made)
     if turn.stickers_made:

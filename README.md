@@ -31,6 +31,11 @@ and replayed unchanged when continuity requires it, but never shown in Telegram.
   code, block quotes, underline, strike, spoilers, and links). Manually selected reply
   quotes are preserved in model context, and `reply_to_message` can highlight an exact
   substring; an edited or mismatched quote safely falls back to a whole-message reply.
+- **Per-bubble addressing**: `send_messages` sends 1–5 short bubbles and each one carries its
+  own optional `reply_to`, an existing `[#N]` handle from the current chat history. The bot can
+  answer two people in one turn, or after a web search, instead of being limited to the message
+  that triggered it. An unknown handle is a tool error before anything is sent, bubbles without
+  a target stay standalone, and only Telegram-confirmed bubbles are stored in history.
 - **Optional voice notes** via Fish Audio TTS (`send_voice`) — rare deadpan spoken replies when the model chooses the tool
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)

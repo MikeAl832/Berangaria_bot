@@ -31,6 +31,7 @@ from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, available_tools_for_turn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
 from berangaria.chat.turn_outcome import TurnOutcome
+from berangaria.chat.outgoing_message import DeliveredMessage, OutgoingMessage
 from berangaria.chat.chat_actions import ChatActionHeartbeat, effective_message_thread_id
 from berangaria.chat import (
     assistant_turn,
@@ -487,6 +488,7 @@ async def _run_llm_turn(
         *,
         provider_message: dict | None = None,
         provider_messages: list[dict] | None = None,
+        delivered_messages: list[DeliveredMessage] | None = None,
     ):
         return await assistant_turn.save_assistant_turn(
             text,
@@ -495,6 +497,7 @@ async def _run_llm_turn(
             history=history,
             provider_message=provider_message,
             provider_messages=provider_messages,
+            delivered_messages=delivered_messages,
         )
 
     async def _remember_bot_mid(entry, sent_mid):
@@ -574,13 +577,6 @@ async def _run_llm_turn(
                 "tools": turn_tools,
                 **gen_params,
             }
-            available_tool_names = {
-                (tool.get("function") or {}).get("name") for tool in turn_tools
-            }
-            if not {"web_search", "read_url"} & available_tool_names:
-                # Once no web action remains, force one final answer from the
-                # collected evidence instead of allowing a hallucinated tool loop.
-                request_body["tool_choice"] = "none"
             payload = apply_chat_gateway(
                 request_body,
                 session_id=session_id,
@@ -766,7 +762,7 @@ async def _run_llm_turn(
                         return TurnOutcome.FAILED
                     payload_messages.append(message)
                     turn.pending_reply = None
-                    turn.pending_messages = None  # list[str] если send_messages
+                    turn.pending_messages = None  # list[OutgoingMessage] если send_messages
 
                     for tool_call in message['tool_calls']:
                         try:
@@ -907,7 +903,7 @@ async def _run_llm_turn(
                             return TurnOutcome.DELIVERED
                         return TurnOutcome.FAILED if mentioned else TurnOutcome.SILENT
 
-                    # send_messages — terminal burst (2–5 short bubbles + typing pauses).
+                    # send_messages — terminal burst with per-bubble reply targets.
                     if turn.pending_messages:
                         messages = list(turn.pending_messages)
                         turn.pending_messages = None
@@ -916,10 +912,33 @@ async def _run_llm_turn(
                         logger.info(
                             f"💬 [magenta]Серия из {len(messages)} сообщений[/]"
                         )
+                        receipts = None
                         try:
-                            sent_mid, delivered = await _deliver_multi(
-                                messages, target_mid, turn.status_message
-                            )
+                            if isinstance(messages[0], OutgoingMessage):
+                                outgoing = []
+                                for item in messages:
+                                    cleaned = _clean_reply(item.text)
+                                    if cleaned:
+                                        outgoing.append(
+                                            OutgoingMessage(
+                                                cleaned, item.reply_mid, item.reply_sid
+                                            )
+                                        )
+                                if outgoing:
+                                    receipts = await reply_delivery.deliver_addressed(
+                                        outgoing,
+                                        turn.status_message,
+                                        _delivery_runtime(),
+                                    )
+                                else:
+                                    await reply_delivery.delete_turn_status(turn)
+                                    receipts = []
+                                delivered = [item.text for item in receipts]
+                                sent_mid = receipts[0].message_id if receipts else None
+                            else:
+                                sent_mid, delivered = await _deliver_multi(
+                                    messages, target_mid, turn.status_message
+                                )
                         except Exception as exc:
                             logger.error(
                                 f"❌ Не удалось доставить серию сообщений: {exc}",
@@ -950,21 +969,42 @@ async def _run_llm_turn(
                             history_text = "\n".join(delivered)
                             saved = await _save_assistant(
                                 history_text,
+                                delivered_messages=receipts,
                                 provider_messages=_provider_trace_for_history(
                                     payload_messages,
                                     provider_turn_start,
                                     terminal_tool_result=(
-                                        "Сообщения доставлены в Telegram. Ход завершён."
+                                        f"Telegram подтвердил первые {len(delivered)} "
+                                        f"из {len(messages)} сообщений по порядку. "
+                                        f"Не подтверждено: {len(messages) - len(delivered)}. "
+                                        "Не повторяй пакет: неподтверждённая отправка "
+                                        "могла дойти. Ход завершён."
                                     ),
                                 ),
                             )
-                            await _remember_bot_mid(saved, sent_mid)
-                            _record_reply(
-                                sent_mid,
-                                target_mid=target_mid,
-                                mode="multi",
-                                bubbles=len(delivered),
-                            )
+                            if receipts is not None:
+                                addressed_targets = [
+                                    receipt for receipt in receipts
+                                    if receipt.reply_mid is not None
+                                ]
+                                _record_reply(
+                                    receipts[0].message_id,
+                                    target_mid=(
+                                        addressed_targets[0].reply_mid
+                                        if addressed_targets
+                                        else None
+                                    ),
+                                    mode="addressed",
+                                    bubbles=len(receipts),
+                                )
+                            else:
+                                await _remember_bot_mid(saved, sent_mid)
+                                _record_reply(
+                                    sent_mid,
+                                    target_mid=target_mid,
+                                    mode="multi",
+                                    bubbles=len(delivered),
+                                )
                         elif turn.reactions_made or turn.stickers_made or turn.voices_made:
                             await _save_assistant(
                                 "",

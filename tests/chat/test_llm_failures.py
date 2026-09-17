@@ -1,6 +1,10 @@
 import asyncio
 import copy
+import json
 import logging
+from types import SimpleNamespace
+
+from telegram.error import BadRequest, TimedOut
 
 from berangaria.chat import llm_client
 from berangaria.chat.turn_outcome import TurnOutcome
@@ -810,17 +814,16 @@ def test_exhausted_read_url_is_removed_from_following_provider_round(monkeypatch
     assert "web_search" in continuation_names
 
 
-def test_exhausted_combined_web_budget_forces_final_answer(monkeypatch, tmp_path):
+def test_exhausted_combined_web_budget_preserves_addressed_terminal_tools(monkeypatch, tmp_path):
     from berangaria.tools import dispatch as tool_handlers
 
     posts = []
     responses = [
         _tool_call_response("web_search", '{"query": "курс евро"}'),
         _tool_call_response("read_url", '{"url": "https://e.com"}'),
-        _Response(200, {
-            "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
-            "usage": {},
-        }),
+        _tool_call_response(
+            "send_messages", '{"messages": [{"text": "ответ", "reply_to": 1}]}',
+        ),
     ]
     monkeypatch.setattr(tool_handlers, "WEB_SEARCH_MAX_PER_TURN", 1)
     monkeypatch.setattr(tool_handlers, "READ_URL_MAX_PER_TURN", 1)
@@ -842,20 +845,224 @@ def test_exhausted_combined_web_budget_forces_final_answer(monkeypatch, tmp_path
     state.histories[key] = history
     state.chat_tokens.pop(key, None)
 
-    asyncio.run(llm_client.send_llm_request(
-        _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    bot = _SuccessfulBot()
+    outcome = asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, True,
     ))
 
+    assert outcome is TurnOutcome.DELIVERED
     assert len(posts) == 3
-    assert "tool_choice" not in posts[0]
-    assert "tool_choice" not in posts[1]
-    assert posts[2]["tool_choice"] == "none"
+    assert all(post.get("tool_choice") != "none" for post in posts)
     final_tool_names = {
         tool["function"]["name"] for tool in posts[2]["tools"]
     }
-    assert "web_search" not in final_tool_names
-    assert "read_url" not in final_tool_names
+    initial_tool_names = {tool["function"]["name"] for tool in posts[0]["tools"]}
+    assert final_tool_names == initial_tool_names - {"web_search", "read_url"}
+    assert {"send_messages", "reply_to_message"} <= final_tool_names
+    assert [message["text"] for message in bot.messages] == ["ответ"]
+    assert bot.messages[0]["reply_to_message_id"] == 10
     assert history[-1]["content"] == "ответ"
+    assert history[-1]["telegram_messages"] == [
+        {"text": "ответ", "mid": 99, "reply_mid": 10, "reply_sid": 1},
+    ]
+
+
+class _AddressedBot(_SuccessfulBot):
+    def __init__(self, *, failure=None):
+        super().__init__()
+        self.failure = failure
+
+    async def send_message(self, **kwargs):
+        self.messages.append(kwargs)
+        if self.failure is not None and len(self.messages) == 2:
+            raise self.failure
+        return SimpleNamespace(message_id=700 + len(self.messages))
+
+
+@pytest.fixture
+def addressed_turn(monkeypatch, isolated_db):
+    """Exercise real dispatch, delivery and SQLite persistence with fake I/O."""
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(llm_client, "_multi_message_delay_seconds", lambda *a, **kw: 0)
+    monkeypatch.setattr(memory_store, "memory", None)
+    key = "group_100"
+    history = [
+        {"role": "user", "content": "[Message: Первый вопрос]", "sid": 1, "mid": 42},
+        {"role": "user", "content": "[Message: Второй вопрос]", "sid": 2, "mid": 43},
+        {"role": "user", "content": "[Message: Беран, ответь]", "sid": 3, "mid": 10},
+    ]
+    state.histories[key] = history
+    update = _Update()
+    update.effective_chat.type = "supergroup"
+
+    def run(batches, *, bot=None):
+        posts = []
+        responses = []
+        for index, batch in enumerate(batches):
+            response = _tool_call_response(
+                "send_messages", json.dumps({"messages": batch}, ensure_ascii=False),
+            )
+            response.json()["choices"][0]["message"]["tool_calls"][0]["id"] = f"batch_{index}"
+            responses.append(response)
+        monkeypatch.setattr(
+            llm_client.httpx, "AsyncClient", _sequenced_client(posts, responses),
+        )
+        bot = bot if bot is not None else _AddressedBot()
+        outcome = asyncio.run(llm_client.send_llm_request(
+            update, _Context(bot), key, history, "Миша", 1, True,
+        ))
+        assert outcome is TurnOutcome.DELIVERED
+        assert len(posts) == len(responses), "terminal delivery must not retry the LLM turn"
+        assert len(history) == 4
+        entry = copy.deepcopy(history[-1])
+        assert entry["role"] == "assistant"
+        state.histories.clear()
+        state.load_all_histories()
+        assert state.histories[key][-1] == entry
+        return posts, bot, entry
+
+    return run
+
+
+@pytest.mark.parametrize("count", [1, 2, 5])
+def test_structured_send_messages_preserves_independent_targets(addressed_turn, count):
+    batch = [
+        {"text": f"Ответ {index}.", "reply_to": 1 + index % 2}
+        for index in range(count)
+    ]
+
+    _, bot, entry = addressed_turn([batch])
+
+    texts = [f"Ответ {index}" for index in range(count)]
+    targets = [42 + index % 2 for index in range(count)]
+    assert [message["text"] for message in bot.messages] == texts
+    assert [message["reply_to_message_id"] for message in bot.messages] == targets
+    assert all(message["allow_sending_without_reply"] is True for message in bot.messages)
+    assert entry["content"] == "\n".join(texts)
+    assert entry["mid"] == 701
+    assert entry["telegram_messages"] == [
+        {"text": text, "mid": 701 + index, "reply_mid": targets[index],
+         "reply_sid": batch[index]["reply_to"]}
+        for index, text in enumerate(texts)
+    ]
+    trace = entry["provider_messages"]
+    assert [message["role"] for message in trace] == ["assistant", "tool"]
+    assert json.loads(trace[0]["tool_calls"][0]["function"]["arguments"])["messages"] == batch
+    assert trace[-1]["tool_call_id"] == "batch_0"
+    assert f"подтвердил первые {count} из {count}" in trace[-1]["content"]
+    assert "Не подтверждено: 0" in trace[-1]["content"]
+    assert llm_client._render_history_for_api([entry]) == trace
+    overview = analytics_store.get_overview("all", chat_id=100)
+    assert overview["assistant_replies"] == 1, "one delivered turn, not one per bubble"
+
+
+def test_structured_send_messages_omitted_target_stays_standalone_when_mentioned(addressed_turn):
+    _, bot, entry = addressed_turn([[
+        {"text": "Общее начало"},
+        {"text": "Первому", "reply_to": 1},
+        {"text": "Общий конец"},
+    ]])
+
+    assert [message["text"] for message in bot.messages] == [
+        "Общее начало", "Первому", "Общий конец",
+    ]
+    for index in (0, 2):
+        assert "reply_to_message_id" not in bot.messages[index]
+        assert "allow_sending_without_reply" not in bot.messages[index]
+        assert entry["telegram_messages"][index]["reply_mid"] is None
+        assert entry["telegram_messages"][index]["reply_sid"] is None
+    assert bot.messages[1]["reply_to_message_id"] == 42
+    assert entry["telegram_messages"][1]["reply_sid"] == 1
+
+
+@pytest.mark.parametrize("error", [TimedOut(), BadRequest("Message to be replied not found")])
+def test_structured_send_messages_partial_failure_persists_only_confirmed(addressed_turn, error):
+    batch = [
+        {"text": "Подтверждённый ответ.", "reply_to": 1},
+        {"text": "Неподтверждённый ответ", "reply_to": 2},
+        {"text": "Не отправлять"},
+    ]
+    _, bot, entry = addressed_turn([batch], bot=_AddressedBot(failure=error))
+
+    assert len(bot.messages) == 2
+    assert [message["reply_to_message_id"] for message in bot.messages] == [42, 43]
+    assert entry["content"] == "Подтверждённый ответ"
+    assert entry["mid"] == 701
+    assert entry["telegram_messages"] == [
+        {"text": "Подтверждённый ответ", "mid": 701, "reply_mid": 42, "reply_sid": 1},
+    ]
+    trace = entry["provider_messages"]
+    assert [message["role"] for message in trace] == ["assistant", "tool"]
+    # The exact attempted batch remains provider state, not confirmed display text.
+    assert json.loads(trace[0]["tool_calls"][0]["function"]["arguments"])["messages"] == batch
+    result = trace[-1]
+    assert result["tool_call_id"] == "batch_0"
+    assert "подтвердил первые 1 из 3" in result["content"]
+    assert "Не подтверждено: 2" in result["content"]
+    assert "Сообщения доставлены в Telegram" not in result["content"]
+    assert llm_client._render_history_for_api([entry]) == trace
+
+
+def test_bubble_cleaned_to_nothing_does_not_break_the_rest(
+    addressed_turn, monkeypatch,
+):
+    original_clean = llm_client._clean_reply
+
+    def drop_first(text):
+        cleaned = original_clean(text)
+        return "" if cleaned == "Пустой" else cleaned
+
+    monkeypatch.setattr(llm_client, "_clean_reply", drop_first)
+
+    _, bot, entry = addressed_turn([[
+        {"text": "Пустой"},
+        {"text": "Второй ответ", "reply_to": 2},
+    ]])
+
+    assert [message["text"] for message in bot.messages] == ["Второй ответ"]
+    assert bot.messages[0]["reply_to_message_id"] == 43
+    assert entry["telegram_messages"] == [
+        {"text": "Второй ответ", "mid": 701, "reply_mid": 43, "reply_sid": 2},
+    ]
+
+
+def test_structured_send_messages_invalid_target_errors_before_send_then_corrects(
+    addressed_turn, monkeypatch,
+):
+    posts_at_send = []
+    original_dispatch = llm_client.dispatch_tool_call
+
+    async def checked_dispatch(turn, payload_messages, update, context, tool_call, *args):
+        if tool_call["id"] == "batch_1":
+            assert context.bot.messages == [], "invalid batch must not partially send"
+            error = payload_messages[-2]
+            assert error["role"] == "tool"
+            assert error["tool_call_id"] == "batch_0"
+            assert "reply_to" in error["content"]
+            posts_at_send.append("correction")
+        return await original_dispatch(turn, payload_messages, update, context, tool_call, *args)
+
+    monkeypatch.setattr(llm_client, "dispatch_tool_call", checked_dispatch)
+    invalid = [{"text": "Не отправлять", "reply_to": 1},
+               {"text": "Неверная цель", "reply_to": 999}]
+    corrected = [{"text": "Исправлено", "reply_to": 2}]
+
+    _, bot, entry = addressed_turn([invalid, corrected])
+
+    assert posts_at_send == ["correction"]
+    assert [message["text"] for message in bot.messages] == ["Исправлено"]
+    assert bot.messages[0]["reply_to_message_id"] == 43
+    assert entry["content"] == "Исправлено"
+    assert entry["telegram_messages"] == [
+        {"text": "Исправлено", "mid": 701, "reply_mid": 43, "reply_sid": 2},
+    ]
+    trace = entry["provider_messages"]
+    assert [message["role"] for message in trace] == ["assistant", "tool", "assistant", "tool"]
+    assert trace[1]["tool_call_id"] == "batch_0"
+    assert "reply_to" in trace[1]["content"]
+    assert trace[3]["tool_call_id"] == "batch_1"
+    assert "Не подтверждено: 0" in trace[3]["content"]
+    assert llm_client._render_history_for_api([entry]) == trace
 
 
 def test_successful_tool_round_resets_transport_retry_budget(monkeypatch, tmp_path, caplog):

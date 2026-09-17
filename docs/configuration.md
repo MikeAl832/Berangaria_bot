@@ -336,13 +336,26 @@ sticker_index_version: 3
   with what it already has.
 - `read_url_max_per_turn`: Ceiling on full page downloads in one reply. Page bodies are much larger
   than search snippets and remain in every later provider round of the same turn.
-- `web_tool_max_per_turn`: Combined `web_search` + `read_url` ceiling. Exhausted tools are removed
-  from later provider requests; when neither remains, the next request forces a final answer from
-  the evidence already collected instead of allowing another tool call.
+- `web_tool_max_per_turn`: Combined `web_search` + `read_url` ceiling. Exhausted web tools are
+  removed from later provider requests; reply tools remain available so the model can address
+  its answer after searching. The overall tool-round and network-retry limits still apply.
   HTTP 429 retries honor `Retry-After`; without it they use a jittered 5/10/20/30-second backoff.
-- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–5 short
-  Telegram bubbles with `typing` between them). Delays scale with bubble length and are capped by
-  `multi_message_delay_total_cap`. Mutex with `reply_to_message` and `send_sticker`.
+- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (1–5 short
+  Telegram bubbles with `typing` between them). Each item is an object with `text` and optional
+  `reply_to`, an existing `[#N]` handle from this chat's current history, not a raw Telegram ID.
+  For example: `{"messages": [{"text": "First answer", "reply_to": 12},
+  {"text": "Second answer", "reply_to": 18}, {"text": "Standalone remark"}]}`.
+  Omitted targets stay standalone even on a directly addressed turn. An unknown target rejects
+  the entire batch before anything is sent, so the model's intent is checked against real chat
+  messages instead of being guessed. If Telegram itself no longer has the target message, the
+  bubble is still delivered without the reply link rather than losing the answer.
+  Delivery stops on failure, retains only confirmed bubbles and their IDs
+  and targets, and records the confirmed prefix in the tool result without replaying the batch.
+  One `assistant_reply` analytics event is recorded per delivered turn, not per bubble.
+  The exact original provider tool call is retained separately from display text.
+  Delays scale with bubble length and are capped by `multi_message_delay_total_cap`.
+  Mutex with `reply_to_message`, `send_sticker`, and `send_voice`. Legacy string-array calls
+  remain supported, with only the first bubble replying to the triggering message when mentioned.
 - `sticker_min_score`: Vector-score floor for sticker search. Below it a sticker is not offered.
   Lowering it widens the menu but risks off-vibe stickers; raise it back if that happens.
 - `sticker_top_k`: How many vector hits `send_sticker` considers before picking one at random

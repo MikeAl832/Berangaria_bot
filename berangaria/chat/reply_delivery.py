@@ -10,6 +10,7 @@ from telegram import ReplyParameters
 from telegram.error import BadRequest
 
 from berangaria.chat.chat_actions import effective_message_thread_id
+from berangaria.chat.outgoing_message import DeliveredMessage, OutgoingMessage
 from berangaria.chat.reply_formatting import (
     markdown_to_html,
     split_for_telegram,
@@ -166,6 +167,101 @@ async def deliver(
         if first_mid is None:
             first_mid = sent_mid
     return first_mid
+
+
+async def deliver_addressed(
+    messages: list[OutgoingMessage],
+    status_message: Any,
+    runtime: DeliveryRuntime,
+) -> list[DeliveredMessage]:
+    """Send validated bubbles to their own targets, retaining confirmed receipts.
+
+    Cleanup and target resolution belong to the caller. Validate the entire batch
+    before deleting a status or sending anything; never split an addressed bubble.
+    A model-chosen target is already validated against known chat messages, so a
+    missing Telegram message only costs the reply link, not the reply itself.
+    """
+    if not messages:
+        raise ValueError("At least one outgoing message is required")
+    prepared = []
+    for message in messages:
+        text = message.text
+        if not isinstance(text, str) or not text.strip() or len(text) > 4096:
+            raise ValueError("Outgoing text must contain 1–4096 characters")
+        reply_html = markdown_to_html(text)
+        reply_plain = strip_markdown(text)
+        if not reply_plain.strip() or len(reply_plain) > 4096:
+            raise ValueError("Rendered outgoing text must contain 1–4096 characters")
+        prepared.append((message, reply_html, reply_plain))
+
+    if status_message is not None:
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+
+    update = runtime.update
+    chat_id = update.effective_chat.id
+    thread_id = effective_message_thread_id(update.message)
+    delivered: list[DeliveredMessage] = []
+    slept_total = 0.0
+
+    for message, reply_html, reply_plain in prepared:
+        try:
+            if delivered:
+                delay = runtime.multi_message_delay_seconds(
+                    message.text, slept_total=slept_total
+                )
+                if delay > 0:
+                    try:
+                        await update.message.chat.send_action(action="typing")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(delay)
+                    slept_total += delay
+
+            use_html = len(reply_html) <= 4096
+            kwargs = {
+                "chat_id": chat_id,
+                "text": reply_html if use_html else reply_plain,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            if message.reply_mid is not None:
+                kwargs["reply_to_message_id"] = message.reply_mid
+                # Telegram drops the link instead of failing if the target is
+                # gone: a deleted message must not cost the whole reply.
+                kwargs["allow_sending_without_reply"] = True
+            if use_html:
+                kwargs["parse_mode"] = "HTML"
+            try:
+                sent = await runtime.context.bot.send_message(**kwargs)
+            except BadRequest as error:
+                if not use_html or not runtime.is_parse_error(error):
+                    raise
+                logger.warning("Addressed HTML rejected; sending plain text: %s", error)
+                kwargs["text"] = reply_plain
+                kwargs.pop("parse_mode")
+                sent = await runtime.context.bot.send_message(**kwargs)
+            delivered.append(
+                DeliveredMessage(
+                    text=message.text,
+                    message_id=sent.message_id,
+                    reply_mid=message.reply_mid,
+                    reply_sid=message.reply_sid,
+                )
+            )
+        except Exception as error:
+            if not delivered:
+                raise
+            logger.error(
+                "Addressed delivery stopped after %s confirmed messages: %s",
+                len(delivered),
+                error,
+            )
+            return delivered
+
+    return delivered
 
 
 async def deliver_multi(
