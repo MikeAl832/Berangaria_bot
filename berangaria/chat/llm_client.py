@@ -30,6 +30,8 @@ from berangaria.core import alerts
 from berangaria.tools.schemas import TOOLS
 from berangaria.tools.dispatch import ToolTurn, available_tools_for_turn, dispatch_tool_call
 from berangaria.chat.streaming import stream_chat_completion
+from berangaria.chat.turn_outcome import TurnOutcome
+from berangaria.chat.outgoing_message import DeliveredMessage, OutgoingMessage
 from berangaria.chat.chat_actions import ChatActionHeartbeat, effective_message_thread_id
 from berangaria.chat import (
     assistant_turn,
@@ -322,7 +324,8 @@ async def _mark_history_sent_to_provider(history: list, *, key: str) -> None:
 
 async def send_llm_request(
     update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
-    history: list, user_name: str, user_id: int, mentioned: bool = False):
+    history: list, user_name: str, user_id: int, mentioned: bool = False,
+) -> TurnOutcome:
     """Run one selected model turn while keeping Telegram presence current."""
     message = update.message
     chat = getattr(message, "chat", None) or update.effective_chat
@@ -347,7 +350,8 @@ async def send_llm_request(
 async def _run_llm_turn(
     update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
     history: list, user_name: str, user_id: int, mentioned: bool = False,
-    *, chat_actions: ChatActionHeartbeat):
+    *, chat_actions: ChatActionHeartbeat,
+) -> TurnOutcome:
 
     # Автосуммаризация при достижении 85% от лимита токенов
     context_threshold = int(MAX_CONTEXT_TOKENS * 0.85)
@@ -484,6 +488,7 @@ async def _run_llm_turn(
         *,
         provider_message: dict | None = None,
         provider_messages: list[dict] | None = None,
+        delivered_messages: list[DeliveredMessage] | None = None,
     ):
         return await assistant_turn.save_assistant_turn(
             text,
@@ -492,6 +497,7 @@ async def _run_llm_turn(
             history=history,
             provider_message=provider_message,
             provider_messages=provider_messages,
+            delivered_messages=delivered_messages,
         )
 
     async def _remember_bot_mid(entry, sent_mid):
@@ -571,13 +577,6 @@ async def _run_llm_turn(
                 "tools": turn_tools,
                 **gen_params,
             }
-            available_tool_names = {
-                (tool.get("function") or {}).get("name") for tool in turn_tools
-            }
-            if not {"web_search", "read_url"} & available_tool_names:
-                # Once no web action remains, force one final answer from the
-                # collected evidence instead of allowing a hallucinated tool loop.
-                request_body["tool_choice"] = "none"
             payload = apply_chat_gateway(
                 request_body,
                 session_id=session_id,
@@ -598,7 +597,7 @@ async def _run_llm_turn(
                     await update.message.reply_text(
                         "⚠️ API отклонил запрос. История сохранена; попробуйте ещё раз."
                     )
-                    return
+                    return TurnOutcome.FAILED
 
                 # Обработка rate limiting
                 if response.status_code == 429:
@@ -629,7 +628,7 @@ async def _run_llm_turn(
                             f"provider_code={error_summary['provider_code']}",
                         )
                         await update.message.reply_text("❌ API временно перегружен. Попробуйте позже.")
-                        return
+                        return TurnOutcome.FAILED
                     retry_after, delay_source = _rate_limit_retry_delay(response, api_failures)
                     logger.warning(
                         "⚠️ Rate limit (429): generation=%s type=%s provider_code=%s "
@@ -664,15 +663,25 @@ async def _run_llm_turn(
                         f"исчерпаны повторы после HTTP {response.status_code}",
                     )
                     await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
-                    return
+                    return TurnOutcome.FAILED
 
-                # A successful provider round starts a fresh transport-retry budget;
-                # tool rounds have their own independent MAX_TOOL_ROUNDS ceiling.
-                api_failures = 0
                 data = response.json()
-                choice = data['choices'][0]
+                if not isinstance(data, dict):
+                    raise ValueError("API response must be a JSON object")
+                choices = data.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    raise ValueError("API response must contain nonempty choices")
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    raise ValueError("API response choice must be an object")
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    raise ValueError("API response message must be an object")
+                # Only a validated provider round refreshes the retry budget;
+                # malformed HTTP 200 responses must exhaust it like other failures.
+                # Tool rounds retain their independent MAX_TOOL_ROUNDS ceiling.
+                api_failures = 0
                 finish_reason = choice.get('finish_reason', '')
-                message = choice['message']
                 usage = data.get('usage', {})
                 llm_diagnostics.log_router_metadata(data, response.headers)
 
@@ -750,10 +759,10 @@ async def _run_llm_turn(
                         await update.message.reply_text(
                             "❌ Не удалось завершить обработку инструментов. Попробуйте переформулировать запрос."
                         )
-                        return
+                        return TurnOutcome.FAILED
                     payload_messages.append(message)
                     turn.pending_reply = None
-                    turn.pending_messages = None  # list[str] если send_messages
+                    turn.pending_messages = None  # list[OutgoingMessage] если send_messages
 
                     for tool_call in message['tool_calls']:
                         try:
@@ -810,7 +819,8 @@ async def _run_llm_turn(
                                         ),
                                     ),
                                 )
-                            return
+                                return TurnOutcome.DELIVERED
+                            return TurnOutcome.FAILED
                         api_call_count[key] = api_call_count.get(key, 0) + 1
                         if reply_text:
                             logger.info(f"↩️ [magenta]Ответ реплаем на[/] [#{reply_sid}]")
@@ -889,9 +899,11 @@ async def _run_llm_turn(
                                     await turn.status_message.delete()
                                 except Exception:
                                     pass
-                        return
+                        if reply_text or turn.reacted or turn.sticker_sent or turn.voice_sent:
+                            return TurnOutcome.DELIVERED
+                        return TurnOutcome.FAILED if mentioned else TurnOutcome.SILENT
 
-                    # send_messages — terminal burst (2–5 short bubbles + typing pauses).
+                    # send_messages — terminal burst with per-bubble reply targets.
                     if turn.pending_messages:
                         messages = list(turn.pending_messages)
                         turn.pending_messages = None
@@ -900,10 +912,33 @@ async def _run_llm_turn(
                         logger.info(
                             f"💬 [magenta]Серия из {len(messages)} сообщений[/]"
                         )
+                        receipts = None
                         try:
-                            sent_mid, delivered = await _deliver_multi(
-                                messages, target_mid, turn.status_message
-                            )
+                            if isinstance(messages[0], OutgoingMessage):
+                                outgoing = []
+                                for item in messages:
+                                    cleaned = _clean_reply(item.text)
+                                    if cleaned:
+                                        outgoing.append(
+                                            OutgoingMessage(
+                                                cleaned, item.reply_mid, item.reply_sid
+                                            )
+                                        )
+                                if outgoing:
+                                    receipts = await reply_delivery.deliver_addressed(
+                                        outgoing,
+                                        turn.status_message,
+                                        _delivery_runtime(),
+                                    )
+                                else:
+                                    await reply_delivery.delete_turn_status(turn)
+                                    receipts = []
+                                delivered = [item.text for item in receipts]
+                                sent_mid = receipts[0].message_id if receipts else None
+                            else:
+                                sent_mid, delivered = await _deliver_multi(
+                                    messages, target_mid, turn.status_message
+                                )
                         except Exception as exc:
                             logger.error(
                                 f"❌ Не удалось доставить серию сообщений: {exc}",
@@ -934,21 +969,42 @@ async def _run_llm_turn(
                             history_text = "\n".join(delivered)
                             saved = await _save_assistant(
                                 history_text,
+                                delivered_messages=receipts,
                                 provider_messages=_provider_trace_for_history(
                                     payload_messages,
                                     provider_turn_start,
                                     terminal_tool_result=(
-                                        "Сообщения доставлены в Telegram. Ход завершён."
+                                        f"Telegram подтвердил первые {len(delivered)} "
+                                        f"из {len(messages)} сообщений по порядку. "
+                                        f"Не подтверждено: {len(messages) - len(delivered)}. "
+                                        "Не повторяй пакет: неподтверждённая отправка "
+                                        "могла дойти. Ход завершён."
                                     ),
                                 ),
                             )
-                            await _remember_bot_mid(saved, sent_mid)
-                            _record_reply(
-                                sent_mid,
-                                target_mid=target_mid,
-                                mode="multi",
-                                bubbles=len(delivered),
-                            )
+                            if receipts is not None:
+                                addressed_targets = [
+                                    receipt for receipt in receipts
+                                    if receipt.reply_mid is not None
+                                ]
+                                _record_reply(
+                                    receipts[0].message_id,
+                                    target_mid=(
+                                        addressed_targets[0].reply_mid
+                                        if addressed_targets
+                                        else None
+                                    ),
+                                    mode="addressed",
+                                    bubbles=len(receipts),
+                                )
+                            else:
+                                await _remember_bot_mid(saved, sent_mid)
+                                _record_reply(
+                                    sent_mid,
+                                    target_mid=target_mid,
+                                    mode="multi",
+                                    bubbles=len(delivered),
+                                )
                         elif turn.reactions_made or turn.stickers_made or turn.voices_made:
                             await _save_assistant(
                                 "",
@@ -961,7 +1017,9 @@ async def _run_llm_turn(
                                     ),
                                 ),
                             )
-                        return
+                        if delivered or turn.reactions_made or turn.stickers_made or turn.voices_made:
+                            return TurnOutcome.DELIVERED
+                        return TurnOutcome.FAILED if mentioned else TurnOutcome.SILENT
 
                     # Стикер уже в чате — это полный ответ, лишний round-trip к API не нужен.
                     if turn.sticker_sent:
@@ -981,7 +1039,7 @@ async def _run_llm_turn(
                                 await turn.status_message.delete()
                             except Exception:
                                 pass
-                        return
+                        return TurnOutcome.DELIVERED
 
                     # Голосовое уже в чате — терминальный ответ, без ещё одного round-trip.
                     if turn.voice_sent:
@@ -1001,7 +1059,7 @@ async def _run_llm_turn(
                                 await turn.status_message.delete()
                             except Exception:
                                 pass
-                        return
+                        return TurnOutcome.DELIVERED
 
                     continue
 
@@ -1041,7 +1099,7 @@ async def _run_llm_turn(
                                 await turn.status_message.delete()
                             except Exception:
                                 pass
-                        return
+                        return TurnOutcome.DELIVERED
                     if not mentioned:
                         logger.info(f"🤫 [dim]Промолчала (ambient)[/] (ключ={key})")
                         if turn.status_message:
@@ -1049,14 +1107,14 @@ async def _run_llm_turn(
                                 await turn.status_message.delete()
                             except Exception:
                                 pass
-                        return
+                        return TurnOutcome.SILENT
                     logger.warning(f"⚠️ [yellow]Пустой ответ при прямом обращении[/] (ключ={key})")
                     if turn.status_message:
                         try:
                             await turn.status_message.delete()
                         except Exception:
                             pass
-                    return
+                    return TurnOutcome.FAILED
 
                 if finish_reason == 'length':
                     logger.warning(f"⚠️ [yellow]Ответ обрезан по лимиту токенов[/] (ключ={key})")
@@ -1100,7 +1158,7 @@ async def _run_llm_turn(
                 )
                 await _remember_bot_mid(saved, sent_mid)
                 _record_reply(sent_mid, target_mid=target_mid, mode="text")
-                return
+                return TurnOutcome.DELIVERED
 
             except ReplyDeliveryError:
                 # Доставка — часть логической транзакции хода. Не повторяем LLM/tools
@@ -1115,7 +1173,7 @@ async def _run_llm_turn(
                 await _delete_turn_status()
                 await _alert("LLM connection", "API недоступен после всех повторов")
                 await update.message.reply_text("❌ API недоступен!")
-                return
+                return TurnOutcome.FAILED
             except httpx.TimeoutException:
                 logger.error("❌ [bright_red]Таймаут запроса к API[/]")
                 api_failures += 1
@@ -1125,7 +1183,7 @@ async def _run_llm_turn(
                 await _delete_turn_status()
                 await _alert("LLM timeout", "таймаут API после всех повторов")
                 await update.message.reply_text("❌ Таймаут.")
-                return
+                return TurnOutcome.FAILED
             except Exception as e:
                 logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}", exc_info=True)
                 api_failures += 1
@@ -1135,4 +1193,4 @@ async def _run_llm_turn(
                 await _delete_turn_status()
                 await _alert("LLM failure", "обработка запроса завершилась ошибкой", e)
                 await update.message.reply_text("❌ Ошибка при обработке.")
-                return
+                return TurnOutcome.FAILED

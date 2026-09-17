@@ -336,13 +336,26 @@ sticker_index_version: 3
   with what it already has.
 - `read_url_max_per_turn`: Ceiling on full page downloads in one reply. Page bodies are much larger
   than search snippets and remain in every later provider round of the same turn.
-- `web_tool_max_per_turn`: Combined `web_search` + `read_url` ceiling. Exhausted tools are removed
-  from later provider requests; when neither remains, the next request forces a final answer from
-  the evidence already collected instead of allowing another tool call.
+- `web_tool_max_per_turn`: Combined `web_search` + `read_url` ceiling. Exhausted web tools are
+  removed from later provider requests; reply tools remain available so the model can address
+  its answer after searching. The overall tool-round and network-retry limits still apply.
   HTTP 429 retries honor `Retry-After`; without it they use a jittered 5/10/20/30-second backoff.
-- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (2–5 short
-  Telegram bubbles with `typing` between them). Delays scale with bubble length and are capped by
-  `multi_message_delay_total_cap`. Mutex with `reply_to_message` and `send_sticker`.
+- `multi_message_*`: Caps and typing pauses for the terminal `send_messages` tool (1–5 short
+  Telegram bubbles with `typing` between them). Each item is an object with `text` and optional
+  `reply_to`, an existing `[#N]` handle from this chat's current history, not a raw Telegram ID.
+  For example: `{"messages": [{"text": "First answer", "reply_to": 12},
+  {"text": "Second answer", "reply_to": 18}, {"text": "Standalone remark"}]}`.
+  Omitted targets stay standalone even on a directly addressed turn. An unknown target rejects
+  the entire batch before anything is sent, so the model's intent is checked against real chat
+  messages instead of being guessed. If Telegram itself no longer has the target message, the
+  bubble is still delivered without the reply link rather than losing the answer.
+  Delivery stops on failure, retains only confirmed bubbles and their IDs
+  and targets, and records the confirmed prefix in the tool result without replaying the batch.
+  One `assistant_reply` analytics event is recorded per delivered turn, not per bubble.
+  The exact original provider tool call is retained separately from display text.
+  Delays scale with bubble length and are capped by `multi_message_delay_total_cap`.
+  Mutex with `reply_to_message`, `send_sticker`, and `send_voice`. Legacy string-array calls
+  remain supported, with only the first bubble replying to the triggering message when mentioned.
 - `sticker_min_score`: Vector-score floor for sticker search. Below it a sticker is not offered.
   Lowering it widens the menu but risks off-vibe stickers; raise it back if that happens.
 - `sticker_top_k`: How many vector hits `send_sticker` considers before picking one at random
@@ -479,7 +492,12 @@ Request cost: $0.000285
 - A slot is an opportunity: skip the chat if fewer than `summary_min_extra` messages sit beyond the keep window
 - If someone wrote within `summary_quiet_seconds`, postpone that chat once by the same window; still talking after that → wait for the next hour
 - Keeps the last `summary_interval` messages intact
-- Compresses older history into a brief summary
+- Rewrites older history (including the previous summary) as working context, not an event archive. Unfinished topics, relevant decisions and recurring conversational context take priority; stale forecasts, closed episodes and one-off media/link inventories should be dropped.
+- Recent retained messages are also sent as relevance context, separately labelled and not to be repeated in the summary. Provider tool transcripts, reasoning and structured events are excluded.
+- `summary_max_chars` caps the stored summary body (default `4000`, minimum `500`). The prompt requests this budget; overlong output is cut at a nearby boundary. The separate API budget remains 8192 tokens to accommodate high-effort reasoning.
+- Recognizable credential-bearing lines (labelled passwords/API keys, credential triples and `otpauth://` URLs) are redacted before summarization and before storage. This is a limited heuristic, not a complete secret detector. The retained recent history, existing database and old logs are not scrubbed by this change.
+- Summary contents are no longer emitted by the summarizer's debug log. Other full-payload logging may still contain conversation data, including summaries; restrict access to logs.
+- Selection quality depends on the model and requires real-dialogue comparison; unit tests verify request wiring, filtering and history preservation, not semantic quality.
 - Uses the same chat model with `reasoning.effort: high` (not the chat `low`);
   long client timeout and a larger `max_tokens` budget so CoT does not starve
   the final summary

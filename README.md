@@ -31,6 +31,11 @@ and replayed unchanged when continuity requires it, but never shown in Telegram.
   code, block quotes, underline, strike, spoilers, and links). Manually selected reply
   quotes are preserved in model context, and `reply_to_message` can highlight an exact
   substring; an edited or mismatched quote safely falls back to a whole-message reply.
+- **Per-bubble addressing**: `send_messages` sends 1–5 short bubbles and each one carries its
+  own optional `reply_to`, an existing `[#N]` handle from the current chat history. The bot can
+  answer two people in one turn, or after a web search, instead of being limited to the message
+  that triggered it. An unknown handle is a tool error before anything is sent, bubbles without
+  a target stay standalone, and only Telegram-confirmed bubbles are stored in history.
 - **Optional voice notes** via Fish Audio TTS (`send_voice`) — rare deadpan spoken replies when the model chooses the tool
 - **Automatic conversation summarization** with token budget management
 - **Smart message buffering** for rapid consecutive messages (4-second debounce)
@@ -130,6 +135,11 @@ python -m berangaria
 Windows users can use `scripts\start.bat`, Linux users `scripts/start.sh`.
 Both resolve the project root themselves, so they work from any directory.
 
+Telegram edits update messages still in the debounce buffer immediately. Edits to
+history wait for the current chat turn to finish and apply only if the message
+has not been sent to the provider. Already-sent history stays unchanged. Waiting
+for a turn does not block incoming updates in other chats.
+
 ## How It Works
 
 ### Memory System
@@ -138,7 +148,7 @@ Memory is partitioned by chat:
 - **Groups**: shared memory for entire chat (`group_<chat_id>`)
 - **Private**: per-user memory (`private_<user_id>`)
 
-Each original text message, including short ones, is queued durably in SQLite with its author, chat scope, Telegram message ID, timestamp, and source text. A later Telegram edit cannot replace that source. Verification starts only after the buffered Telegram turn succeeds, so waiting sources cannot be claimed before reply delivery. DeepSeek first extracts candidates with literal source quotes, then a separate verifier must approve all decisions before storage begins; malformed output, ambiguity, sensitive data, forwarded text, media-only context, or any service failure is fail-closed. Mem0 writes from one source are published atomically in SQLite and compensated on partial failure; retries first reconcile any records left by a crash. Failed sources retry in FIFO order exactly five times. Mem0 receives only approved facts with `infer=False`, and later statements replace the same fact in place. Completed raw source text is erased; topical retrieval accepts only literal ID/text matches from the chat-scoped SQLite approval registry, the strict relevance threshold, and a topical match with the latest meaningful user message. Explicit general recall questions read the same approved, scope-limited SQLite registry directly because an unscoped vector score has no meaningful topic. Original TikTok URLs remain in provenance but are removed from the LLM-facing copy.
+Each original text message, including short ones, is queued durably in SQLite with its author, chat scope, Telegram message ID, timestamp, and source text. A later Telegram edit cannot replace that source. Verification becomes eligible after either a confirmed reply/action (`DELIVERED`) or intentional silence (`SILENT`), including ambient gates: the bot does not have to reply for a user's facts to reach memory verification. Terminal failures and missing outcomes abandon the sources instead. Error notifications are not successful model replies. Input filtered out before a model request also releases its original source for verification. DeepSeek first extracts candidates with literal source quotes, then a separate verifier must approve all decisions before storage begins; malformed output, ambiguity, sensitive data, forwarded text, media-only context, or any service failure is fail-closed. Mem0 writes from one source are published atomically in SQLite and compensated on partial failure; retries first reconcile any records left by a crash. Failed sources retry in FIFO order exactly five times. Mem0 receives only approved facts with `infer=False`, and later statements replace the same fact in place. Completed raw source text is erased; topical retrieval accepts only literal ID/text matches from the chat-scoped SQLite approval registry, the strict relevance threshold, and a topical match with the latest meaningful user message. Explicit general recall questions read the same approved, scope-limited SQLite registry directly because an unscoped vector score has no meaningful topic. Original TikTok URLs remain in provenance but are removed from the LLM-facing copy.
 
 ### Vision Processing
 

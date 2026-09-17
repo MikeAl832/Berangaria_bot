@@ -110,3 +110,71 @@ def test_delete_frozen_assistant_row():
         history, message_id=55, is_group=True
     ) == "frozen"
     assert len(history) == 1
+
+
+def _assistant_burst(*, provider_sent=False):
+    return {
+        "role": "assistant",
+        "content": "первый\nвторой\nтретий",
+        "mid": 55,
+        "provider_sent": provider_sent,
+        "telegram_messages": [
+            {"mid": 55, "text": "первый", "reply_mid": None, "reply_sid": None},
+            {"mid": 56, "text": "второй", "reply_mid": 42, "reply_sid": 1},
+            {"mid": 57, "text": "третий", "reply_mid": None, "reply_sid": None},
+        ],
+    }
+
+
+def test_deleting_one_burst_bubble_keeps_the_others():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [_assistant_burst()]
+
+    assert apply_history_message_delete(
+        history, message_id=56, is_group=True
+    ) == "updated"
+    assert history[0]["content"] == "первый\nтретий"
+    assert [item["mid"] for item in history[0]["telegram_messages"]] == [55, 57]
+
+
+def test_deleting_the_row_anchor_bubble_keeps_the_rest():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [_assistant_burst()]
+
+    assert apply_history_message_delete(
+        history, message_id=55, is_group=True
+    ) == "updated"
+    assert history[0]["mid"] == 56
+    assert history[0]["content"] == "второй\nтретий"
+
+
+def test_deleting_the_last_burst_bubble_removes_the_row():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [{
+        "role": "assistant",
+        "content": "единственный",
+        "mid": 55,
+        "provider_sent": False,
+        "telegram_messages": [{"mid": 55, "text": "единственный"}],
+    }]
+
+    assert apply_history_message_delete(
+        history, message_id=55, is_group=True
+    ) == "removed"
+    assert history == []
+
+
+def test_sent_burst_bubble_is_frozen_before_rewrite():
+    from berangaria.chat.history_mutations import apply_history_message_delete
+
+    history = [_assistant_burst(provider_sent=True)]
+    before = [dict(item) for item in history[0]["telegram_messages"]]
+
+    assert apply_history_message_delete(
+        history, message_id=56, is_group=True
+    ) == "frozen"
+    assert history[0]["telegram_messages"] == before
+    assert history[0]["content"] == "первый\nвторой\nтретий"

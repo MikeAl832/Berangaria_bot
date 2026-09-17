@@ -76,7 +76,9 @@ def test_bridge_queue_no_memory_and_bot_author(monkeypatch, isolated_db):
     llm_calls = []
 
     async def _fake_llm(*args, **kwargs):
+        from berangaria.chat.turn_outcome import TurnOutcome
         llm_calls.append(args)
+        return TurnOutcome.DELIVERED
 
     monkeypatch.setattr(handlers, "send_llm_request", _fake_llm)
     monkeypatch.setattr(handlers, "should_reply_randomly", lambda *args: False)

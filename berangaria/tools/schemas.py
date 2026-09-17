@@ -177,27 +177,33 @@ TOOLS = [
         "function": {
             "name": "send_messages",
             "description": (
-                "Send 2–5 short Telegram messages as separate bubbles (typing pauses between them). "
-                "Use when the reply is two or more beats — setup then punchline, a jab then a follow-up, a reaction then a thought. "
-                "That pattern MUST be this tool: never fake it with a blank line or extra paragraphs in one plain-text message. "
-                "Hard cap 5: if you want more beats, keep the strongest five. "
-                "Still not every turn: one thought stays one bubble or a sticker. Not to pad length. "
-                "After a successful call the turn ENDS: plain text written alongside is discarded; "
-                "do not combine with reply_to_message, send_sticker, or send_voice. "
-                "Each string is one bubble: short, no service tags, no emoji, no internal blank lines. "
-                "Not for facts after web_search, lists, instructions, or ambient one-liners."
+                "Send 1–5 Telegram messages, each optionally replying to its own [#N] target. "
+                "Use reply_to to make clear who and what you are answering in a group, especially "
+                "when several topics overlap. Different bubbles may answer different people or the same message. "
+                "Available after web_search/read_url: address the person who asked, not the tool result. "
+                "Omit reply_to for a standalone message. Keep each bubble concise; use plain text for "
+                "one long answer. After success the turn ends; accompanying plain text is discarded. "
+                "Use this one batch instead of combining it with reply_to_message, stickers or voice."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "messages": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "2 to 5 short message texts, in order. "
-                            "Example: [\"ну ты дал\", \"и это серьёзно?\"]"
-                        ),
-                        "minItems": 2,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "description": "Message text."},
+                                "reply_to": {
+                                    "type": "integer",
+                                    "description": "Optional existing [#N] handle to reply to in this chat.",
+                                },
+                            },
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                        "description": "Messages in delivery order, with an independent optional reply_to each.",
+                        "minItems": 1,
                         "maxItems": 5,
                     }
                 },

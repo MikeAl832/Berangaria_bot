@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 
 from berangaria.chat.chat_actions import effective_message_thread_id
+from berangaria.chat.outgoing_message import OutgoingMessage
 from berangaria.analytics import store as analytics_store
 from berangaria.config import (
     STICKER_ENABLED,
@@ -78,7 +79,7 @@ class ToolTurn:
         self.read_url_calls = 0      # how many pages read_url fetched in this turn
         # (target_mid, text, sid, exact_quote, quote_position) for reply_to_message
         self.pending_reply = None
-        self.pending_messages = None  # list[str] если модель выбрала send_messages (terminal)
+        self.pending_messages = None  # list[OutgoingMessage] если модель выбрала send_messages (terminal)
         self.chat_actions = chat_actions  # shared typing/sticker/voice heartbeat
 
     @property
@@ -718,7 +719,30 @@ async def handle_send_voice(turn, payload_messages, update, context, tool_call, 
     })
 
 
-def handle_send_messages(turn, payload_messages, tool_call, args):
+def _parse_addressed_messages(raw, sid_to_mid):
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MULTI_MESSAGE_MAX:
+        return f"Нужно от 1 до {MULTI_MESSAGE_MAX} сообщений."
+    result = []
+    total = 0
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            return "Каждое сообщение должно содержать строку text и необязательный reply_to."
+        text = item["text"].strip()
+        if not text or len(text) > MULTI_MESSAGE_MAX_CHARS:
+            return f"text должен содержать от 1 до {MULTI_MESSAGE_MAX_CHARS} символов."
+        total += len(text)
+        if total > MULTI_MESSAGE_MAX_TOTAL_CHARS:
+            return "Превышен общий бюджет текста сообщений."
+        sid = item.get("reply_to")
+        if sid is not None and (
+            type(sid) is not int or sid_to_mid.get(sid) is None
+        ):
+            return "Неизвестный reply_to: выбери существующий [#N] из текущей истории."
+        result.append(OutgoingMessage(text, sid_to_mid.get(sid), sid))
+    return result
+
+
+def handle_send_messages(turn, payload_messages, tool_call, args, sid_to_mid=None):
     """
     Терминальный инструмент: пакет коротких сообщений.
     При успехе выставляет turn.pending_messages и НЕ пишет tool-result
@@ -756,7 +780,11 @@ def handle_send_messages(turn, payload_messages, tool_call, args):
         })
         return
 
-    result = sanitize_multi_messages(args.get("messages"))
+    raw_messages = args.get("messages")
+    if isinstance(raw_messages, list) and any(isinstance(item, dict) for item in raw_messages):
+        result = _parse_addressed_messages(raw_messages, sid_to_mid or {})
+    else:
+        result = sanitize_multi_messages(raw_messages)
     if isinstance(result, str):
         payload_messages.append({
             "role": "tool",
@@ -769,7 +797,7 @@ def handle_send_messages(turn, payload_messages, tool_call, args):
     logger.info(
         "💬 [magenta]send_messages:[/] %s bubble(s), %s chars total",
         len(result),
-        sum(len(m) for m in result),
+        sum(len(m.text) if isinstance(m, OutgoingMessage) else len(m) for m in result),
     )
 
 
@@ -874,7 +902,7 @@ async def dispatch_tool_call(turn, payload_messages, update, context, tool_call,
     elif func_name == 'reply_to_message':
         handle_reply(turn, update, args, sid_to_mid, history)
     elif func_name == 'send_messages':
-        handle_send_messages(turn, payload_messages, tool_call, args)
+        handle_send_messages(turn, payload_messages, tool_call, args, sid_to_mid)
     elif func_name == 'send_voice':
         await handle_send_voice(turn, payload_messages, update, context, tool_call, args)
     else:

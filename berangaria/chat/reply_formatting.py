@@ -66,7 +66,11 @@ def markdown_to_html(text: str) -> str:
     text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
     text = re.sub(r"\|\|(.+?)\|\|", r"<tg-spoiler>\1</tg-spoiler>", text)
     text = re.sub(r"\+\+(.+?)\+\+", r"<u>\1</u>", text)
-    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2">\1</a>', text)
+    def format_link(match: re.Match) -> str:
+        url = match.group(2).replace('"', "&quot;")
+        return f'<a href="{url}">{match.group(1)}</a>'
+
+    text = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', format_link, text)
     for index, value in enumerate(protected):
         text = text.replace(f"\ue000{index}\ue001", value)
     return text

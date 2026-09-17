@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from berangaria.analytics import store as analytics_store
+from berangaria.chat.turn_outcome import TurnOutcome
 from berangaria.core import state
 from berangaria.core.state import (
     _buffer_lock,
@@ -52,8 +53,8 @@ class QueueRuntime:
     enqueue_memory_source: Callable[..., int]
     release_memory_sources: Callable[[list[int | None]], Any]
     abandon_memory_sources: Callable[[list[int | None]], Any]
-    send_llm_request: Callable[..., Awaitable[Any]]
-    process_buffered_messages: Callable[..., Awaitable[None]]
+    send_llm_request: Callable[..., Awaitable[TurnOutcome]]
+    process_buffered_messages: Callable[..., Awaitable[TurnOutcome]]
 
 
 async def process_buffered_messages(
@@ -66,12 +67,12 @@ async def process_buffered_messages(
     user_name: str,
     mentioned: bool,
     runtime: QueueRuntime,
-) -> None:
+) -> TurnOutcome:
     """Commit one debounce buffer to history and optionally run an LLM turn."""
     async with _buffer_lock:
         data = message_buffer.get(buffer_key)
         if not data:
-            return
+            return TurnOutcome.SILENT
         messages = data["messages"]
         del message_buffer[buffer_key]
 
@@ -177,7 +178,7 @@ async def process_buffered_messages(
                     (combined_text or "")[:60],
                     key,
                 )
-                return
+                return TurnOutcome.SILENT
 
             activity_token = messages[-1].get("group_activity_token")
             current_created_at = messages[-1].get("created_at")
@@ -187,15 +188,16 @@ async def process_buffered_messages(
                 previous_history,
                 current_created_at,
             ):
-                return
+                return TurnOutcome.SILENT
 
-        await runtime.send_llm_request(
+        outcome = await runtime.send_llm_request(
             update, context, key, history, user_name, user_id, mentioned
         )
-        if is_group and mentioned:
+        if is_group and mentioned and outcome is TurnOutcome.DELIVERED:
             # Только подтверждённый LLM-ход означает, что Бер действительно
             # «зашла в чат». Ошибка до доставки не включает presence boost.
             state.mark_bot_present(update.effective_chat.id)
+        return outcome
 
 
 async def queue_message(
@@ -430,6 +432,7 @@ async def enqueue_buffered(
 
     async def wait_and_process(debounce: float | None = None):
         source_ids: list[int | None] = []
+        outcome = TurnOutcome.FAILED
         try:
             await asyncio.sleep(
                 runtime.message_debounce_seconds if debounce is None else debounce
@@ -440,7 +443,7 @@ async def enqueue_buffered(
                     message.get("memory_source_id")
                     for message in list(data["messages"])
                 ]
-                await runtime.process_buffered_messages(
+                outcome = await runtime.process_buffered_messages(
                     buffer_key,
                     update,
                     context,
@@ -450,12 +453,16 @@ async def enqueue_buffered(
                     user_name,
                     data["mentioned"],
                 )
-                runtime.release_memory_sources(source_ids)
         except asyncio.CancelledError:
             pass
         except Exception:
             runtime.abandon_memory_sources(source_ids)
             raise
+        else:
+            if outcome in (TurnOutcome.DELIVERED, TurnOutcome.SILENT):
+                runtime.release_memory_sources(source_ids)
+            else:
+                runtime.abandon_memory_sources(source_ids)
 
     async with _buffer_lock:
         if buffer_key in message_buffer:

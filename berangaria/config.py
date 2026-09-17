@@ -309,6 +309,7 @@ MULTI_MESSAGE_CHARS_PER_SEC = max(
 BOT_NAMES = config_yaml.get("bot_names", ["Бер", "Ber"])
 RANDOM_REPLY_CHANCE = config_yaml.get("random_reply_chance", 10)
 SUMMARY_INTERVAL = config_yaml.get("summary_interval", 10)
+SUMMARY_MAX_CHARS = max(500, _as_int(config_yaml.get("summary_max_chars", 4000), 4000))
 # Scheduled job only: skip a chat unless at least this many messages sit
 # beyond the keep window. /summarize and the 85% token path ignore this.
 SUMMARY_MIN_EXTRA = max(

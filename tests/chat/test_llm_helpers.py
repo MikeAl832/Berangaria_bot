@@ -146,6 +146,28 @@ def test_markdown_html_link():
     assert markdown_to_html("[t](http://x.io)") == '<a href="http://x.io">t</a>'
 
 
+def test_markdown_html_link_escapes_url_quotes_without_double_escaping():
+    text = '[t](https://example.org/?q="word"&page=1)'
+
+    assert markdown_to_html(text) == (
+        '<a href="https://example.org/?q=&quot;word&quot;&amp;page=1">t</a>'
+    )
+
+
+def test_markdown_html_preserves_quotes_outside_link_url():
+    text = '"text" ["label"](https://example.org/) `"code"`'
+
+    assert markdown_to_html(text) == (
+        '"text" <a href="https://example.org/">"label"</a> <code>"code"</code>'
+    )
+
+
+def test_markdown_html_link_preserves_literal_entity_in_url():
+    assert markdown_to_html('[t](https://example.org/?q=&quot;)') == (
+        '<a href="https://example.org/?q=&amp;quot;">t</a>'
+    )
+
+
 def test_markdown_html_italic_not_inside_word():
     # *text* внутри слова не превращается в курсив
     assert markdown_to_html("a*b*c") == "a*b*c"

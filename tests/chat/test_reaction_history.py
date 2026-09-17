@@ -86,6 +86,51 @@ def test_tail_reaction_event_preserves_rendered_provider_prefix():
     assert "давно отправленный ответ" in after[-1]["content"]
 
 
+def test_reaction_on_sent_bubble_row_reports_the_exact_bubble():
+    target = {
+        "role": "assistant",
+        "content": "первый\nвторой",
+        "mid": 76,
+        "provider_sent": True,
+        "telegram_messages": [
+            {"mid": 76, "text": "первый"},
+            {"mid": 77, "text": "второй"},
+        ],
+    }
+    history = [target]
+    before = copy.deepcopy(target)
+
+    assert _record(history, added=["🔥"])
+    assert target == before
+    assert history[-1]["target_mid"] == 77
+    assert history[-1]["target_excerpt"] == "второй"
+    assert _record(history, removed=["🔥"])
+    assert history[-1]["removed"] == ["🔥"]
+    assert history[-1]["target_excerpt"] == "второй"
+
+
+def test_reaction_on_unsent_bubble_row_stays_in_place():
+    target = {
+        "role": "assistant",
+        "content": "первый\nвторой",
+        "mid": 76,
+        "provider_sent": False,
+        "telegram_messages": [
+            {"mid": 76, "text": "первый"},
+            {"mid": 77, "text": "второй"},
+        ],
+    }
+    history = [target]
+
+    assert _record(history, added=["🔥"])
+    assert len(history) == 1
+    assert history[0]["incoming_reactions"] == [{
+        "from": "Миша",
+        "from_id": 42,
+        "emoji": "🔥",
+    }]
+
+
 def test_first_provider_send_boundary_is_persisted(isolated_db):
     key = "private_42"
     history = [

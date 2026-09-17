@@ -535,7 +535,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
 async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool):
-    await message_queue.process_buffered_messages(
+    return await message_queue.process_buffered_messages(
         buffer_key,
         update,
         context,
@@ -746,33 +746,34 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                     return
 
     key = get_history_key(chat_id, not is_group, user_id)
-    async with get_history_lock(key):
-        history = histories.get(key) or []
-        result = apply_user_message_edit(
-            history,
-            message_id=edited.message_id,
-            new_text=new_text,
-            is_group=is_group,
-        )
-        if result == "updated":
-            histories[key] = history
-            touch_activity(key)
-            save_history(key)
-            if new_text.strip():
-                state.update_memory_source_text(
-                    scope=key,
-                    message_id=edited.message_id,
-                    text=new_text,
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            history = histories.get(key) or []
+            result = apply_user_message_edit(
+                history,
+                message_id=edited.message_id,
+                new_text=new_text,
+                is_group=is_group,
+            )
+            if result == "updated":
+                histories[key] = history
+                touch_activity(key)
+                save_history(key)
+                if new_text.strip():
+                    state.update_memory_source_text(
+                        scope=key,
+                        message_id=edited.message_id,
+                        text=new_text,
+                    )
+                logger.info(
+                    f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
+                    f"→ '{new_text[:40]}'"
                 )
-            logger.info(
-                f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
-                f"→ '{new_text[:40]}'"
-            )
-        elif result == "frozen":
-            logger.info(
-                f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
-                f"msg_id={edited.message_id} key={key}"
-            )
+            elif result == "frozen":
+                logger.info(
+                    f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
+                    f"msg_id={edited.message_id} key={key}"
+                )
 
 
 async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -872,7 +873,13 @@ def _record_incoming_reaction_change(
             message
             for message in history
             if message.get("role") == "assistant"
-            and message.get("mid") == target_mid
+            and (
+                message.get("mid") == target_mid
+                or any(
+                    bubble.get("mid") == target_mid
+                    for bubble in message.get("telegram_messages", [])
+                )
+            )
         ),
         None,
     )
@@ -882,8 +889,12 @@ def _record_incoming_reaction_change(
     # Missing means legacy data. Treat it as already sent: changing such a row
     # could invalidate a provider-side prompt cache created before this field
     # existed.
+    bubbles = target.get("telegram_messages", [])
     if target.get("provider_sent", True) is not False:
-        raw_quote = target.get("content")
+        raw_quote = next(
+            (bubble.get("text") for bubble in bubbles if bubble.get("mid") == target_mid),
+            target.get("content"),
+        )
         quote = raw_quote.strip() if isinstance(raw_quote, str) else ""
         if len(quote) > 40:
             quote = quote[:40] + "…"
