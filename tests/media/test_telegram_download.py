@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -264,6 +265,7 @@ def test_shutdown_closes_once():
     asyncio.run(run())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="session file mode 0o600 is Unix-only")
 @pytest.mark.parametrize('authorized', [True, False])
 @pytest.mark.parametrize('session_name', ['media.session', 'media'])
 def test_bot_session_authenticates_without_interactive_login(monkeypatch, tmp_path, authorized, session_name):

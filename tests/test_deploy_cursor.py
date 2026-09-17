@@ -6,6 +6,11 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="deploy-cursor.sh is a bash production-host check",
+)
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "deploy-cursor.sh"
 SHA = "a" * 40
