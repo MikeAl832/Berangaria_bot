@@ -166,6 +166,8 @@ def test_memory_worker_starts_after_buffered_turn_finishes(monkeypatch):
         state.message_buffer["7_42"]["messages"].append(
             {"memory_source_id": 18}
         )
+        from berangaria.chat.turn_outcome import TurnOutcome
+        return TurnOutcome.DELIVERED
 
     monkeypatch.setattr(handlers, "process_buffered_messages", finish_turn)
     message = SimpleNamespace(

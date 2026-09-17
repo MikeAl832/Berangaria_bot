@@ -3,6 +3,7 @@ import copy
 import logging
 
 from berangaria.chat import llm_client
+from berangaria.chat.turn_outcome import TurnOutcome
 from berangaria.memory import store as memory_store
 import pytest
 from berangaria.core import state
@@ -134,10 +135,11 @@ def test_ambient_empty_reply_stays_silent_without_retry(monkeypatch, tmp_path):
     state.histories[key] = history
     bot = _SuccessfulBot()
 
-    asyncio.run(llm_client.send_llm_request(
+    outcome = asyncio.run(llm_client.send_llm_request(
         _Update(), _Context(bot), key, history, "Миша", 1, False,
     ))
 
+    assert outcome is TurnOutcome.SILENT
     assert len(posts) == 1
     assert posts[0]["messages"][-1]["role"] != "system"
     assert [entry["role"] for entry in history] == ["user"]
@@ -179,13 +181,115 @@ def test_api_400_preserves_persisted_history(monkeypatch, tmp_path):
     state.init_db()
     state.save_history(key)
 
-    asyncio.run(llm_client.send_llm_request(
+    outcome = asyncio.run(llm_client.send_llm_request(
         _Update(), _Context(_FailingBot()), key, history, "Миша", 1, True,
     ))
 
+    assert outcome is TurnOutcome.FAILED
+    assert [entry["role"] for entry in history] == ["user"]
     state.histories.clear()
     state.load_all_histories()
     assert state.histories[key] == history
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_terminal_http_error_returns_failed_without_assistant(
+    monkeypatch, isolated_db, status_code,
+):
+    posts = []
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        assert len(sleeps) < 3, "transport retry budget was reset"
+
+    monkeypatch.setattr(llm_client, "MAX_API_RETRIES", 3)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(
+        llm_client.httpx, "AsyncClient",
+        _sequenced_client(posts, [_Response(status_code)]),
+    )
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories[key] = history
+    update = _Update()
+
+    outcome = asyncio.run(llm_client.send_llm_request(
+        update, _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    assert outcome is TurnOutcome.FAILED
+    assert len(posts) == 3
+    assert len(sleeps) == 2
+    assert len(update.message.replies) == 1
+    assert [entry["role"] for entry in history] == ["user"]
+
+
+@pytest.mark.parametrize("body", [
+    "not JSON", "null", "[]", "42", "{}",
+    '{"choices": []}', '{"choices": {"0": {}}}',
+    '{"choices": [null]}', '{"choices": [[]]}',
+    '{"choices": [{}]}', '{"choices": [{"message": null}]}',
+    '{"choices": [{"message": []}]}',
+])
+def test_malformed_http_200_exhausts_retry_budget(monkeypatch, isolated_db, body):
+    posts = []
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        # Fail fast even if regression reintroduces the unbounded 200 loop.
+        assert len(sleeps) < 3, "malformed response reset the retry budget"
+
+    monkeypatch.setattr(llm_client, "MAX_API_RETRIES", 3)
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(
+        llm_client.httpx, "AsyncClient",
+        _sequenced_client(posts, [llm_client.httpx.Response(200, text=body)]),
+    )
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories[key] = history
+    update = _Update()
+
+    outcome = asyncio.run(llm_client.send_llm_request(
+        update, _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
+    ))
+
+    assert outcome is TurnOutcome.FAILED
+    assert len(posts) == 3
+    assert sleeps == [1, 2]
+    assert len(update.message.replies) == 1
+    assert [entry["role"] for entry in history] == ["user"]
+
+
+def test_direct_empty_reply_returns_failed(monkeypatch, isolated_db):
+    posts = []
+    monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
+    monkeypatch.setattr(memory_store, "memory", None)
+    monkeypatch.setattr(
+        llm_client.httpx, "AsyncClient",
+        _sequenced_client(posts, [_Response(200, {
+            "choices": [{"finish_reason": "stop", "message": {"content": ""}}],
+        })]),
+    )
+    key = "private_1"
+    history = [{"role": "user", "content": "[Message: привет]", "sid": 1, "mid": 10}]
+    state.histories[key] = history
+    bot = _SuccessfulBot()
+
+    outcome = asyncio.run(llm_client.send_llm_request(
+        _Update(), _Context(bot), key, history, "Миша", 1, True,
+    ))
+
+    assert outcome is TurnOutcome.FAILED
+    assert len(posts) == 1
+    assert bot.messages == []
+    assert [entry["role"] for entry in history] == ["user"]
 
 
 def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_path):
@@ -307,10 +411,11 @@ def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path, caplog):
     }]
     state.histories[key] = history
 
-    asyncio.run(llm_client.send_llm_request(
+    outcome = asyncio.run(llm_client.send_llm_request(
         _Update(), _Context(_SuccessfulBot()), key, history, "Миша", 1, True,
     ))
 
+    assert outcome is TurnOutcome.DELIVERED
     overview = analytics_store.get_overview("all", chat_id=100)
     assert overview["requests"] == 1
     assert overview["cost_microusd"] == 321

@@ -535,7 +535,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЛОГИКА СКЛЕИВАНИЯ СООБЩЕНИЙ ==========
 
 async def process_buffered_messages(buffer_key: str, update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, is_group: bool, user_id: int, user_name: str, mentioned: bool):
-    await message_queue.process_buffered_messages(
+    return await message_queue.process_buffered_messages(
         buffer_key,
         update,
         context,
