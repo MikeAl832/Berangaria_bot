@@ -133,7 +133,7 @@ Bandit may report intentional low-severity best-effort exception handling and no
 
 ## Configuration and deployment
 
-- `config.yaml` is the runtime source of non-secret defaults. Environment variables override secrets and selected deployment paths.
+- `config.yaml` is the runtime source of non-secret defaults. Environment variables override secrets and selected deployment paths. Chat `model` and `price_*` have no code fallback: missing keys fail startup. Changing the slug also updates those prices, `test_shipped_chat_model_is_muse_spark_with_low_reasoning`, and the operator docs.
 - Chat Completions go through OpenRouter only (`OPENROUTER_API_KEY`). Do not add a second provider key or a direct-xAI request path.
 - The first entry in `allowed_users` is the authenticated owner. Reuse that value through `OWNER_USER_ID`; do not duplicate it in another setting. Only server-generated `[Owner: Name]` metadata may identify the owner, and the owner bypasses user/group allowlists.
 - `admin_alert_chat_id` is one integer Telegram chat ID or `null`, not a list. `null` routes alerts to `OWNER_USER_ID`; a configured ID overrides that destination.

@@ -95,7 +95,7 @@ generation_params:
 ```
 
 **Parameters:**
-- `model`: Chat Completions model id used for chat and summarization (shipped: `meta/muse-spark-1.3-contributor`). Same checkpoint as standard Spark 1.3; Meta may use prompts and completions for training.
+- `model`: Chat Completions model id used for chat and summarization (shipped: `meta/muse-spark-1.3-contributor`). Required; a missing or empty value fails startup. Same checkpoint as standard Spark 1.3; Meta may use prompts and completions for training. Changing this slug also updates `price_*` below, `test_shipped_chat_model_is_muse_spark_with_low_reasoning`, `AGENTS.md`, `README.md`, and `docs/openrouter-chat.md`.
 - `chat_api_url`: OpenRouter Chat Completions endpoint (`CHAT_API_URL` env override)
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
@@ -401,12 +401,14 @@ price_completion: 0.20
 - `price_prompt_cache_write`: Conservative fallback for cache-write tokens when no separate list price is published
 - `price_completion`: Output tokens
 
-Shipped values are the current OpenRouter prices for `meta/muse-spark-1.3-contributor` on Meta.
+These four keys are required; there is no code fallback. Shipped values are the current
+OpenRouter prices for `meta/muse-spark-1.3-contributor` on Meta.
 The published price lists regular input, cached input, and output; the fallback therefore
 treats any separately reported cache write as regular input.
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate,
 and the log labels which source was used.
-Update the yaml prices when the model slug or exclusive discount changes.
+Update the yaml prices when the model slug or exclusive discount changes. The pin test
+`test_shipped_chat_model_is_muse_spark_with_low_reasoning` must match.
 
 ## Memory Configuration
 

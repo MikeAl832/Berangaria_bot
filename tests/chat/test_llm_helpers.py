@@ -863,6 +863,7 @@ def test_usage_log_labels_fallback_estimate_for_invalid_provider_cost(caplog):
 
 
 def test_shipped_chat_model_is_muse_spark_with_low_reasoning():
+    """Lock the shipped OpenRouter slug, prices, and sampling. Update with config.yaml."""
     assert MODEL == "meta/muse-spark-1.3-contributor"
     assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0

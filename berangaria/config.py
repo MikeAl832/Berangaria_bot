@@ -73,6 +73,25 @@ def _str_setting(env_name: str, yaml_key: str, default: str) -> str:
         return value
     return default
 
+
+def _required_str(mapping: dict[str, object], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} должен быть непустой строкой в config.yaml")
+    return value.strip()
+
+
+def _required_price(mapping: dict[str, object], key: str) -> float:
+    if key not in mapping:
+        raise ValueError(f"{key} не задан в config.yaml")
+    value = mapping[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} должен быть неотрицательным числом в config.yaml")
+    number = float(value)
+    if number < 0:
+        raise ValueError(f"{key} должен быть неотрицательным числом в config.yaml")
+    return number
+
 # ========================================
 # 🔑 API КЛЮЧИ
 # ========================================
@@ -95,7 +114,7 @@ CHAT_API_URL = _str_setting(
     "chat_api_url",
     "https://openrouter.ai/api/v1/chat/completions",
 )
-MODEL = config_yaml.get("model", "meta/muse-spark-1.3-contributor")
+MODEL = _required_str(config_yaml, "model")
 CHAT_PROVIDER = "meta"
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
@@ -474,11 +493,10 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match the current OpenRouter prices for Muse Spark 1.3 Contributor.
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.10)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.002)
-PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.10)
-PRICE_COMPLETION = config_yaml.get("price_completion", 0.20)
+PRICE_PROMPT_CACHE_MISS = _required_price(config_yaml, "price_prompt_cache_miss")
+PRICE_PROMPT_CACHE_HIT = _required_price(config_yaml, "price_prompt_cache_hit")
+PRICE_PROMPT_CACHE_WRITE = _required_price(config_yaml, "price_prompt_cache_write")
+PRICE_COMPLETION = _required_price(config_yaml, "price_completion")
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:

@@ -7,6 +7,9 @@
 # Суммаризация шлёт high отдельно — это сжатие фактов, не болтовня.
 # Память (Mem0 extractor/verifier) по-прежнему DeepSeek.
 # session_id + provider.only=[meta] держат один endpoint; фолбэки запрещены.
+# Смена slug: price_* ниже в этом файле, pin-тест
+# test_shipped_chat_model_is_muse_spark_with_low_reasoning, затем
+# AGENTS.md, README.md, docs/configuration.md, docs/openrouter-chat.md.
 "model": "meta/muse-spark-1.3-contributor"
 "chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
 "max_context_tokens": 32000               # Максимальная история контекста
