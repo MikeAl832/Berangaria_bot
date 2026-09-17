@@ -1,8 +1,9 @@
 # OpenRouter chat route
 
 Один шлюз: `https://openrouter.ai/api/v1/chat/completions`, модель
-`meta/muse-spark-1.3`, хостер Meta, ключ `OPENROUTER_API_KEY`.
-Другого chat-шлюза в коде нет.
+`meta/muse-spark-1.3-contributor`, хостер Meta, ключ `OPENROUTER_API_KEY`.
+Другого chat-шлюза в коде нет. Contributor — тот же checkpoint, что
+standard Spark 1.3; промпты и ответы могут идти в обучение моделей Meta.
 
 Модель поддерживает tools, structured outputs, `temperature` и
 настраиваемый reasoning. Reasoning обязателен; обычный чат
@@ -14,7 +15,7 @@
 
 ```json
 {
-  "model": "meta/muse-spark-1.3",
+  "model": "meta/muse-spark-1.3-contributor",
   "session_id": "berangaria-<sha256(history_key)>",
   "provider": {
     "only": ["meta"],
@@ -79,10 +80,10 @@ tool-round. В теле и заголовке используется одно 
 | один `session_id` на history key | новый id на ход или tool-round |
 | `reasoning.effort: low` в чате | `none`, который Muse не поддерживает |
 | `high` только в суммаризации | поднимать весь обычный чат до `medium`/`high` |
-| обычный `meta/muse-spark-1.3` | `-contributor` без отдельного решения о data policy |
+| `meta/muse-spark-1.3-contributor` (явный data-policy opt-in) | standard `meta/muse-spark-1.3` без решения вернуть non-training тариф |
 
 Точки в коде: `berangaria/config.py` (`chat_api_headers`,
 `apply_chat_gateway`), `berangaria/chat/llm_client.py`,
 `berangaria/chat/summarization.py`.
 
-Актуальные capabilities и цены: [OpenRouter Muse Spark 1.3](https://openrouter.ai/meta/muse-spark-1.3).
+Актуальные capabilities и цены: [OpenRouter Muse Spark 1.3 Contributor](https://openrouter.ai/meta/muse-spark-1.3-contributor).

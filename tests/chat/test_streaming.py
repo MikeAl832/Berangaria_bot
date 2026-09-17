@@ -69,7 +69,7 @@ def test_stream_aggregates_reasoning_alias_without_previewing_it():
     result = asyncio.run(stream_chat_completion(
         client,
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "meta/muse-spark-1.3", "messages": []},
+        payload={"model": "meta/muse-spark-1.3-contributor", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
@@ -142,7 +142,7 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     response = _StreamResponse([
         _event({
             "id": "generation-1",
-            "model": "meta/muse-spark-1.3",
+            "model": "meta/muse-spark-1.3-contributor",
             "provider": "Meta",
             "choices": [{"delta": {
             "role": "assistant",
@@ -168,14 +168,14 @@ def test_stream_preserves_structured_reasoning_for_tool_continuity():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "meta/muse-spark-1.3", "messages": []},
+        payload={"model": "meta/muse-spark-1.3-contributor", "messages": []},
         headers={"Authorization": "Bearer test"},
         on_content=on_content,
     ))
 
     message = result.json()["choices"][0]["message"]
     assert result.json()["id"] == "generation-1"
-    assert result.json()["model"] == "meta/muse-spark-1.3"
+    assert result.json()["model"] == "meta/muse-spark-1.3-contributor"
     assert result.json()["provider"] == "Meta"
     assert "service_tier" not in result.json()
     assert message["reasoning_details"] == detail_chunks
@@ -192,7 +192,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
         "endpoints": {
             "available": [{
                 "provider": "Meta",
-                "model": "meta/muse-spark-1.3",
+                "model": "meta/muse-spark-1.3-contributor",
                 "selected": True,
             }],
         },
@@ -212,7 +212,7 @@ def test_stream_preserves_openrouter_metadata_from_terminal_chunk():
     result = asyncio.run(stream_chat_completion(
         _Client(response),
         "https://openrouter.ai/api/v1/chat/completions",
-        payload={"model": "meta/muse-spark-1.3", "messages": []},
+        payload={"model": "meta/muse-spark-1.3-contributor", "messages": []},
         headers={"X-OpenRouter-Metadata": "enabled"},
     ))
 
@@ -271,13 +271,13 @@ def test_stream_surfaces_error_without_accepting_partial_as_completion(caplog):
     response = _StreamResponse([
         _event({
             "id": "gen-context-1",
-            "model": "meta/muse-spark-1.3",
+            "model": "meta/muse-spark-1.3-contributor",
             "provider": "Meta",
             "choices": [{"delta": {"content": "частичный текст"}}],
         }),
         _event({
             "id": "gen-context-1",
-            "model": "meta/muse-spark-1.3",
+            "model": "meta/muse-spark-1.3-contributor",
             "provider": "Meta",
             "error": {
                 "code": 400,

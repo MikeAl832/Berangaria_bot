@@ -81,10 +81,10 @@ Prompt texts live separately in `berangaria/prompts.py`.
 
 ## config.yaml Parameters
 
-### Main LLM (OpenRouter → Meta Muse Spark 1.3)
+### Main LLM (OpenRouter → Meta Muse Spark 1.3 Contributor)
 
 ```yaml
-model: "meta/muse-spark-1.3"
+model: "meta/muse-spark-1.3-contributor"
 chat_api_url: "https://openrouter.ai/api/v1/chat/completions"
 max_context_tokens: 32000
 max_reply_tokens: 4096
@@ -95,7 +95,7 @@ generation_params:
 ```
 
 **Parameters:**
-- `model`: Chat Completions model id used for chat and summarization (shipped: `meta/muse-spark-1.3`)
+- `model`: Chat Completions model id used for chat and summarization (shipped: `meta/muse-spark-1.3-contributor`). Same checkpoint as standard Spark 1.3; Meta may use prompts and completions for training.
 - `chat_api_url`: OpenRouter Chat Completions endpoint (`CHAT_API_URL` env override)
 - `max_context_tokens`: Maximum conversation history size
 - `max_reply_tokens`: Maximum response length
@@ -389,10 +389,10 @@ Analytics starts after deployment of the feature; old log files and summarized h
 ### Cost Tracking
 
 ```yaml
-price_prompt_cache_miss: 1.25
-price_prompt_cache_hit: 0.15
-price_prompt_cache_write: 1.25
-price_completion: 4.25
+price_prompt_cache_miss: 0.10
+price_prompt_cache_hit: 0.002
+price_prompt_cache_write: 0.10
+price_completion: 0.20
 ```
 
 **Parameters (per 1M tokens):**
@@ -401,7 +401,7 @@ price_completion: 4.25
 - `price_prompt_cache_write`: Conservative fallback for cache-write tokens when no separate list price is published
 - `price_completion`: Output tokens
 
-Shipped values are the current OpenRouter prices for `meta/muse-spark-1.3` on Meta.
+Shipped values are the current OpenRouter prices for `meta/muse-spark-1.3-contributor` on Meta.
 The published price lists regular input, cached input, and output; the fallback therefore
 treats any separately reported cache write as regular input.
 If the provider returns `usage.cost`, that billed figure is logged instead of the estimate,
@@ -527,7 +527,7 @@ Use `/summarize` command to compress chat history immediately. Token-budget comp
 **Solutions:**
 1. Check returned `cached_tokens` and `usage.cost`; do not assume that a stable Meta route
    implies an active prompt cache
-2. Confirm the shipped `meta/muse-spark-1.3` slug, OpenRouter URL, and that
+2. Confirm the shipped `meta/muse-spark-1.3-contributor` slug, OpenRouter URL, and that
    `generation_params.reasoning.effort` is `low`
 3. Confirm requests send a stable `session_id`, `provider.only: ["meta"]`,
    `allow_fallbacks: false`, and `require_parameters: true`. The route log must report
@@ -605,7 +605,7 @@ Bot will rebuild memory from new conversations.
 
 - Qdrant runs locally (fast, no network latency)
 - Gemini embeddings are free tier
-- OpenRouter `meta/muse-spark-1.3` pinned to Meta is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
+- OpenRouter `meta/muse-spark-1.3-contributor` pinned to Meta is the shipped chat model (`temperature: 1.0`, `reasoning.effort: low`)
 
 ## Advanced Configuration
 
@@ -760,7 +760,7 @@ Berangaria_bot/
 ## References
 
 - [OpenRouter](https://openrouter.ai/docs)
-- [Muse Spark 1.3](https://openrouter.ai/meta/muse-spark-1.3)
+- [Muse Spark 1.3 Contributor](https://openrouter.ai/meta/muse-spark-1.3-contributor)
 - [OpenRouter chat route](openrouter-chat.md)
 - [DeepSeek API Docs](https://platform.deepseek.com/docs)
 - [Google AI Studio](https://aistudio.google.com)

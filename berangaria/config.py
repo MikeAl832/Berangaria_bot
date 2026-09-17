@@ -95,7 +95,7 @@ CHAT_API_URL = _str_setting(
     "chat_api_url",
     "https://openrouter.ai/api/v1/chat/completions",
 )
-MODEL = config_yaml.get("model", "meta/muse-spark-1.3")
+MODEL = config_yaml.get("model", "meta/muse-spark-1.3-contributor")
 CHAT_PROVIDER = "meta"
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
@@ -474,11 +474,11 @@ else:
 # ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# Defaults match the current OpenRouter prices for Meta Muse Spark 1.3.
-PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 1.25)
-PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.15)
-PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 1.25)
-PRICE_COMPLETION = config_yaml.get("price_completion", 4.25)
+# Defaults match the current OpenRouter prices for Muse Spark 1.3 Contributor.
+PRICE_PROMPT_CACHE_MISS = config_yaml.get("price_prompt_cache_miss", 0.10)
+PRICE_PROMPT_CACHE_HIT = config_yaml.get("price_prompt_cache_hit", 0.002)
+PRICE_PROMPT_CACHE_WRITE = config_yaml.get("price_prompt_cache_write", 0.10)
+PRICE_COMPLETION = config_yaml.get("price_completion", 0.20)
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:

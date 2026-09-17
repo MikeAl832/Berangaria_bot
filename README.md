@@ -4,7 +4,7 @@ Telegram bot with long-term memory, vision understanding, and web search capabil
 
 ## Architecture
 
-- **Main LLM**: OpenRouter `meta/muse-spark-1.3` pinned to Meta (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **Main LLM**: OpenRouter `meta/muse-spark-1.3-contributor` pinned to Meta (chat `temperature: 1.0`, `reasoning.effort: low`; summarization `high`). Same Spark 1.3 checkpoint as the standard SKU; prompts and completions may be used to train Meta models.
   - Memory extractor/verifier still uses DeepSeek v4 Flash via `API_KEY`
 - **Vision**: Google Gemini 3.5 Flash Lite (image/video/audio understanding)
 - **Embeddings**: Google Gemini Embedding v2 (memory vectors)
@@ -109,7 +109,7 @@ API keys:
 Edit `config.yaml` - see [docs/configuration.md](docs/configuration.md) for detailed options.
 
 Key settings:
-- `model`: chat model (shipped: `meta/muse-spark-1.3` on OpenRouter)
+- `model`: chat model (shipped: `meta/muse-spark-1.3-contributor` on OpenRouter)
 - `chat_api_url`: OpenRouter Chat Completions; `session_id` and `provider.only: ["meta"]` pin Meta, while fallbacks are disabled and every request requires support for all sent parameters
 - `generation_params`: normal Muse chat ships at `temperature: 1.0` and `reasoning.effort: low`; summarization uses `high`
 - `vision_mode`: enable/disable vision
@@ -254,12 +254,13 @@ Berangaria_bot/
 
 ## Cost Estimation
 
-### OpenRouter `meta/muse-spark-1.3` on Meta (per 1M tokens)
-- Regular input: $1.25
-- Cached input: $0.15
-- Cache write fallback estimate: $1.25 (no separate list price is published)
-- Output: $4.25
+### OpenRouter `meta/muse-spark-1.3-contributor` on Meta (per 1M tokens)
+- Regular input: $0.10
+- Cached input: $0.002
+- Cache write fallback estimate: $0.10 (no separate list price is published)
+- Output: $0.20
 - Provider `usage.cost` is preferred when the response includes it
+- Contributor is an explicit data-policy opt-in: Meta may use prompts and completions for training. Standard `meta/muse-spark-1.3` ($1.25 / $0.15 / $4.25) is the non-training SKU.
 
 ### DeepSeek v4 Flash (Mem0 extractor/verifier, per 1M tokens)
 - Regular input: $0.14
@@ -272,7 +273,7 @@ Berangaria_bot/
 - Files API: Free tier (20GB storage)
 
 **Model selection guide:**
-- **Muse Spark 1.3**: shipped chat model on OpenRouter through Meta (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
+- **Muse Spark 1.3 Contributor**: shipped chat model on OpenRouter through Meta (`temperature: 1.0`, `reasoning.effort: low`; summarization `high`)
 - **DeepSeek Flash**: stays on `API_KEY` for memory extraction only
 - **Gemini**: vision and embeddings only
 

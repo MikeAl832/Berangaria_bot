@@ -41,7 +41,7 @@ verbose: false
 2026-09-15 18:02:08 [INFO] 🧠 Память: найдено 17 → загружено 9 фактов (732 символов)
 2026-09-15 18:02:12 [INFO] 📊 Токены: запрос=15906 (кэш-чтение=0, кэш-запись=0), ответ=106, reasoning=56, всего=16012
 2026-09-15 18:02:12 [INFO] 💰 Стоимость запроса: $0.020333 (источник=usage.cost)
-2026-09-15 18:02:12 [INFO] 🧭 Маршрут: provider=Meta model=meta/muse-spark-1.3 session=e51b38c1b58f cache=0.0%
+2026-09-15 18:02:12 [INFO] 🧭 Маршрут: provider=Meta model=meta/muse-spark-1.3-contributor session=e51b38c1b58f cache=0.0%
 2026-09-15 18:02:18 [INFO] 🧠 Память: факт одобрен (source_id=41, scope=group_-123, key=hardware.gpu, reason=прямое самоутверждение)
 ```
 

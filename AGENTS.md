@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## Project overview
 
-Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter `meta/muse-spark-1.3` pinned to Meta (chat `reasoning.effort: low`, summarization `high`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
+Berangaria is a Python 3.11 Telegram bot built on `python-telegram-bot`. OpenRouter `meta/muse-spark-1.3-contributor` pinned to Meta (chat `reasoning.effort: low`, summarization `high`) handles chat and summarization, DeepSeek still extracts/verifies memory, Gemini handles vision/audio and embeddings, Mem0 provides long-term memory, Qdrant stores vectors, and SQLite persists conversation history and runtime settings.
 
 ## Prompt and model baseline
 

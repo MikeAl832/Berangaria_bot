@@ -863,15 +863,15 @@ def test_usage_log_labels_fallback_estimate_for_invalid_provider_cost(caplog):
 
 
 def test_shipped_chat_model_is_muse_spark_with_low_reasoning():
-    assert MODEL == "meta/muse-spark-1.3"
+    assert MODEL == "meta/muse-spark-1.3-contributor"
     assert "openrouter.ai" in CHAT_API_URL
     assert GENERATION_PARAMS.get("temperature") == 1.0
     assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
     assert bot_config.CHAT_PROVIDER == "meta"
-    assert llm_client.PRICE_PROMPT_CACHE_MISS == 1.25
-    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.15
-    assert llm_client.PRICE_PROMPT_CACHE_WRITE == 1.25
-    assert llm_client.PRICE_COMPLETION == 4.25
+    assert llm_client.PRICE_PROMPT_CACHE_MISS == 0.10
+    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.002
+    assert llm_client.PRICE_PROMPT_CACHE_WRITE == 0.10
+    assert llm_client.PRICE_COMPLETION == 0.20
     assert "top_p" not in GENERATION_PARAMS
     assert "top_k" not in GENERATION_PARAMS
     assert "min_p" not in GENERATION_PARAMS
