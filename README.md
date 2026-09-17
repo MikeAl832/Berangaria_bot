@@ -130,6 +130,11 @@ python -m berangaria
 Windows users can use `scripts\start.bat`, Linux users `scripts/start.sh`.
 Both resolve the project root themselves, so they work from any directory.
 
+Telegram edits update messages still in the debounce buffer immediately. Edits to
+history wait for the current chat turn to finish and apply only if the message
+has not been sent to the provider. Already-sent history stays unchanged. Waiting
+for a turn does not block incoming updates in other chats.
+
 ## How It Works
 
 ### Memory System

@@ -746,33 +746,34 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                     return
 
     key = get_history_key(chat_id, not is_group, user_id)
-    async with get_history_lock(key):
-        history = histories.get(key) or []
-        result = apply_user_message_edit(
-            history,
-            message_id=edited.message_id,
-            new_text=new_text,
-            is_group=is_group,
-        )
-        if result == "updated":
-            histories[key] = history
-            touch_activity(key)
-            save_history(key)
-            if new_text.strip():
-                state.update_memory_source_text(
-                    scope=key,
-                    message_id=edited.message_id,
-                    text=new_text,
+    async with get_turn_lock(key):
+        async with get_history_lock(key):
+            history = histories.get(key) or []
+            result = apply_user_message_edit(
+                history,
+                message_id=edited.message_id,
+                new_text=new_text,
+                is_group=is_group,
+            )
+            if result == "updated":
+                histories[key] = history
+                touch_activity(key)
+                save_history(key)
+                if new_text.strip():
+                    state.update_memory_source_text(
+                        scope=key,
+                        message_id=edited.message_id,
+                        text=new_text,
+                    )
+                logger.info(
+                    f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
+                    f"→ '{new_text[:40]}'"
                 )
-            logger.info(
-                f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
-                f"→ '{new_text[:40]}'"
-            )
-        elif result == "frozen":
-            logger.info(
-                f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
-                f"msg_id={edited.message_id} key={key}"
-            )
+            elif result == "frozen":
+                logger.info(
+                    f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
+                    f"msg_id={edited.message_id} key={key}"
+                )
 
 
 async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
