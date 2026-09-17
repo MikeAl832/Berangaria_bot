@@ -479,7 +479,12 @@ Request cost: $0.000285
 - A slot is an opportunity: skip the chat if fewer than `summary_min_extra` messages sit beyond the keep window
 - If someone wrote within `summary_quiet_seconds`, postpone that chat once by the same window; still talking after that → wait for the next hour
 - Keeps the last `summary_interval` messages intact
-- Compresses older history into a brief summary
+- Rewrites older history (including the previous summary) as working context, not an event archive. Unfinished topics, relevant decisions and recurring conversational context take priority; stale forecasts, closed episodes and one-off media/link inventories should be dropped.
+- Recent retained messages are also sent as relevance context, separately labelled and not to be repeated in the summary. Provider tool transcripts, reasoning and structured events are excluded.
+- `summary_max_chars` caps the stored summary body (default `4000`, minimum `500`). The prompt requests this budget; overlong output is cut at a nearby boundary. The separate API budget remains 8192 tokens to accommodate high-effort reasoning.
+- Recognizable credential-bearing lines (labelled passwords/API keys, credential triples and `otpauth://` URLs) are redacted before summarization and before storage. This is a limited heuristic, not a complete secret detector. The retained recent history, existing database and old logs are not scrubbed by this change.
+- Summary contents are no longer emitted by the summarizer's debug log. Other full-payload logging may still contain conversation data, including summaries; restrict access to logs.
+- Selection quality depends on the model and requires real-dialogue comparison; unit tests verify request wiring, filtering and history preservation, not semantic quality.
 - Uses the same chat model with `reasoning.effort: high` (not the chat `low`);
   long client timeout and a larger `max_tokens` budget so CoT does not starve
   the final summary
