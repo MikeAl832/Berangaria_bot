@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -12,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 # How often the heartbeat reminds us the poller is still alive.
 HEARTBEAT_INTERVAL_SECONDS = 600.0
+# Owner/log signal when getUpdates has been silent this long while the process is up.
+STALE_UPDATE_SECONDS = 30 * 60
+STALE_ALERT_COOLDOWN_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -101,7 +105,13 @@ def snapshot() -> PollingSnapshot:
 
 
 def format_context(error: BaseException | None = None) -> str:
-    """Compact one-line context safe for logs and owner alerts (no secrets)."""
+    """Compact one-line context for logs (no secrets).
+
+    ``host=`` / ``pid=`` / ``bot_id=`` identify *this* process — the one that
+    observed the event — not the holder of a competing getUpdates long-poll.
+    Volatile fields (uptime, since_update, updates) belong in log lines and
+    alert ``detail``, never in the owner-alert fingerprint.
+    """
     snap = snapshot()
     uptime = (
         f"{snap.uptime_seconds:.0f}s"
@@ -131,13 +141,46 @@ def format_context(error: BaseException | None = None) -> str:
     )
 
 
-async def polling_heartbeat_loop(sleep=None) -> None:
-    """Periodic INFO so a quiet night still leaves a trail in bot.log."""
-    sleeper = sleep
-    if sleeper is None:
-        import asyncio
+async def polling_heartbeat_loop(sleep=None, bot=None, *, notify=None) -> None:
+    """Periodic INFO so a quiet night still leaves a trail in bot.log.
 
-        sleeper = asyncio.sleep
+    After ``STALE_UPDATE_SECONDS`` without an update this process has already
+    seen, emit a WARNING and a throttled owner alert. Silence before the first
+    update is not this signal — that is still ``since_update=never``.
+    """
+    sleeper = sleep if sleep is not None else asyncio.sleep
+    notifier = notify
     while True:
         await sleeper(HEARTBEAT_INTERVAL_SECONDS)
-        logger.info("📡 Polling heartbeat: %s", format_context())
+        try:
+            ctx = format_context()
+            logger.info("📡 Polling heartbeat: %s", ctx)
+            since = snapshot().seconds_since_update
+            if since is None or since < STALE_UPDATE_SECONDS:
+                continue
+            logger.warning(
+                "📡 Polling stalled: нет getUpdates уже %.0fс (порог %.0fс) | %s",
+                since,
+                STALE_UPDATE_SECONDS,
+                ctx,
+            )
+            if bot is None:
+                continue
+            if notifier is None:
+                from berangaria.core import alerts as alerts_mod
+
+                notifier = alerts_mod.notify_owner
+            await notifier(
+                bot,
+                category="Telegram polling stalled",
+                message=(
+                    "Нет входящих getUpdates больше 30 мин, процесс жив. "
+                    "Возможен второй poller или зависший long-poll."
+                ),
+                detail=ctx,
+                cooldown_seconds=STALE_ALERT_COOLDOWN_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Polling heartbeat failed")

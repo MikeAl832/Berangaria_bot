@@ -437,7 +437,9 @@ def main():
     summarization_task = loop.create_task(periodic_summarization(app.bot))
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
     memory_flush_task = loop.create_task(periodic_memory_flush(app.bot))
-    polling_heartbeat_task = loop.create_task(polling_diagnostics.polling_heartbeat_loop())
+    polling_heartbeat_task = loop.create_task(
+        polling_diagnostics.polling_heartbeat_loop(bot=app.bot)
+    )
     # User bridge is started from post_init (after ExtBot.initialize). The
     # long-lived supervisor lives inside the user_bridge module and is stopped
     # explicitly below. Missing secrets / Telethon errors never block polling.

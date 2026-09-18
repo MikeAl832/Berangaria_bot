@@ -101,6 +101,16 @@ def _ensure_log_parent(log_file: str) -> None:
         parent.mkdir(parents=True, exist_ok=True)
 
 
+def flush_log_handlers() -> None:
+    """Push buffered records to files/stderr before a hard process exit."""
+    root = logging.getLogger()
+    for handler in root.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            continue
+
+
 def setup_logging(
     level: int = logging.INFO,
     log_file: str = "bot.log",

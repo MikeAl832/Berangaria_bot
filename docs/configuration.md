@@ -751,6 +751,8 @@ Berangaria_bot/
 │   ├── core/state.py                # In-memory and SQLite state
 │   ├── core/utils.py                # Helper functions
 │   ├── core/logging_setup.py        # Logging configuration
+│   ├── core/polling_diagnostics.py  # getUpdates identity, heartbeat, Conflict context
+│   ├── core/alerts.py               # Throttled owner DMs (fingerprint ignores volatile detail)
 │   ├── chat/handlers.py             # Telegram event handlers
 │   ├── chat/message_queue.py        # Debounce, history commit, turn dispatch
 │   ├── chat/media_handlers.py       # Albums and Telegram media processing

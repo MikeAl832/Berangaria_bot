@@ -34,37 +34,57 @@ async def notify_owner(
     category: str,
     message: str,
     error: BaseException | None = None,
+    detail: str | None = None,
+    cooldown_seconds: float | None = None,
 ) -> bool:
-    """Persist and send a deduplicated critical alert without raising outward."""
+    """Persist and send a deduplicated critical alert without raising outward.
+
+    ``message`` (plus the error type/text) is the cooldown fingerprint.
+    ``detail`` is appended to the stored row and owner DM only — keep volatile
+    fields such as uptime/since_update/updates there, not in ``message``.
+    """
     clean_message = " ".join(str(message).split())[:1000] or "Неизвестная ошибка"
     if error is not None:
         error_text = " ".join(str(error).split())
         if error_text and error_text not in clean_message:
             clean_message = f"{clean_message}: {error_text}"[:1000]
     fingerprint = _fingerprint(category, clean_message, error)
-    analytics_store.record_alert(
+    stored_message = clean_message
+    extra = " ".join(str(detail).split()) if detail else ""
+    if extra:
+        stored_message = f"{clean_message} [{extra}]"[:1000]
+    persisted = analytics_store.record_alert(
         category=category,
         fingerprint=fingerprint,
-        message=clean_message,
+        message=stored_message,
     )
+    if not persisted:
+        logger.error(
+            "Критический алерт не записан в analytics_alerts: category=%s fingerprint=%s",
+            category,
+            fingerprint,
+        )
 
     destination = get_alert_chat_id()
     if destination is None or bot is None:
         return False
 
     now = time.time()
+    cooldown = (
+        ALERT_COOLDOWN_SECONDS if cooldown_seconds is None else float(cooldown_seconds)
+    )
     alert = _alert_state.setdefault(
         fingerprint,
         {"last_attempt": 0.0, "suppressed": 0},
     )
     last_attempt = float(alert["last_attempt"])
-    if now - last_attempt < ALERT_COOLDOWN_SECONDS:
+    if now - last_attempt < cooldown:
         alert["suppressed"] = int(alert["suppressed"]) + 1
         return False
 
     suppressed = int(alert["suppressed"])
     suffix = f"\nПовторов подавлено: {suppressed}" if suppressed else ""
-    text = f"⚠️ {category}\n{clean_message}{suffix}"
+    text = f"⚠️ {category}\n{stored_message}{suffix}"
     alert["last_attempt"] = now
     alert["suppressed"] = 0
     try:

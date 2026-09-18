@@ -22,6 +22,7 @@ from berangaria.core.state import (
 from berangaria.core import state
 from berangaria.core import alerts
 from berangaria.core import polling_diagnostics
+from berangaria.core.logging_setup import flush_log_handlers
 from berangaria.chat.llm_client import summarize_history, send_llm_request
 from berangaria.chat import media_handlers
 from berangaria.chat import message_queue
@@ -1081,26 +1082,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # wedged while background tasks still look "alive". Exit so Docker's
     # restart:always brings up a clean poller.
     if isinstance(err, Conflict):
-        ctx = polling_diagnostics.format_context(err)
-        logger.critical(
-            "Telegram Conflict (другой getUpdates на этом токене): %s | %s | polling=%s "
-            "— выходим для рестарта",
-            err,
-            ctx,
-            polling_path,
-            exc_info=err,
+        await _exit_on_getupdates_conflict(
+            context.bot, err, polling_path=polling_path
         )
-        await alerts.notify_owner(
-            context.bot,
-            category="Telegram Conflict",
-            message=(
-                "Другой getUpdates держит токен бота. Процесс выходит; "
-                f"Docker должен поднять polling заново. [{ctx}]"
-            ),
-            error=err,
-        )
-        await asyncio.sleep(1.0)
-        os._exit(1)
         return
 
     logger.error(
@@ -1122,3 +1106,48 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message=str(err)[:500] if err is not None else "unknown",
         error=err if isinstance(err, BaseException) else None,
     )
+
+
+_CONFLICT_OWNER_MESSAGE = (
+    "Другой getUpdates держит токен бота. Процесс выходит; "
+    "Docker должен поднять polling заново."
+)
+
+
+async def _exit_on_getupdates_conflict(bot, err: Conflict, *, polling_path: bool) -> None:
+    """Log, notify, then kill the process even if the error-handler task is cancelled.
+
+    PTB schedules ``process_error`` as a task from the polling retry loop. A
+    second Conflict (or task cancellation between notify and ``os._exit``)
+    must not leave this poller running. ``host=`` in the log/detail is this
+    process — who caught HTTP 409 — not the other getUpdates holder.
+    """
+    ctx = polling_diagnostics.format_context(err)
+    logger.critical(
+        "Telegram Conflict (другой getUpdates на этом токене): %s | %s | polling=%s "
+        "— выходим для рестарта. host= — кто поймал HTTP 409, не держатель другого poll.",
+        err,
+        ctx,
+        polling_path,
+        exc_info=err,
+    )
+    flush_log_handlers()
+    try:
+        await asyncio.wait_for(
+            alerts.notify_owner(
+                bot,
+                category="Telegram Conflict",
+                message=_CONFLICT_OWNER_MESSAGE,
+                error=err,
+                detail=ctx,
+            ),
+            timeout=8.0,
+        )
+        await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        logger.critical("Conflict handler cancelled; всё равно выходим | %s", ctx)
+    except Exception:
+        logger.exception("Conflict notify не удался; всё равно выходим | %s", ctx)
+    finally:
+        flush_log_handlers()
+        os._exit(1)
