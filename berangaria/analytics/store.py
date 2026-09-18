@@ -224,6 +224,10 @@ def record_llm_usage(
 
 def record_alert(*, category: str, fingerprint: str, message: str) -> bool:
     if not _ready():
+        logger.error(
+            "Аналитика: пропуск алерта — схема не готова (category=%s)",
+            category,
+        )
         return False
     try:
         state._db_execute(
@@ -233,7 +237,11 @@ def record_alert(*, category: str, fingerprint: str, message: str) -> bool:
         )
         return True
     except Exception as exc:
-        logger.warning("Аналитика: не удалось записать критический алерт: %s", exc)
+        logger.error(
+            "Аналитика: не удалось записать критический алерт: %s",
+            exc,
+            exc_info=True,
+        )
         return False
 
 

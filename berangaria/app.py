@@ -314,7 +314,12 @@ async def periodic_memory_flush(bot=None):
 
 def build_telegram_application() -> Application:
     """Use Telegram's cloud Bot API for updates and outgoing messages."""
-    # Leave enough time for outgoing media uploads and slow Telegram responses.
+    # PTB keeps two HTTPX clients. `.read_timeout` / `.connect_timeout` apply
+    # only to sendMessage/getFile. getUpdates has its own client whose default
+    # read slack is 5s; PTB adds that to the 10s long-poll. From this host
+    # (AWS us-west-2) Telegram DC RTT already exceeded 5s for getFile (#15).
+    # A TimedOut getUpdates retries immediately while Telegram still holds the
+    # previous long-poll → HTTP 409 Conflict. Match the outgoing budget.
     builder = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
@@ -323,6 +328,10 @@ def build_telegram_application() -> Application:
         .write_timeout(60.0)
         .pool_timeout(5.0)
         .media_write_timeout(120.0)
+        .get_updates_connect_timeout(10.0)
+        .get_updates_read_timeout(60.0)
+        .get_updates_write_timeout(60.0)
+        .get_updates_pool_timeout(5.0)
         .post_init(_telegram_post_init)
         .post_shutdown(stop_media_downloader)
     )
@@ -437,7 +446,9 @@ def main():
     summarization_task = loop.create_task(periodic_summarization(app.bot))
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
     memory_flush_task = loop.create_task(periodic_memory_flush(app.bot))
-    polling_heartbeat_task = loop.create_task(polling_diagnostics.polling_heartbeat_loop())
+    polling_heartbeat_task = loop.create_task(
+        polling_diagnostics.polling_heartbeat_loop(bot=app.bot)
+    )
     # User bridge is started from post_init (after ExtBot.initialize). The
     # long-lived supervisor lives inside the user_bridge module and is stopped
     # explicitly below. Missing secrets / Telethon errors never block polling.

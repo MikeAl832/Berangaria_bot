@@ -48,3 +48,72 @@ def test_heartbeat_emits_info(monkeypatch, caplog):
 
     assert sleeps[0] == pd.HEARTBEAT_INTERVAL_SECONDS
     assert any("Polling heartbeat" in r.message for r in caplog.records)
+    assert not any("Polling stalled" in r.message for r in caplog.records)
+
+
+def test_heartbeat_warns_when_updates_are_stale(monkeypatch, caplog):
+    sleeps = []
+    clock = [1_000.0]
+    alerts_sent = []
+    monkeypatch.setattr(pd.time, "time", lambda: clock[0])
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        clock[0] += pd.STALE_UPDATE_SECONDS + 5
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError()
+
+    async def fake_notify(bot, *, category, message, error=None, **kwargs):
+        alerts_sent.append(category)
+        return True
+
+    pd.mark_started(bot_id=42)
+    pd.mark_update_received()
+    with caplog.at_level(logging.WARNING):
+        try:
+            asyncio.run(
+                pd.polling_heartbeat_loop(
+                    sleep=fake_sleep,
+                    bot=object(),
+                    notify=fake_notify,
+                )
+            )
+        except asyncio.CancelledError:
+            pass
+
+    assert any("Polling stalled" in r.message for r in caplog.records)
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    assert alerts_sent == ["Telegram polling stalled"]
+
+
+def test_heartbeat_does_not_alert_when_never_received_updates(monkeypatch, caplog):
+    sleeps = []
+    clock = [1_000.0]
+    alerts_sent = []
+    monkeypatch.setattr(pd.time, "time", lambda: clock[0])
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        clock[0] += pd.STALE_UPDATE_SECONDS + 5
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError()
+
+    async def fake_notify(bot, *, category, message, error=None, **kwargs):
+        alerts_sent.append(category)
+        return True
+
+    pd.mark_started(bot_id=42)
+    with caplog.at_level(logging.WARNING):
+        try:
+            asyncio.run(
+                pd.polling_heartbeat_loop(
+                    sleep=fake_sleep,
+                    bot=object(),
+                    notify=fake_notify,
+                )
+            )
+        except asyncio.CancelledError:
+            pass
+
+    assert not any("Polling stalled" in r.message for r in caplog.records)
+    assert alerts_sent == []

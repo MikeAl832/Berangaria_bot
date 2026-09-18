@@ -62,6 +62,24 @@ in `qdrant_storage/`. The local Bot API server has been removed; follow the
 this installation. The old `VPS_*` GitHub secrets are no longer used by the
 workflow and may be removed separately.
 
+### Telegram Conflict and stalled polling
+
+HTTP 409 (`telegram.error.Conflict`) means two concurrent `getUpdates` long-polls
+on this bot token. The owner DM field `host=` is the process that *caught* the
+409, not the identity of the other poller. After switching off the local Bot API
+(15 Sep 2026) this process talks to `api.telegram.org` directly; a short
+getUpdates HTTP read timeout on us-west-2 can abort a still-registered long-poll
+and the PTB retry then 409s itself. The builder sets `get_updates_*_timeout` to
+the same 60s budget as outgoing Bot API calls. After Conflict the process logs
+CRITICAL, writes `analytics_alerts`, notifies once per 60s (volatile
+`uptime` / `since_update` / `updates` are not part of the cooldown fingerprint),
+and `os._exit(1)` so Docker `restart: always` starts a clean poller.
+
+A heartbeat every 10 minutes logs `since_update=`. If this process has already
+seen updates and then goes silent for 30 minutes, `bot.log` gets a WARNING
+(`Polling stalled`) and the owner gets a throttled DM. Edit/delete handlers and
+the Telethon user bridge are not a second Bot API poller.
+
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
 the old VPS. Moving its domain/TLS endpoint is separate from deployment; local
 Dozzle on cursor (`127.0.0.1:9999`) does not depend on the VPS.

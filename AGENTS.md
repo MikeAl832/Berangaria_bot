@@ -36,6 +36,8 @@ Key modules:
 - `berangaria/core/paths.py`: resolves relative config/db/log paths against the repository root.
 - `berangaria/core/state.py`: shared in-memory state, per-chat locks, and SQLite persistence.
 - `berangaria/core/utils.py`, `berangaria/core/logging_setup.py`: helpers and logging configuration.
+- `berangaria/core/polling_diagnostics.py`: process-local getUpdates identity, heartbeat, and Conflict context (`host=` is who caught HTTP 409).
+- `berangaria/core/alerts.py`: throttled owner DMs; put volatile uptime/since_update in `detail`, not `message`.
 - `berangaria/chat/handlers.py`: Telegram command/event entry points, access control, and compatibility wrappers.
 - `berangaria/chat/message_queue.py`: message normalization, debounce buffering, history commit, and turn dispatch.
 - `berangaria/chat/media_handlers.py`: photo albums plus photo, video, sticker, and voice processing.
@@ -122,6 +124,16 @@ Bandit may report intentional low-severity best-effort exception handling and no
   required-parameter routing so Muse stays on Meta's compatible endpoint.
   There is no second chat gateway path.
 - Private chats use `send_message_draft`. Group turns must not create persistent streaming previews: an ambiguous send timeout can lose the message ID and leave an undeletable partial duplicate, so groups receive one final response only.
+- `telegram.error.Conflict` on getUpdates is fatal: log CRITICAL (and flush), notify
+  the owner with a stable fingerprint, then `os._exit(1)` in `finally` so Docker
+  `restart: always` recovers. PTB runs this handler as a task from the polling
+  retry loop; cancellation between notify and exit must not skip the exit.
+  `host=` in that alert is who caught the 409, not the other poller. Heartbeat
+  WARNs when `since_update` exceeds 30 minutes after this process has seen updates.
+  PTB's getUpdates HTTP client is separate from `.read_timeout`; keep
+  `get_updates_read_timeout` on the same us-west-2 budget as outgoing calls so a
+  slow long-poll does not TimedOut-retry into a self-conflict. Do not restore a
+  local Bot API server to hide that.
 
 ## Persistence and memory rules
 

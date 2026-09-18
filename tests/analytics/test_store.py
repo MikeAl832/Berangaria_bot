@@ -125,3 +125,18 @@ def test_recording_is_disabled_until_current_database_schema_is_ready(tmp_path, 
         actor_id=1,
         actor_name="Аня",
     )
+
+
+def test_record_alert_logs_when_schema_is_not_ready(tmp_path, monkeypatch, caplog):
+    from berangaria.core import state
+
+    monkeypatch.setattr(state, "DB_PATH", str(tmp_path / "not-initialized.db"))
+
+    with caplog.at_level("ERROR"):
+        assert not store.record_alert(
+            category="Telegram Conflict",
+            fingerprint="abc",
+            message="dual poller",
+        )
+
+    assert "схема не готова" in caplog.text
