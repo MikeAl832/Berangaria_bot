@@ -77,8 +77,8 @@ and `os._exit(1)` so Docker `restart: always` starts a clean poller.
 
 A heartbeat every 10 minutes logs `since_update=`. If this process has already
 seen updates and then goes silent for 30 minutes, `bot.log` gets a WARNING
-(`Polling stalled`) and the owner gets a throttled DM. Edit/delete handlers and
-the Telethon user bridge are not a second Bot API poller.
+(`Polling stalled`) only — no owner DM (quiet nights are normal). Edit/delete
+handlers and the Telethon user bridge are not a second Bot API poller.
 
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
 the old VPS. Moving its domain/TLS endpoint is separate from deployment; local
