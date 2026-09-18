@@ -86,8 +86,10 @@ upsert_env XAI_API_KEY "${XAI_API_KEY:-}"
 compose config --quiet
 compose build bot
 # Stop the old poller before starting the new one to avoid Telegram Conflict
-# from overlapping getUpdates during recreate.
+# from overlapping getUpdates during recreate. Telegram can still hold the
+# previous long-poll for a second after the process exits; wait before up.
 compose stop bot || true
+sleep 3
 compose up -d --no-build --pull never --remove-orphans
 
 bot_id="$(compose ps -q bot)"
