@@ -8,6 +8,7 @@ import httpx
 from telegram.error import NetworkError
 
 from berangaria.chat import handlers
+from berangaria.core import polling_diagnostics
 
 
 def test_network_error_is_logged_without_owner_alert(monkeypatch, caplog):
@@ -64,11 +65,16 @@ def test_raw_httpx_connect_error_is_transient(monkeypatch):
 
 
 def test_conflict_notifies_and_exits(monkeypatch):
+    polling_diagnostics.reset_for_tests()
+    polling_diagnostics.mark_started(bot_id=8516262902)
     alerts = []
     exits = []
 
+    messages = []
+
     async def fake_notify_owner(bot, *, category, message, error=None):
         alerts.append(category)
+        messages.append(message)
 
     async def fake_sleep(_delay):
         return None
@@ -92,3 +98,5 @@ def test_conflict_notifies_and_exits(monkeypatch):
 
     assert alerts == ["Telegram Conflict"]
     assert exits == [1]
+    assert "bot_id=8516262902" in messages[0]
+    assert "pid=" in messages[0]
