@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL_SECONDS = 600.0
 # Owner/log signal when getUpdates has been silent this long while the process is up.
 STALE_UPDATE_SECONDS = 30 * 60
-STALE_ALERT_COOLDOWN_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -141,15 +140,15 @@ def format_context(error: BaseException | None = None) -> str:
     )
 
 
-async def polling_heartbeat_loop(sleep=None, bot=None, *, notify=None) -> None:
+async def polling_heartbeat_loop(sleep=None) -> None:
     """Periodic INFO so a quiet night still leaves a trail in bot.log.
 
     After ``STALE_UPDATE_SECONDS`` without an update this process has already
-    seen, emit a WARNING and a throttled owner alert. Silence before the first
-    update is not this signal — that is still ``since_update=never``.
+    seen, emit a WARNING in ``bot.log`` only. Quiet chats are normal at night —
+    do not DM the owner. Silence before the first update is not this signal —
+    that is still ``since_update=never``.
     """
     sleeper = sleep if sleep is not None else asyncio.sleep
-    notifier = notify
     while True:
         await sleeper(HEARTBEAT_INTERVAL_SECONDS)
         try:
@@ -163,22 +162,6 @@ async def polling_heartbeat_loop(sleep=None, bot=None, *, notify=None) -> None:
                 since,
                 STALE_UPDATE_SECONDS,
                 ctx,
-            )
-            if bot is None:
-                continue
-            if notifier is None:
-                from berangaria.core import alerts as alerts_mod
-
-                notifier = alerts_mod.notify_owner
-            await notifier(
-                bot,
-                category="Telegram polling stalled",
-                message=(
-                    "Нет входящих getUpdates больше 30 мин, процесс жив. "
-                    "Возможен второй poller или зависший long-poll."
-                ),
-                detail=ctx,
-                cooldown_seconds=STALE_ALERT_COOLDOWN_SECONDS,
             )
         except asyncio.CancelledError:
             raise
