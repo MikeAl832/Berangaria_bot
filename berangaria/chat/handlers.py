@@ -21,6 +21,7 @@ from berangaria.core.state import (
 )
 from berangaria.core import state
 from berangaria.core import alerts
+from berangaria.core import polling_diagnostics
 from berangaria.chat.llm_client import summarize_history, send_llm_request
 from berangaria.chat import media_handlers
 from berangaria.chat import message_queue
@@ -1061,10 +1062,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bugs — log and move on without owner alerts or /clear spam.
     """
     err = context.error
+    polling_path = update is None
+    if err is not None:
+        polling_diagnostics.mark_error(err)
+
     if isinstance(err, (NetworkError, TimedOut, httpx.ConnectError, httpx.TimeoutException)):
         logger.warning(
-            "Сетевой сбой Telegram/API (игнорируем как transient): %s",
+            "Сетевой сбой Telegram/API (игнорируем как transient): %s | %s | polling=%s",
             err,
+            polling_diagnostics.format_context(err),
+            polling_path,
             exc_info=err,
         )
         return
@@ -1074,9 +1081,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # wedged while background tasks still look "alive". Exit so Docker's
     # restart:always brings up a clean poller.
     if isinstance(err, Conflict):
+        ctx = polling_diagnostics.format_context(err)
         logger.critical(
-            "Telegram Conflict (другой getUpdates на этом токене): %s — выходим для рестарта",
+            "Telegram Conflict (другой getUpdates на этом токене): %s | %s | polling=%s "
+            "— выходим для рестарта",
             err,
+            ctx,
+            polling_path,
             exc_info=err,
         )
         await alerts.notify_owner(
@@ -1084,7 +1095,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             category="Telegram Conflict",
             message=(
                 "Другой getUpdates держит токен бота. Процесс выходит; "
-                "Docker должен поднять polling заново. Проверь, нет ли второго инстанса."
+                f"Docker должен поднять polling заново. [{ctx}]"
             ),
             error=err,
         )
@@ -1092,7 +1103,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os._exit(1)
         return
 
-    logger.error("❌ [bright_red]Глобальная ошибка:[/] %s", err, exc_info=err)
+    logger.error(
+        "❌ [bright_red]Глобальная ошибка:[/] %s | %s | polling=%s",
+        err,
+        polling_diagnostics.format_context(err),
+        polling_path,
+        exc_info=err,
+    )
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text("Произошла ошибка. Попробуйте /clear.")

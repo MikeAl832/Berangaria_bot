@@ -35,6 +35,7 @@ from telegram.ext import (
     MessageHandler,
     MessageReactionHandler,
     filters,
+    TypeHandler,
 )
 
 from berangaria.config import (
@@ -47,6 +48,7 @@ from berangaria.config import (
     STREAMING_ENABLED, MODEL, CHAT_API_URL,
 )
 from berangaria.core import state
+from berangaria.core import polling_diagnostics
 from berangaria.core import alerts
 from berangaria.memory import store as memory_store
 from berangaria.chat.handlers import (
@@ -78,6 +80,11 @@ async def _telegram_post_init(application: Application) -> None:
     not block polling. Failures stay fail-open.
     """
     logger.info("✅ [bright_green]Бот запущен![/]")
+    # Prefer cached getMe user; never touch ExtBot.id before initialize in tests.
+    bot = getattr(application, "bot", None)
+    bot_user = getattr(bot, "_bot_user", None) if bot is not None else None
+    bot_id = getattr(bot_user, "id", None)
+    polling_diagnostics.mark_started(bot_id=bot_id)
     try:
         await start_user_bridge(application)
     except asyncio.CancelledError:
@@ -322,12 +329,21 @@ def build_telegram_application() -> Application:
     return builder.build()
 
 
+
+async def _touch_polling_update(update: Update, context) -> None:
+    """Book-keeping only: record that this process received a Telegram update."""
+    polling_diagnostics.mark_update_received()
+
+
 def register_handlers(app: Application) -> None:
     """Регистрирует хендлеры на приложении.
 
     Вынесено из main() отдельной функцией, чтобы инвариант «пассивные хендлеры
     не держат слот обновлений» можно было проверить тестом.
     """
+    # group=-1 + block=False: fingerprint every update without holding the
+    # single SimpleUpdateProcessor slot (same rationale as reactions).
+    app.add_handler(TypeHandler(Update, _touch_polling_update, block=False), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("stats", stats))
@@ -421,6 +437,7 @@ def main():
     summarization_task = loop.create_task(periodic_summarization(app.bot))
     sticker_sync_task = loop.create_task(sync_stickers_on_start())
     memory_flush_task = loop.create_task(periodic_memory_flush(app.bot))
+    polling_heartbeat_task = loop.create_task(polling_diagnostics.polling_heartbeat_loop())
     # User bridge is started from post_init (after ExtBot.initialize). The
     # long-lived supervisor lives inside the user_bridge module and is stopped
     # explicitly below. Missing secrets / Telethon errors never block polling.
@@ -433,7 +450,7 @@ def main():
         logger.info("🛑 [yellow]Получен сигнал остановки...[/]")
     finally:
         # Graceful shutdown
-        background_tasks = [summarization_task, sticker_sync_task, memory_flush_task]
+        background_tasks = [summarization_task, sticker_sync_task, memory_flush_task, polling_heartbeat_task]
         try:
             if not loop.is_closed():
                 loop.run_until_complete(stop_user_bridge())
