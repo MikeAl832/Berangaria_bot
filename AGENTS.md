@@ -130,6 +130,10 @@ Bandit may report intentional low-severity best-effort exception handling and no
   retry loop; cancellation between notify and exit must not skip the exit.
   `host=` in that alert is who caught the 409, not the other poller. Heartbeat
   WARNs when `since_update` exceeds 30 minutes after this process has seen updates.
+  PTB's getUpdates HTTP client is separate from `.read_timeout`; keep
+  `get_updates_read_timeout` on the same us-west-2 budget as outgoing calls so a
+  slow long-poll does not TimedOut-retry into a self-conflict. Do not restore a
+  local Bot API server to hide that.
 
 ## Persistence and memory rules
 

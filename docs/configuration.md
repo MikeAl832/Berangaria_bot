@@ -35,7 +35,11 @@ BOT_VIDEO_MAX_FILE_SIZE_BYTES=2147483648
 
 Files at or under 20 MiB download through the cloud Bot API `getFile` path.
 Larger files use Telethon over MTProto. Updates, replies and uploads always use
-the cloud Bot API. The media client signs in with `TELEGRAM_BOT_TOKEN` and shares
+the cloud Bot API. Do not bring back a local Bot API server for polling: PTB
+keeps a separate HTTPX client for `getUpdates`, and `.read_timeout` does not
+copy onto it. Matching `get_updates_*_timeout` values (60s read slack on the
+10s long-poll) are what stop idle `TimedOut` from immediately retrying into
+HTTP 409. The media client signs in with `TELEGRAM_BOT_TOKEN` and shares
 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` with the optional user bridge. It uses a
 separate **bot** identity because file access hashes belong to that account;
 private chats work even when the user bridge is disabled. No interactive login

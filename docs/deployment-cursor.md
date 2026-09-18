@@ -66,7 +66,11 @@ workflow and may be removed separately.
 
 HTTP 409 (`telegram.error.Conflict`) means two concurrent `getUpdates` long-polls
 on this bot token. The owner DM field `host=` is the process that *caught* the
-409, not the identity of the other poller. After Conflict the process logs
+409, not the identity of the other poller. After switching off the local Bot API
+(15 Sep 2026) this process talks to `api.telegram.org` directly; a short
+getUpdates HTTP read timeout on us-west-2 can abort a still-registered long-poll
+and the PTB retry then 409s itself. The builder sets `get_updates_*_timeout` to
+the same 60s budget as outgoing Bot API calls. After Conflict the process logs
 CRITICAL, writes `analytics_alerts`, notifies once per 60s (volatile
 `uptime` / `since_update` / `updates` are not part of the cooldown fingerprint),
 and `os._exit(1)` so Docker `restart: always` starts a clean poller.

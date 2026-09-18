@@ -140,6 +140,21 @@ def test_build_application_raises_media_http_timeouts(monkeypatch):
     assert request._media_write_timeout == 120.0
 
 
+def test_get_updates_http_client_uses_the_same_timeout_budget(monkeypatch):
+    """getUpdates is a separate HTTPX client; #15 only raised the outgoing one."""
+
+    app = main.build_telegram_application()
+    get_updates_request = app.bot._request[0]
+    timeout = get_updates_request._client.timeout
+
+    assert get_updates_request.read_timeout == 60.0
+    assert timeout.read == 60.0
+    assert timeout.write == 60.0
+    assert timeout.connect == 10.0
+    assert timeout.pool == 5.0
+    assert get_updates_request is not app.bot.request
+
+
 def test_media_client_shutdown_is_registered():
     app = main.build_telegram_application()
     assert app.post_shutdown is main.stop_media_downloader
