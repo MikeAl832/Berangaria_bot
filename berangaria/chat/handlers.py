@@ -1,8 +1,10 @@
+import asyncio
 import logging
+import os
 import httpx
 from functools import wraps
 from telegram import Update, ReactionTypeEmoji
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import BadRequest, Conflict, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from berangaria.config import (
@@ -1065,6 +1067,29 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             err,
             exc_info=err,
         )
+        return
+
+    # Conflict means another process is calling getUpdates with this bot token
+    # (overlapping deploy, stale container, or a forgotten copy). PTB can sit
+    # wedged while background tasks still look "alive". Exit so Docker's
+    # restart:always brings up a clean poller.
+    if isinstance(err, Conflict):
+        logger.critical(
+            "Telegram Conflict (другой getUpdates на этом токене): %s — выходим для рестарта",
+            err,
+            exc_info=err,
+        )
+        await alerts.notify_owner(
+            context.bot,
+            category="Telegram Conflict",
+            message=(
+                "Другой getUpdates держит токен бота. Процесс выходит; "
+                "Docker должен поднять polling заново. Проверь, нет ли второго инстанса."
+            ),
+            error=err,
+        )
+        await asyncio.sleep(1.0)
+        os._exit(1)
         return
 
     logger.error("❌ [bright_red]Глобальная ошибка:[/] %s", err, exc_info=err)

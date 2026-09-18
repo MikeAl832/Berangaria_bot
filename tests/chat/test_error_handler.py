@@ -61,3 +61,34 @@ def test_raw_httpx_connect_error_is_transient(monkeypatch):
 
     asyncio.run(handlers.error_handler(update, context))
     assert alerts == []
+
+
+def test_conflict_notifies_and_exits(monkeypatch):
+    alerts = []
+    exits = []
+
+    async def fake_notify_owner(bot, *, category, message, error=None):
+        alerts.append(category)
+
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(handlers.alerts, "notify_owner", fake_notify_owner)
+    monkeypatch.setattr(handlers.asyncio, "sleep", fake_sleep)
+    def fake_exit(code):
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(handlers.os, "_exit", fake_exit)
+
+    from telegram.error import Conflict
+
+    context = SimpleNamespace(bot=object(), error=Conflict("terminated by other getUpdates request"))
+    update = SimpleNamespace(effective_message=None)
+    try:
+        asyncio.run(handlers.error_handler(update, context))
+    except SystemExit as exc:
+        assert exc.code == 1
+
+    assert alerts == ["Telegram Conflict"]
+    assert exits == [1]
