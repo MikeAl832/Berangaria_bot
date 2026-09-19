@@ -7,12 +7,32 @@ from types import SimpleNamespace
 from telegram.error import BadRequest, TimedOut
 
 from berangaria.chat import llm_client
+from berangaria.chat.chat_actions import CHAT_ACTION_REFRESH_SECONDS
 from berangaria.chat.turn_outcome import TurnOutcome
 from berangaria.memory import store as memory_store
 import pytest
 from berangaria.core import state
 from berangaria.chat.streaming import StreamedCompletionResponse
 from berangaria.analytics import store as analytics_store
+
+
+def _record_transport_retry_sleeps(sleeps, *, budget=3, message="transport retry budget was reset"):
+    """Count LLM backoff sleeps without treating typing-heartbeat pauses as retries.
+
+    ``monkeypatch.setattr(llm_client.asyncio, "sleep", ...)`` replaces the
+    process-wide ``asyncio.sleep``. ChatActionHeartbeat uses the same function
+    for its refresh interval; parking that wait until cancel keeps the
+    heartbeat from looking like a third transport retry.
+    """
+
+    async def fake_sleep(seconds):
+        if seconds == CHAT_ACTION_REFRESH_SECONDS:
+            await asyncio.Event().wait()
+            return
+        sleeps.append(seconds)
+        assert len(sleeps) < budget, message
+
+    return fake_sleep
 
 
 class _Response:
@@ -203,13 +223,13 @@ def test_terminal_http_error_returns_failed_without_assistant(
     posts = []
     sleeps = []
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
-        assert len(sleeps) < 3, "transport retry budget was reset"
-
     monkeypatch.setattr(llm_client, "MAX_API_RETRIES", 3)
     monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
-    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        llm_client.asyncio,
+        "sleep",
+        _record_transport_retry_sleeps(sleeps),
+    )
     monkeypatch.setattr(memory_store, "memory", None)
     monkeypatch.setattr(
         llm_client.httpx, "AsyncClient",
@@ -242,14 +262,16 @@ def test_malformed_http_200_exhausts_retry_budget(monkeypatch, isolated_db, body
     posts = []
     sleeps = []
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
-        # Fail fast even if regression reintroduces the unbounded 200 loop.
-        assert len(sleeps) < 3, "malformed response reset the retry budget"
-
     monkeypatch.setattr(llm_client, "MAX_API_RETRIES", 3)
     monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
-    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        llm_client.asyncio,
+        "sleep",
+        _record_transport_retry_sleeps(
+            sleeps,
+            message="malformed response reset the retry budget",
+        ),
+    )
     monkeypatch.setattr(memory_store, "memory", None)
     monkeypatch.setattr(
         llm_client.httpx, "AsyncClient",
