@@ -207,6 +207,16 @@ def test_clean_reply_silence_word():
     assert _clean_reply("(молчит)") == ""
 
 
+def test_clean_reply_empty_placeholder_as_silence():
+    # Muse Spark sometimes emits a literal silence token instead of "".
+    assert _clean_reply("-empty") == ""
+    assert _clean_reply("empty") == ""
+    assert _clean_reply("(empty)") == ""
+    assert _clean_reply("-Empty") == ""
+    # Real sentence must not collapse to silence.
+    assert _clean_reply("коробка empty внутри") == "коробка empty внутри"
+
+
 def test_clean_reply_keeps_normal_text():
     assert _clean_reply("да, согласна") == "да, согласна"
 
