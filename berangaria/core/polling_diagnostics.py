@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import socket
+import threading
 import time
 from dataclasses import dataclass
 
@@ -15,6 +16,13 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL_SECONDS = 600.0
 # Owner/log signal when getUpdates has been silent this long while the process is up.
 STALE_UPDATE_SECONDS = 30 * 60
+# Daemon thread: if the asyncio loop stops beating this long, kill PID 1 so
+# Docker restart:always recovers. Must be > HEARTBEAT_INTERVAL_SECONDS.
+LOOP_WATCHDOG_SECONDS = 20 * 60
+LOOP_WATCHDOG_POLL_SECONDS = 30.0
+
+_last_loop_beat: float = 0.0
+_watchdog_started: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,12 +60,52 @@ _updates_seen: int = 0
 def reset_for_tests() -> None:
     """Clear process-local counters between unit tests."""
     global _started_at, _bot_id, _last_update_at, _last_error_at, _last_error_type, _updates_seen
+    global _last_loop_beat, _watchdog_started
     _started_at = None
     _bot_id = None
     _last_update_at = None
     _last_error_at = None
     _last_error_type = None
     _updates_seen = 0
+    _last_loop_beat = 0.0
+    _watchdog_started = False
+
+
+def touch_loop_beat() -> None:
+    """Record that the asyncio loop is still scheduling work."""
+    global _last_loop_beat
+    _last_loop_beat = time.monotonic()
+
+
+def loop_watchdog_should_exit(*, now: float | None = None) -> bool:
+    """True when the event loop has missed more than one heartbeat."""
+    if _last_loop_beat <= 0.0:
+        return False
+    clock = time.monotonic() if now is None else now
+    return (clock - _last_loop_beat) > LOOP_WATCHDOG_SECONDS
+
+
+def _loop_watchdog_thread() -> None:
+    while True:
+        time.sleep(LOOP_WATCHDOG_POLL_SECONDS)
+        if loop_watchdog_should_exit():
+            # Do not log: the loop (and logging) may be the thing that is stuck.
+            os._exit(1)
+
+
+def start_loop_watchdog() -> None:
+    """Daemon thread independent of asyncio. Safe to call once from main()."""
+    global _watchdog_started
+    if _watchdog_started:
+        return
+    _watchdog_started = True
+    touch_loop_beat()
+    thread = threading.Thread(
+        target=_loop_watchdog_thread,
+        name="berangaria-loop-watchdog",
+        daemon=True,
+    )
+    thread.start()
 
 
 def mark_started(*, bot_id: int | None = None) -> PollingSnapshot:
@@ -152,6 +200,7 @@ async def polling_heartbeat_loop(sleep=None) -> None:
     while True:
         await sleeper(HEARTBEAT_INTERVAL_SECONDS)
         try:
+            touch_loop_beat()
             ctx = format_context()
             logger.info("📡 Polling heartbeat: %s", ctx)
             since = snapshot().seconds_since_update

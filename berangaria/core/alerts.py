@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -53,7 +54,8 @@ async def notify_owner(
     extra = " ".join(str(detail).split()) if detail else ""
     if extra:
         stored_message = f"{clean_message} [{extra}]"[:1000]
-    persisted = analytics_store.record_alert(
+    persisted = await asyncio.to_thread(
+        analytics_store.record_alert,
         category=category,
         fingerprint=fingerprint,
         message=stored_message,
@@ -88,7 +90,10 @@ async def notify_owner(
     alert["last_attempt"] = now
     alert["suppressed"] = 0
     try:
-        await bot.send_message(chat_id=destination, text=text)
+        await asyncio.wait_for(
+            bot.send_message(chat_id=destination, text=text),
+            timeout=8.0,
+        )
         return True
     except Exception as exc:
         logger.error("Не удалось отправить критический алерт в chat_id=%s: %s", destination, exc)

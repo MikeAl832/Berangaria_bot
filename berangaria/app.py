@@ -449,6 +449,7 @@ def main():
     polling_heartbeat_task = loop.create_task(
         polling_diagnostics.polling_heartbeat_loop()
     )
+    polling_diagnostics.start_loop_watchdog()
     # User bridge is started from post_init (after ExtBot.initialize). The
     # long-lived supervisor lives inside the user_bridge module and is stopped
     # explicitly below. Missing secrets / Telethon errors never block polling.
