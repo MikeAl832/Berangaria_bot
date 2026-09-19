@@ -131,6 +131,10 @@ Bandit may report intentional low-severity best-effort exception handling and no
   `host=` in that alert is who caught the 409, not the other poller. Heartbeat
   WARNs in `bot.log` (no owner DM) when `since_update` exceeds 30 minutes after
   this process has seen updates — quiet nights must not page the owner.
+  A daemon thread watchdogs the asyncio loop: if heartbeats stop for 20 minutes
+  (frozen loop, stuck sqlite/log write), `os._exit(1)` so Docker recovers.
+  SQLite `connect` uses a 5s busy timeout; `notify_owner` must not do sqlite or
+  unbounded `send_message` on the event loop.
   PTB's getUpdates HTTP client is separate from `.read_timeout`; keep
   `get_updates_read_timeout` on the same us-west-2 budget as outgoing calls so a
   slow long-poll does not TimedOut-retry into a self-conflict. Do not restore a

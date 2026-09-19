@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from berangaria.core import polling_diagnostics as pd
 
@@ -93,3 +94,33 @@ def test_heartbeat_does_not_warn_when_never_received_updates(monkeypatch, caplog
             pass
 
     assert not any("Polling stalled" in r.message for r in caplog.records)
+
+
+def test_watchdog_does_not_exit_while_heartbeat_is_fresh():
+    pd.touch_loop_beat()
+    assert not pd.loop_watchdog_should_exit()
+
+
+def test_watchdog_exits_after_two_missed_heartbeats(monkeypatch):
+    pd.touch_loop_beat()
+    monkeypatch.setattr(pd, "LOOP_WATCHDOG_SECONDS", 0.05)
+    time.sleep(0.08)
+    assert pd.loop_watchdog_should_exit()
+
+
+def test_heartbeat_pets_the_loop_watchdog():
+    pd._last_loop_beat = 0.0
+    sleeps = []
+
+    async def fake_sleep(_delay):
+        sleeps.append(_delay)
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError()
+
+    pd.mark_started(bot_id=1)
+    try:
+        asyncio.run(pd.polling_heartbeat_loop(sleep=fake_sleep))
+    except asyncio.CancelledError:
+        pass
+
+    assert pd._last_loop_beat > 0.0

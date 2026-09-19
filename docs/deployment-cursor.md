@@ -75,10 +75,13 @@ CRITICAL, writes `analytics_alerts`, notifies once per 60s (volatile
 `uptime` / `since_update` / `updates` are not part of the cooldown fingerprint),
 and `os._exit(1)` so Docker `restart: always` starts a clean poller.
 
-A heartbeat every 10 minutes logs `since_update=`. If this process has already
-seen updates and then goes silent for 30 minutes, `bot.log` gets a WARNING
-(`Polling stalled`) only — no owner DM (quiet nights are normal). Edit/delete
-handlers and the Telethon user bridge are not a second Bot API poller.
+A heartbeat every 10 minutes logs `since_update=` and pets a daemon watchdog
+thread. If this process has already seen updates and then goes silent for 30
+minutes, `bot.log` gets a WARNING (`Polling stalled`) only — no owner DM
+(quiet nights are normal). If the asyncio loop itself stops (no heartbeat for
+20 minutes) the watchdog `os._exit(1)` so Docker restarts — a live PID with a
+frozen loop will not recover on its own. Edit/delete handlers and the Telethon
+user bridge are not a second Bot API poller.
 
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
 the old VPS. Moving its domain/TLS endpoint is separate from deployment; local

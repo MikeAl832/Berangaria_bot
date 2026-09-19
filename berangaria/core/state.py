@@ -220,6 +220,14 @@ def cleanup_old_chats(max_age_hours: int = 72) -> int:
 # Хранит историю диалогов и runtime-настройки на диске, чтобы рестарт/деплой
 # не стирал контекст и изменения команд управления.
 DB_PATH = project_path(os.environ.get("BOT_DB_PATH") or "bot_state.db")
+_SQLITE_TIMEOUT_SECONDS = 5.0
+
+
+def _connect() -> sqlite3.Connection:
+    """Open bot_state.db without waiting forever on a lock or stalled disk."""
+    conn = sqlite3.connect(DB_PATH, timeout=_SQLITE_TIMEOUT_SECONDS)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
 
 
 def _db_execute(
@@ -228,7 +236,7 @@ def _db_execute(
     fetch: bool = False,
 ) -> List[tuple[Any, ...]] | None:
     """Выполняет запрос с гарантированным закрытием соединения. Возвращает строки при fetch=True."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(query, params)
         rows = cur.fetchall() if fetch else None
@@ -339,7 +347,7 @@ def insert_memory_source(
     if status not in {"pending", "waiting"}:
         raise ValueError("некорректный статус нового источника памяти")
     now = time.time()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(
             "INSERT OR IGNORE INTO memory_sources "
@@ -378,7 +386,7 @@ def update_memory_source_text(
     clean = (text or "").strip()
     if not clean:
         return False
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(
             "UPDATE memory_sources SET text=?, updated_at=? "
@@ -397,7 +405,7 @@ def abandon_memory_source_by_message(
     message_id: int,
 ) -> bool:
     """Abandon a waiting/pending source when the Telegram message is deleted."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(
             "UPDATE memory_sources SET status='abandoned', text='', "
@@ -416,7 +424,7 @@ def release_memory_sources(source_ids: list[int]) -> int:
     ids = [int(source_id) for source_id in source_ids if source_id is not None]
     if not ids:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.executemany(
             "UPDATE memory_sources SET status='pending', updated_at=? "
@@ -440,7 +448,7 @@ def abandon_memory_sources(source_ids: list[int]) -> int:
     ids = [int(source_id) for source_id in source_ids if source_id is not None]
     if not ids:
         return 0
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.executemany(
             "UPDATE memory_sources SET status='abandoned', text='', "
@@ -468,7 +476,7 @@ def prune_memory_sources(max_age_seconds: float) -> int:
     if max_age_seconds <= 0:
         return 0
     cutoff = time.time() - max_age_seconds
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(
             "DELETE FROM memory_sources "
@@ -491,7 +499,7 @@ def reap_stale_waiting_sources(max_age_seconds: float) -> int:
     if max_age_seconds <= 0:
         return 0
     now = time.time()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         cur = conn.execute(
             "UPDATE memory_sources SET status='abandoned', text='', "
@@ -538,7 +546,7 @@ def list_memory_sources(status: str | None = None) -> list[MemorySourceRecord]:
 def claim_memory_sources(limit: int) -> list[MemorySourceRecord]:
     """Атомарно забирает FIFO-порцию pending-сообщений на обработку."""
     bounded_limit = max(1, min(int(limit), 100))
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         # Ждущий источник блокирует более новые ТОЛЬКО в своей области памяти:
@@ -677,7 +685,7 @@ def commit_memory_facts(
     """Атомарно публикует все одобренные факты одного сообщения-источника."""
     if not writes:
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         now = time.time()
