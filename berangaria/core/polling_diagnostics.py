@@ -266,8 +266,9 @@ def install_get_updates_probe(bot: Any) -> None:
         mark_poll_ok(update_count=count)
         return result
 
-    bot.get_updates = get_updates_probed  # type: ignore[method-assign]
-    bot._berangaria_poll_probe = True
+    # ExtBot freezes public attrs after init; bypass TelegramObject.__setattr__.
+    object.__setattr__(bot, "get_updates", get_updates_probed)
+    object.__setattr__(bot, "_berangaria_poll_probe", True)
 
 
 def dump_stall_diagnostics() -> str:
