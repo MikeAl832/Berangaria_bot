@@ -85,6 +85,8 @@ async def _telegram_post_init(application: Application) -> None:
     bot_user = getattr(bot, "_bot_user", None) if bot is not None else None
     bot_id = getattr(bot_user, "id", None)
     polling_diagnostics.mark_started(bot_id=bot_id)
+    if bot is not None:
+        polling_diagnostics.install_get_updates_probe(bot)
     try:
         await start_user_bridge(application)
     except asyncio.CancelledError:

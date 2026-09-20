@@ -48,6 +48,15 @@ services:
     # Mem0). Дефолтные 10 с гарантированно приводили к SIGKILL посреди прохода,
     # а потраченная попытка источника не возвращается.
     stop_grace_period: 120s
+    # Separate process: if /data/loop_heartbeat is stale, SIGKILL PID 1 even when
+    # the in-process asyncio watchdog cannot run (GIL freeze). restart: always
+    # then brings a clean poller back.
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/loop_healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 2
+      start_period: 180s
     logging: *default-logging
     restart: always
 
