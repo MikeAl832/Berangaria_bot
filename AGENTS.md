@@ -129,10 +129,13 @@ Bandit may report intentional low-severity best-effort exception handling and no
   `restart: always` recovers. PTB runs this handler as a task from the polling
   retry loop; cancellation between notify and exit must not skip the exit.
   `host=` in that alert is who caught the 409, not the other poller. Heartbeat
-  WARNs in `bot.log` (no owner DM) when `since_update` exceeds 30 minutes after
-  this process has seen updates — quiet nights must not page the owner.
-  A daemon thread watchdogs the asyncio loop: if heartbeats stop for 20 minutes
-  (frozen loop, stuck sqlite/log write), `os._exit(1)` so Docker recovers.
+  tracks `since_poll` (getUpdates returned, including empty) separately from
+  `since_update` (a message arrived). Stall WARN + stack dump when `since_poll`
+  exceeds 30 minutes; `os._exit(1)` after 45 minutes — quiet nights must not
+  page the owner. A daemon thread watchdogs the asyncio loop: if heartbeats stop
+  for 20 minutes, `os._exit(1)`. Docker HEALTHCHECK (`scripts/loop_healthcheck.py`)
+  SIGKILLs PID 1 if `/data/loop_heartbeat` is older than 25 minutes so a GIL freeze
+  still recovers via `restart: always`.
   SQLite `connect` uses a 5s busy timeout; `notify_owner` must not do sqlite or
   unbounded `send_message` on the event loop.
   PTB's getUpdates HTTP client is separate from `.read_timeout`; keep

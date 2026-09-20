@@ -75,13 +75,18 @@ CRITICAL, writes `analytics_alerts`, notifies once per 60s (volatile
 `uptime` / `since_update` / `updates` are not part of the cooldown fingerprint),
 and `os._exit(1)` so Docker `restart: always` starts a clean poller.
 
-A heartbeat every 10 minutes logs `since_update=` and pets a daemon watchdog
-thread. If this process has already seen updates and then goes silent for 30
-minutes, `bot.log` gets a WARNING (`Polling stalled`) only — no owner DM
-(quiet nights are normal). If the asyncio loop itself stops (no heartbeat for
-20 minutes) the watchdog `os._exit(1)` so Docker restarts — a live PID with a
-frozen loop will not recover on its own. Edit/delete handlers and the Telethon
-user bridge are not a second Bot API poller.
+A heartbeat every 10 minutes logs `since_update=` / `since_poll=` and pets a
+daemon watchdog thread plus `/data/loop_heartbeat` for Docker HEALTHCHECK.
+`since_update` is "no chat messages" (quiet nights are normal). `since_poll` is
+"getUpdates has not returned" — including empty long-polls; that is the real
+stall signal. After 30 minutes without a poll return, `bot.log` gets a WARNING
+and a hard asyncio/thread stack dump (no owner DM). After 45 minutes the process
+`os._exit(1)`. If the asyncio loop itself stops (no heartbeat for 20 minutes)
+the in-process watchdog also `os._exit(1)`. If even that cannot run (GIL freeze),
+`scripts/loop_healthcheck.py` (Docker HEALTHCHECK, separate process) SIGKILLs
+PID 1 when `/data/loop_heartbeat` is older than 25 minutes; `restart: always`
+recreates the container. Edit/delete handlers and the Telethon user bridge are
+not a second Bot API poller.
 
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
 the old VPS. Moving its domain/TLS endpoint is separate from deployment; local
