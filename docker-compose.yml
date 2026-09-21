@@ -25,6 +25,8 @@ services:
 
   bot:
     build: .
+    # tini as PID 1 so HEALTHCHECK can SIGKILL the python worker (PID 1 ignores kill).
+    init: true
     labels:
       - dev.berangaria.logs=visible
     env_file: .env
