@@ -82,7 +82,10 @@ def _berangaria_workers() -> list[int]:
             continue
         if "bot_sampler" in cmd or "loop_healthcheck" in cmd:
             continue
-        if "berangaria" in cmd:
+        # docker-init cmdline also contains "berangaria" — keep only the python worker.
+        if "docker-init" in cmd or cmd.strip().startswith("/sbin/docker-init"):
+            continue
+        if "python" in cmd and "berangaria" in cmd:
             found.append(pid)
     return found
 
