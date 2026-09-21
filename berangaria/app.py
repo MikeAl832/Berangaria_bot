@@ -408,6 +408,8 @@ def register_handlers(app: Application) -> None:
 
 
 def main():
+    from berangaria.core.faulthandler_setup import install_faulthandler_sigusr1
+    install_faulthandler_sigusr1()
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
     # Инициализируем БД, runtime-настройки и сохранённые истории диалогов

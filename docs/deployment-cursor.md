@@ -89,6 +89,11 @@ the berangaria worker (not PID 1 — container init ignores that) when
 tini PID 1 so the worker can die and `restart: always` recreates the container. Edit/delete handlers and the Telethon user bridge are
 not a second Bot API poller.
 
+`bot-sampler` shares the bot PID namespace and appends to `bot_data/sampler.log`
+every 30s (stamp ages, worker state/wchan). On stale stamps or every ~10 minutes
+it dumps `/proc` stacks and sends SIGUSR1 so the bot writes Python threads to
+`bot_data/faulthandler.log`. Read these when `bot.log` goes silent.
+
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
 the old VPS. Moving its domain/TLS endpoint is separate from deployment; local
 Dozzle on cursor (`127.0.0.1:9999`) does not depend on the VPS.

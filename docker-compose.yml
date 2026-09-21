@@ -50,15 +50,33 @@ services:
     # Mem0). Дефолтные 10 с гарантированно приводили к SIGKILL посреди прохода,
     # а потраченная попытка источника не возвращается.
     stop_grace_period: 120s
-    # Separate process: if /data/loop_heartbeat is stale, SIGKILL PID 1 even when
-    # the in-process asyncio watchdog cannot run (GIL freeze). restart: always
-    # then brings a clean poller back.
+    # HEALTHCHECK kills the berangaria worker (not PID 1). init: true required.
     healthcheck:
       test: ["CMD", "python", "/app/scripts/loop_healthcheck.py"]
       interval: 60s
       timeout: 10s
       retries: 2
       start_period: 180s
+    logging: *default-logging
+    restart: always
+
+  # Sibling observer: shares bot PID namespace, writes /data/sampler.log even when
+  # the bot loop is frozen. Requests Python stacks via SIGUSR1 → faulthandler.log.
+  bot-sampler:
+    build: .
+    pid: service:bot
+    network_mode: "service:bot"
+    depends_on:
+      - bot
+    environment:
+      - BOT_SAMPLER_DATA=/data
+      - BOT_SAMPLER_INTERVAL_SECONDS=30
+      - BOT_SAMPLER_WARN_SECONDS=900
+    volumes:
+      - ./bot_data:/data
+    command: ["python", "/app/scripts/bot_sampler.py"]
+    labels:
+      - dev.berangaria.logs=visible
     logging: *default-logging
     restart: always
 

@@ -28,3 +28,10 @@ services:
   log-tail:
     image: berangaria-migration/log-tail:20260914
     pull_policy: never
+  bot-sampler:
+    image: berangaria-bot:cursor
+    build:
+      context: .
+      network: host
+    pull_policy: never
+
