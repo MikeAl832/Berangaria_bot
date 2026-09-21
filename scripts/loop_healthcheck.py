@@ -34,9 +34,11 @@ def _berangaria_pids() -> list[int]:
         except OSError:
             continue
         cmd = raw.replace(b"\x00", b" ").decode("utf-8", "replace")
-        if "loop_healthcheck" in cmd:
+        if "loop_healthcheck" in cmd or "bot_sampler" in cmd:
             continue
-        if "berangaria" in cmd or "python -m berangaria" in cmd.replace("  ", " "):
+        if "docker-init" in cmd:
+            continue
+        if "python" in cmd and "berangaria" in cmd:
             found.append(pid)
     return found
 
