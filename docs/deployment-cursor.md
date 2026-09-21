@@ -84,8 +84,9 @@ and a hard asyncio/thread stack dump (no owner DM). After 45 minutes the process
 `os._exit(1)`. If the asyncio loop itself stops (no heartbeat for 20 minutes)
 the in-process watchdog also `os._exit(1)`. If even that cannot run (GIL freeze),
 `scripts/loop_healthcheck.py` (Docker HEALTHCHECK, separate process) SIGKILLs
-PID 1 when `/data/loop_heartbeat` is older than 25 minutes; `restart: always`
-recreates the container. Edit/delete handlers and the Telethon user bridge are
+the berangaria worker (not PID 1 — container init ignores that) when
+`/data/loop_heartbeat` is older than 25 minutes; Compose `init: true` makes
+tini PID 1 so the worker can die and `restart: always` recreates the container. Edit/delete handlers and the Telethon user bridge are
 not a second Bot API poller.
 
 The old `logs.titlo10.fun` website still uses Nginx and a forwarding service on
