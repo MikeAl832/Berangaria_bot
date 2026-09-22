@@ -415,8 +415,8 @@ def _format_ping_reply() -> str:
     )
     return (
         "pong\n"
-        f"uptime={uptime} since_poll={since_poll} polls={snap.polls_seen}\n"
-        f"host={snap.hostname} pid={snap.pid}"
+        f"uptime={uptime} since_poll={since_poll} polls={snap.polls_seen} "
+        f"pid={snap.pid}"
     )
 
 

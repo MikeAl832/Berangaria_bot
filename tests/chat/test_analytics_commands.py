@@ -118,7 +118,6 @@ def test_ping_replies_with_pong_and_poll_facts(monkeypatch):
     assert "uptime=125s" in text
     assert "since_poll=3s" in text
     assert "polls=17" in text
-    assert "host=bot-host" in text
     assert "pid=4242" in text
 
 
@@ -144,4 +143,4 @@ def test_format_ping_reply_handles_never_polled(monkeypatch):
         ),
     )
     text = handlers._format_ping_reply()
-    assert text == "pong\nuptime=n/a since_poll=never polls=0\nhost=h pid=1"
+    assert text == "pong\nuptime=n/a since_poll=never polls=0 pid=1"
