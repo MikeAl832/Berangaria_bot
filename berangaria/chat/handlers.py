@@ -247,6 +247,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
+            f"/ping — проверка живости\n"
             f"/top — лидерборд чата\n"
             f"/summarize — сжатие истории\n"
             f"/random X — изменить шанс случайных ответов"
@@ -262,6 +263,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Команды:\n"
             f"/clear — очистить историю\n"
             f"/stats — статистика\n"
+            f"/ping — проверка живости\n"
             f"/top — лидерборд чата\n"
             f"/summarize — сжатие истории"
             f"{owner_command}"
@@ -396,6 +398,35 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 История очищена!")
     else:
         await update.message.reply_text("История и так пуста!")
+
+
+def _format_ping_reply() -> str:
+    """Короткий live-check: pong + 1–3 факта из polling_diagnostics."""
+    snap = polling_diagnostics.snapshot()
+    uptime = (
+        f"{snap.uptime_seconds:.0f}s"
+        if snap.uptime_seconds is not None
+        else "n/a"
+    )
+    since_poll = (
+        f"{snap.seconds_since_poll:.0f}s"
+        if snap.seconds_since_poll is not None
+        else "never"
+    )
+    return (
+        "pong\n"
+        f"uptime={uptime} since_poll={since_poll} polls={snap.polls_seen}\n"
+        f"host={snap.hostname} pid={snap.pid}"
+    )
+
+
+@access_required
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Лёгкая проверка живости: доступ как у /stats, без DM владельцу."""
+    if update.message is None:
+        return
+    await update.message.reply_text(_format_ping_reply())
+
 
 @access_required
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):

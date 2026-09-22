@@ -93,3 +93,55 @@ def test_dashboard_callback_rechecks_owner(monkeypatch):
         {"text": "leaders:30d", "reply_markup": "keyboard"}
     ]
 
+
+
+def test_ping_replies_with_pong_and_poll_facts(monkeypatch):
+    update = _message_update(user_id=7, chat_id=-100, chat_type="supergroup")
+    monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-100])
+    monkeypatch.setattr(
+        handlers.polling_diagnostics,
+        "snapshot",
+        lambda: SimpleNamespace(
+            hostname="bot-host",
+            pid=4242,
+            uptime_seconds=125.4,
+            seconds_since_poll=3.2,
+            polls_seen=17,
+        ),
+    )
+
+    asyncio.run(handlers.ping(update, SimpleNamespace()))
+
+    assert len(update.message.replies) == 1
+    text = update.message.replies[0][0]
+    assert text.startswith("pong\n")
+    assert "uptime=125s" in text
+    assert "since_poll=3s" in text
+    assert "polls=17" in text
+    assert "host=bot-host" in text
+    assert "pid=4242" in text
+
+
+def test_ping_uses_same_group_allowlist_as_stats(monkeypatch):
+    update = _message_update(user_id=999, chat_id=-100, chat_type="supergroup")
+    monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-200])
+
+    asyncio.run(handlers.ping(update, SimpleNamespace()))
+
+    assert update.message.replies == []
+
+
+def test_format_ping_reply_handles_never_polled(monkeypatch):
+    monkeypatch.setattr(
+        handlers.polling_diagnostics,
+        "snapshot",
+        lambda: SimpleNamespace(
+            hostname="h",
+            pid=1,
+            uptime_seconds=None,
+            seconds_since_poll=None,
+            polls_seen=0,
+        ),
+    )
+    text = handlers._format_ping_reply()
+    assert text == "pong\nuptime=n/a since_poll=never polls=0\nhost=h pid=1"
