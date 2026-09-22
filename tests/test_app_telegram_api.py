@@ -56,7 +56,7 @@ def test_message_intake_stays_serialized(monkeypatch):
 
 @pytest.mark.parametrize(
     "command",
-    ["start", "clear", "stats", "top", "dashboard", "random", "summarize"],
+    ["start", "clear", "stats", "ping", "top", "dashboard", "random", "summarize"],
 )
 def test_documented_commands_are_registered(command, monkeypatch):
     app = main.build_telegram_application()

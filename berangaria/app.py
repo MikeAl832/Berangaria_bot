@@ -52,7 +52,7 @@ from berangaria.core import polling_diagnostics
 from berangaria.core import alerts
 from berangaria.memory import store as memory_store
 from berangaria.chat.handlers import (
-    start, clear, stats, top, dashboard, dashboard_callback,
+    start, clear, stats, ping, top, dashboard, dashboard_callback,
     random_chance, summarize_command,
     handle_message, handle_media, handle_video, handle_sticker, handle_voice,
     handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
@@ -358,6 +358,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("top", top))
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("random", random_chance))
@@ -440,7 +441,7 @@ def main():
     if VISION_MODE:
         logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
     logger.info(
-        "🔧 Команды: /start, /clear, /stats, /top, /dashboard, /random X, /summarize"
+        "🔧 Команды: /start, /clear, /stats, /ping, /top, /dashboard, /random X, /summarize"
     )
     hours_label = ", ".join(f"{h:02d}:00" for h in SUMMARY_HOURS)
     logger.info(f"🕒 Часовой пояс: [yellow]{TIMEZONE_NAME}[/]")
