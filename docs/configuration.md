@@ -381,7 +381,7 @@ ceiling still has headroom so overflow does not abort ordinary turns.
 
 ```yaml
 allowed_users: [1217938322, 1809564460]
-allowed_groups: [-1002263830880]
+allowed_groups: [-5578136180]
 admin_alert_chat_id: null
 ```
 
