@@ -1,50 +1,71 @@
 import asyncio
 import logging
 import os
-import httpx
 from functools import wraps
-from telegram import Update, ReactionTypeEmoji
+
+import httpx
+from telegram import ReactionTypeEmoji, Update
 from telegram.error import BadRequest, Conflict, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
-from berangaria.config import (
-    ADMIN_MODE, SUMMARY_INTERVAL, MAX_CONTEXT_TOKENS,
-    ALLOWED_USERS, ALLOWED_GROUPS, OWNER_USER_ID, VISION_MODE, VIDEO_MAX_DURATION_SEC,
-    VIDEO_MAX_FILE_SIZE_BYTES,
-    AUDIO_MAX_DURATION_SEC, MESSAGE_DEBOUNCE_SECONDS, MAX_MEDIA_ITEMS_IN_CONTEXT,
-    MAX_BUFFERED_MESSAGES, MAX_BUFFERED_CHARS,
-    LOG_MESSAGE_PREVIEW_CHARS,
-)
-from berangaria.core.state import (
-    histories, get_history_key, message_buffer, chat_tokens, api_call_count,
-    get_history_lock, get_turn_lock, _buffer_lock, touch_activity, save_history,
-)
-from berangaria.core import state
-from berangaria.core import alerts
-from berangaria.core import polling_diagnostics
-from berangaria.core.logging_setup import flush_log_handlers
-from berangaria.chat.llm_client import summarize_history, send_llm_request
-from berangaria.chat import media_handlers
-from berangaria.chat import message_queue
-from berangaria.chat import analytics_ui
 from berangaria.analytics import store as analytics_store
-from berangaria.memory.pipeline import (
-    abandon_memory_sources,
-    enqueue_memory_source,
-    release_memory_sources,
+from berangaria.chat import analytics_ui, media_handlers, message_queue
+from berangaria.chat.llm_client import send_llm_request, summarize_history
+from berangaria.config import (
+    ADMIN_MODE,
+    ALLOWED_GROUPS,
+    ALLOWED_USERS,
+    AUDIO_MAX_DURATION_SEC,
+    IMAGE_VISION_PROVIDER,
+    LOG_MESSAGE_PREVIEW_CHARS,
+    MAX_BUFFERED_CHARS,
+    MAX_BUFFERED_MESSAGES,
+    MAX_CONTEXT_TOKENS,
+    MAX_MEDIA_ITEMS_IN_CONTEXT,
+    MESSAGE_DEBOUNCE_SECONDS,
+    OWNER_USER_ID,
+    SUMMARY_INTERVAL,
+    VIDEO_MAX_DURATION_SEC,
+    VIDEO_MAX_FILE_SIZE_BYTES,
+    VISION_MODE,
+)
+from berangaria.core import alerts, polling_diagnostics, state
+from berangaria.core.logging_setup import flush_log_handlers
+from berangaria.core.state import (
+    _buffer_lock,
+    api_call_count,
+    chat_tokens,
+    get_history_key,
+    get_history_lock,
+    get_turn_lock,
+    histories,
+    message_buffer,
+    save_history,
+    touch_activity,
+)
+from berangaria.core.utils import (
+    download_audio_to_file,
+    download_media_as_base64,
+    download_video_to_file,
+    escape_user_text,
+    get_video_duration,
+    is_bot_mentioned,
+    now_local,
+    should_reply_randomly,
+    strip_tiktok_urls,
 )
 from berangaria.media.vision import (
+    VISION_FAILED_IMAGE,
+    VISION_FAILED_VIDEO,
     describe_image_bytes,
     describe_images,
     describe_video,
     transcribe_audio,
-    VISION_FAILED_IMAGE,
-    VISION_FAILED_VIDEO,
 )
-from berangaria.core.utils import (
-    escape_user_text, is_bot_mentioned, should_reply_randomly,
-    download_media_as_base64, download_video_to_file, download_audio_to_file, get_video_duration,
-    now_local, strip_tiktok_urls,
+from berangaria.memory.pipeline import (
+    abandon_memory_sources,
+    enqueue_memory_source,
+    release_memory_sources,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,6 +122,7 @@ def _media_runtime() -> media_handlers.MediaRuntime:
         describe_images=describe_images,
         describe_video=describe_video,
         transcribe_audio=transcribe_audio,
+        image_vision_provider=IMAGE_VISION_PROVIDER,
     )
 
 
@@ -381,12 +403,11 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # turn -> _buffer_lock нет больше нигде, и заводить её нельзя.
     await _discard_pending_buffers(key, chat_id, user_id, is_group)
 
-    async with get_turn_lock(key):
-        async with get_history_lock(key):
-            existed = key in histories
-            deleted = state.delete_history(key)  # Чистим и в БД
-            if deleted:
-                histories.pop(key, None)
+    async with get_turn_lock(key), get_history_lock(key):
+        existed = key in histories
+        deleted = state.delete_history(key)  # Чистим и в БД
+        if deleted:
+            histories.pop(key, None)
 
     if not deleted:
         await update.message.reply_text(
@@ -408,15 +429,15 @@ def _format_ping_reply() -> str:
         if snap.uptime_seconds is not None
         else "n/a"
     )
-    since_poll = (
-        f"{snap.seconds_since_poll:.0f}s"
-        if snap.seconds_since_poll is not None
+    since_update = (
+        f"{snap.seconds_since_update:.0f}s"
+        if snap.seconds_since_update is not None
         else "never"
     )
     return (
         "pong\n"
-        f"uptime={uptime} since_poll={since_poll} polls={snap.polls_seen} "
-        f"pid={snap.pid}"
+        f"uptime={uptime} since_update={since_update} "
+        f"updates={snap.updates_seen} pid={snap.pid}"
     )
 
 
@@ -459,7 +480,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text = analytics_ui.render_top(update.effective_chat.id)
     except Exception as exc:
-        logger.error("❌ Не удалось построить /top: %s", exc, exc_info=True)
+        logger.exception("❌ Не удалось построить /top: %s", exc)
         await update.message.reply_text("Статистика временно недоступна.")
         return
     await update.message.reply_text(text)
@@ -470,7 +491,7 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         text, keyboard = analytics_ui.render_dashboard()
     except Exception as exc:
-        logger.error("❌ Не удалось построить /dashboard: %s", exc, exc_info=True)
+        logger.exception("❌ Не удалось построить /dashboard: %s", exc)
         await update.message.reply_text("Панель временно недоступна.")
         return
     await update.message.reply_text(text, reply_markup=keyboard)
@@ -490,7 +511,7 @@ async def dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         text, keyboard = analytics_ui.render_dashboard(page, period)
     except Exception as exc:
-        logger.error("❌ Не удалось обновить /dashboard: %s", exc, exc_info=True)
+        logger.exception("❌ Не удалось обновить /dashboard: %s", exc)
         await query.answer("Статистика временно недоступна", show_alert=True)
         return
     await query.answer()
@@ -589,9 +610,7 @@ def _check_access_permissions(chat_id: int, user_id: int, is_group: bool) -> boo
         return True
     if is_group and ALLOWED_GROUPS and chat_id not in ALLOWED_GROUPS:
         return False
-    if not is_group and ALLOWED_USERS and user_id not in ALLOWED_USERS:
-        return False
-    return True
+    return not (not is_group and ALLOWED_USERS and user_id not in ALLOWED_USERS)
 
 
 def _extract_forward_info(message) -> str | None:
@@ -657,8 +676,9 @@ def _extract_reply_context(
 
 
 async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                        text: str, media_description: str = None,
-                        media_kind: str = None, mention_text: str = None):
+                        text: str, media_description: str | None = None,
+                        media_kind: str | None = None, mention_text: str | None = None,
+                        media_images: list[dict] | None = None):
     await message_queue.queue_message(
         update,
         context,
@@ -667,36 +687,7 @@ async def queue_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         media_kind,
         _queue_runtime(),
         mention_text=mention_text,
-    )
-
-
-async def queue_bridge_bot_message(
-    update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    text: str,
-    media_description: str | None = None,
-    media_kind: str | None = None,
-    reply_to_name: str | None = None,
-    reply_to_text: str | None = None,
-    reply_quote_selected: bool = False,
-    reply_quote_position: int | None = None,
-    reply_to_user_id: int | None = None,
-    created_at: float | None = None,
-):
-    await message_queue.queue_bridge_bot_message(
-        update,
-        context,
-        text=text,
-        media_description=media_description,
-        media_kind=media_kind,
-        reply_to_name=reply_to_name,
-        reply_to_text=reply_to_text,
-        reply_quote_selected=reply_quote_selected,
-        reply_quote_position=reply_quote_position,
-        reply_to_user_id=reply_to_user_id,
-        created_at=created_at,
-        runtime=_queue_runtime(),
+        media_images=media_images,
     )
 
 
@@ -765,6 +756,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     new_text = strip_tiktok_urls(edited.text or edited.caption or "")
     buffer_key = f"{chat_id}_{user_id}"
 
+    key = get_history_key(chat_id, not is_group, user_id)
     async with _buffer_lock:
         data = message_buffer.get(buffer_key)
         if data:
@@ -774,41 +766,45 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
                     m["text"] = new_text
                     if "telegram_text" in m:
                         m["telegram_text"] = new_text
+                    if new_text.strip() and not getattr(edited.from_user, "is_bot", False):
+                        state.update_memory_source_text(
+                            scope=key,
+                            message_id=edited.message_id,
+                            text=new_text,
+                        )
                     logger.info(
                         f"✏️ [cyan]Правка в буфере[/] (msg_id={edited.message_id}): "
                         f"'{old_text[:40]}' → '{new_text[:40]}'"
                     )
                     return
 
-    key = get_history_key(chat_id, not is_group, user_id)
-    async with get_turn_lock(key):
-        async with get_history_lock(key):
-            history = histories.get(key) or []
-            result = apply_user_message_edit(
-                history,
-                message_id=edited.message_id,
-                new_text=new_text,
-                is_group=is_group,
+    async with get_turn_lock(key), get_history_lock(key):
+        history = histories.get(key) or []
+        result = apply_user_message_edit(
+            history,
+            message_id=edited.message_id,
+            new_text=new_text,
+            is_group=is_group,
+        )
+        if result == "updated":
+            histories[key] = history
+            touch_activity(key)
+            save_history(key)
+            if new_text.strip():
+                state.update_memory_source_text(
+                    scope=key,
+                    message_id=edited.message_id,
+                    text=new_text,
+                )
+            logger.info(
+                f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
+                f"→ '{new_text[:40]}'"
             )
-            if result == "updated":
-                histories[key] = history
-                touch_activity(key)
-                save_history(key)
-                if new_text.strip():
-                    state.update_memory_source_text(
-                        scope=key,
-                        message_id=edited.message_id,
-                        text=new_text,
-                    )
-                logger.info(
-                    f"✏️ [cyan]Правка в истории[/] (msg_id={edited.message_id}, key={key}): "
-                    f"→ '{new_text[:40]}'"
-                )
-            elif result == "frozen":
-                logger.info(
-                    f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
-                    f"msg_id={edited.message_id} key={key}"
-                )
+        elif result == "frozen":
+            logger.info(
+                f"✏️ [dim]Правка проигнорирована (история уже у провайдера)[/] "
+                f"msg_id={edited.message_id} key={key}"
+            )
 
 
 async def handle_chat_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1006,24 +1002,23 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         return
 
     name = mr.user.first_name
-    async with get_turn_lock(key):
-        async with get_history_lock(key):
-            # История могла быть очищена, пока реакция ждала turn-lock.
-            history = histories.get(key)
-            if not history:
-                return
-            changed = _record_incoming_reaction_change(
-                history,
-                target_mid=mr.message_id,
-                actor_name=name,
-                actor_id=mr.user.id,
-                added=added,
-                removed=removed,
-            )
-            if not changed:
-                return
-            histories[key] = history
-            save_history(key)
+    async with get_turn_lock(key), get_history_lock(key):
+        # История могла быть очищена, пока реакция ждала turn-lock.
+        history = histories.get(key)
+        if not history:
+            return
+        changed = _record_incoming_reaction_change(
+            history,
+            target_mid=mr.message_id,
+            actor_name=name,
+            actor_id=mr.user.id,
+            added=added,
+            removed=removed,
+        )
+        if not changed:
+            return
+        histories[key] = history
+        save_history(key)
 
     for emoji in added:
         analytics_store.record_event(

@@ -20,9 +20,9 @@ class _Client:
 
 class _JsonResponse:
     status_code = 200
-    headers = {"x-generation-id": "gen-nonstream-error"}
 
     def __init__(self, data):
+        self.headers = {"x-generation-id": "gen-nonstream-error"}
         self.data = data
 
     def json(self):

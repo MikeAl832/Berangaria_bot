@@ -6,6 +6,39 @@ from collections.abc import Callable
 logger = logging.getLogger(__name__)
 
 
+def _format_content_for_log(content: object) -> str:
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+            elif item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+            elif item.get("type") == "image_url":
+                url = str((item.get("image_url") or {}).get("url") or "")
+                parts.append(f"<image_url chars={len(url)}>")
+            else:
+                parts.append(f"<{item.get('type', 'part')}>")
+        return "\n".join(parts)
+    return str(content if content is not None else "")
+
+
+def _format_tool_calls_for_log(tool_calls: object) -> str:
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return ""
+    rendered = []
+    for item in tool_calls:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+        name = fn.get("name") or item.get("type") or "tool"
+        args = str(fn.get("arguments") or "").strip()
+        if len(args) > 240:
+            args = args[:240] + "..."
+        rendered.append(f"{name}({args})")
+    return ", ".join(rendered)
+
+
 def log_request(messages: list[dict], *, enabled: bool) -> None:
     """Write the complete provider payload when full audit logging is enabled."""
     if not enabled:
@@ -15,7 +48,8 @@ def log_request(messages: list[dict], *, enabled: bool) -> None:
     logger.debug("[cyan]%s[/]", "=" * 80)
     for index, message in enumerate(messages, 1):
         role = message["role"]
-        content = str(message.get("content", ""))
+        content = _format_content_for_log(message.get("content", ""))
+        tool_summary = _format_tool_calls_for_log(message.get("tool_calls"))
         role_color = {
             "system": "magenta",
             "user": "cyan",
@@ -28,6 +62,8 @@ def log_request(messages: list[dict], *, enabled: bool) -> None:
             role.upper(),
         )
         logger.debug("Length: [dim]%s символов[/]", len(content))
+        if tool_summary:
+            logger.debug("Tool calls: [cyan]%s[/]", tool_summary)
         logger.debug("[%s]Content:[/]", role_color)
         suffix = "..." if len(content) > 2000 else ""
         logger.debug("[dim]%s%s[/]", content[:2000], suffix)
@@ -97,6 +133,16 @@ def reasoning_tokens(usage: dict) -> int:
     return max(0, total - prompt - completion)
 
 
+def cached_prompt_tokens(usage: dict) -> int:
+    """Read cached prompt tokens from either OpenAI/OpenRouter or DeepSeek usage fields."""
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details.get("cached_tokens") is not None:
+        return _nonneg_int(details.get("cached_tokens"))
+    if usage.get("prompt_cache_hit_tokens") is not None:
+        return _nonneg_int(usage.get("prompt_cache_hit_tokens"))
+    return 0
+
+
 def record_usage(
     usage: dict,
     *,
@@ -110,9 +156,13 @@ def record_usage(
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
     total_tokens = usage.get("total_tokens", 0)
-    details = usage.get("prompt_tokens_details", {})
-    cached_tokens = details.get("cached_tokens", 0)
-    cache_write_tokens = details.get("cache_write_tokens", 0)
+    details = usage.get("prompt_tokens_details") or {}
+    cached_tokens = cached_prompt_tokens(usage)
+    cache_write_tokens = (
+        details.get("cache_write_tokens", 0)
+        if isinstance(details, dict)
+        else 0
+    )
     thinking_tokens = reasoning_tokens(usage)
     chat_tokens[key] = total_tokens
     logger.info(

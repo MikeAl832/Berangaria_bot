@@ -2,21 +2,20 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from berangaria.core import state
-from berangaria.core import utils
+from berangaria.config import BOT_TZ
+from berangaria.core import state, utils
 from berangaria.core.utils import (
     calculate_random_reply_probability,
     escape_user_text,
     get_video_duration,
-    now_local,
-    next_summary_run,
-    is_url_only_text,
     is_low_signal_user_text,
+    is_url_only_text,
+    next_summary_run,
+    now_local,
+    should_reply_randomly,
     strip_tiktok_urls,
     strip_tiktok_urls_preserving_whitespace,
-    should_reply_randomly,
 )
-from berangaria.config import BOT_TZ
 
 
 def test_escape_user_text_neutralizes_service_tags():

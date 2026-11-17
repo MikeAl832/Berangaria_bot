@@ -105,11 +105,21 @@ def test_html_fallback_preserves_target_and_forum_thread():
 
     assert receipts == [DeliveredMessage("**Hello**", 801, 42, 2)]
     html, plain = [call.kwargs for call in runtime.context.bot.send_message.call_args_list]
-    assert html == dict(chat_id=100, text="<b>Hello</b>", parse_mode="HTML",
-                        message_thread_id=55, reply_to_message_id=42,
-                        allow_sending_without_reply=True)
-    assert plain == dict(chat_id=100, text="Hello", message_thread_id=55,
-                         reply_to_message_id=42, allow_sending_without_reply=True)
+    assert html == {
+        "chat_id": 100,
+        "text": "<b>Hello</b>",
+        "parse_mode": "HTML",
+        "message_thread_id": 55,
+        "reply_to_message_id": 42,
+        "allow_sending_without_reply": True,
+    }
+    assert plain == {
+        "chat_id": 100,
+        "text": "Hello",
+        "message_thread_id": 55,
+        "reply_to_message_id": 42,
+        "allow_sending_without_reply": True,
+    }
 
 
 def test_failed_plain_fallback_retains_prior_receipts_without_retry():

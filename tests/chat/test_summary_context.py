@@ -69,7 +69,7 @@ def test_summary_request_separates_recent_context_and_filters_secrets(monkeypatc
     assert history == before
     assert result[-1]["content"] == history[-1]["content"]
     assert result[-1] is not history[-1]
-    assert captured["reasoning"] == {"effort": "high"}
+    assert captured["thinking"] == {"type": "enabled"}
     assert captured["max_tokens"] == 8192
 
 

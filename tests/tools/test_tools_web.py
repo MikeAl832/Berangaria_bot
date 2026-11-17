@@ -2,8 +2,9 @@
 Характеризационные тесты berangaria/tools/web.py: rate limiter и read_url.
 Сеть не трогаем — httpx.Client подменяется фейком.
 """
-from berangaria.tools import web as tools
+from typing import ClassVar
 
+from berangaria.tools import web as tools
 
 # ---------- _check_rate_limit ----------
 
@@ -62,8 +63,8 @@ class _FakeResponse:
 
 class _FakeClient:
     """Ловит запрос, с которым реально пошёл read_url."""
-    captured = {}
-    responses = []
+    captured: ClassVar[dict] = {}
+    responses: ClassVar[list] = []
 
     def __init__(self, *a, **kw):
         pass
@@ -89,7 +90,8 @@ class _FakeClient:
 
 
 def _resolve_to(monkeypatch, *addresses):
-    """Подменяет DNS фиксированным списком адресов."""
+    """Подменяет DNS фиксированным списком адресов и включает прямой HTTP-ридер."""
+    monkeypatch.setattr(tools, "SEARCH_PROVIDER", "ddgs")
     queue = list(addresses)
 
     def fake_getaddrinfo(host, port, **kw):
@@ -281,3 +283,106 @@ def test_read_url_client_disables_automatic_redirects(monkeypatch):
     tools.read_url("https://example.com/page")
 
     assert captured_kwargs["follow_redirects"] is False
+
+
+def test_deepseek_search_formats_results(monkeypatch):
+    tools._search_timestamps.clear()
+    monkeypatch.setattr(tools, "SEARCH_PROVIDER", "deepseek")
+    monkeypatch.setattr(tools, "DEEPSEEK_API_KEY", "ds-test-key")
+    captured = {}
+
+    class SearchClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {
+                        "results": [
+                            {
+                                "title": "DeepSeek V4.1",
+                                "snippet": "Native vision and search",
+                                "url": "https://api-docs.deepseek.com/news",
+                            }
+                        ]
+                    }
+
+            return R()
+
+    monkeypatch.setattr(tools.httpx, "Client", SearchClient)
+    out = tools.web_search("DeepSeek V4.1", max_results=3)
+    assert captured["url"].endswith("/v1/tools/search")
+    assert captured["headers"]["Authorization"] == "Bearer ds-test-key"
+    assert "DeepSeek V4.1" in out
+    assert "Native vision and search" in out
+    assert "https://api-docs.deepseek.com/news" in out
+    tools._search_timestamps.clear()
+
+
+def test_deepseek_fetch_validates_ssrf_before_calling_api(monkeypatch):
+    monkeypatch.setattr(tools, "SEARCH_PROVIDER", "deepseek")
+    monkeypatch.setattr(tools, "DEEPSEEK_API_KEY", "ds-test-key")
+    called = []
+
+    class BoomClient:
+        def __init__(self, *a, **kw):
+            called.append(1)
+
+    monkeypatch.setattr(tools.httpx, "Client", BoomClient)
+    out = tools.read_url("http://127.0.0.1:6333/collections")
+    assert "отклонён" in out.lower()
+    assert called == []
+
+
+def test_deepseek_fetch_returns_markdown_content(monkeypatch):
+    _resolve_to(monkeypatch, "93.184.216.34")
+    monkeypatch.setattr(tools, "SEARCH_PROVIDER", "deepseek")
+    monkeypatch.setattr(tools, "DEEPSEEK_API_KEY", "ds-test-key")
+    captured = {}
+
+    class FetchClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {
+                        "title": "Example Page",
+                        "content": "# Markdown body\nЧистый текст страницы.",
+                    }
+
+            return R()
+
+    monkeypatch.setattr(tools.httpx, "Client", FetchClient)
+    out = tools.read_url("https://example.com/article")
+    assert captured["url"].endswith("/v1/tools/fetch")
+    assert captured["json"] == {"url": "https://example.com/article"}
+    assert "Заголовок: Example Page" in out
+    assert "Чистый текст страницы" in out

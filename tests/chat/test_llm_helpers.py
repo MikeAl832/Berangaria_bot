@@ -9,37 +9,39 @@ import asyncio
 import copy
 import logging
 
-from berangaria.chat import llm_client
-from berangaria.chat import history_rendering, llm_diagnostics, reply_formatting
+from berangaria import config as bot_config
+from berangaria.chat import (
+    history_rendering,
+    llm_client,
+    llm_diagnostics,
+    reply_formatting,
+)
+from berangaria.chat.llm_client import (
+    _approved_memory_recall_results,
+    _build_memory_relevance_query,
+    _build_memory_search_query,
+    _build_payload_prefix,
+    _build_sid_map,
+    _build_system_prompt,
+    _clean_reply,
+    _count_memory_block_facts,
+    _current_date_str,
+    _extract_plain_text,
+    _filter_approved_memory_results,
+    _format_memory_block,
+    _is_meaningful_memory_query,
+    _provider_trace_for_history,
+    _render_history_for_api,
+    _renumber_sids,
+    markdown_to_html,
+    strip_markdown,
+)
 from berangaria.config import (
     CHAT_API_URL,
     GENERATION_PARAMS,
     MODEL,
 )
-from berangaria import config as bot_config
 from berangaria.core import state
-
-from berangaria.chat.llm_client import (
-    markdown_to_html,
-    strip_markdown,
-    _clean_reply,
-    _render_history_for_api,
-    _build_sid_map,
-    _renumber_sids,
-    _extract_plain_text,
-    _format_memory_block,
-    _count_memory_block_facts,
-    _filter_approved_memory_results,
-    _is_meaningful_memory_query,
-    _build_memory_search_query,
-    _build_memory_relevance_query,
-    _approved_memory_recall_results,
-    _build_system_prompt,
-    _build_payload_prefix,
-    _current_date_str,
-    _provider_trace_for_history,
-)
-
 
 # ---------- markdown_to_html ----------
 
@@ -74,42 +76,48 @@ def test_payload_prefix_puts_date_in_a_second_system_message():
     assert " year." not in date_line
 
 
-def test_chat_headers_send_openrouter_session_affinity():
+def test_chat_headers_deepseek_vs_openrouter(monkeypatch):
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER", "deepseek")
+    monkeypatch.setattr(bot_config, "CHAT_API_KEY", "ds-key")
+    ds_headers = bot_config.chat_api_headers(session_id="berangaria-abc")
+    assert ds_headers == {
+        "Authorization": "Bearer ds-key",
+        "Content-Type": "application/json",
+    }
+
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER", "openrouter")
+    monkeypatch.setattr(bot_config, "CHAT_API_KEY", "or-key")
     regular = bot_config.chat_api_headers()
     pinned = bot_config.chat_api_headers(session_id="berangaria-abc")
-
     assert "x-session-id" not in regular
     assert pinned["x-session-id"] == "berangaria-abc"
     assert pinned["HTTP-Referer"] == bot_config.OPENROUTER_HTTP_REFERER
     assert pinned["X-Title"] == bot_config.OPENROUTER_APP_TITLE
-    assert regular["HTTP-Referer"] == bot_config.OPENROUTER_HTTP_REFERER
-    assert "X-OpenRouter-Metadata" not in pinned
-    assert "x-grok-conv-id" not in pinned
 
 
-def test_apply_chat_gateway_pins_meta_with_required_parameters():
+def test_apply_chat_gateway_deepseek_leaves_payload_clean(monkeypatch):
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER", "deepseek")
+    payload = bot_config.apply_chat_gateway(
+        {"model": MODEL, "messages": []},
+        session_id="berangaria-abc",
+    )
+    assert "session_id" not in payload
+    assert "provider" not in payload
+
+
+def test_apply_chat_gateway_openrouter_attaches_optional_provider_pin(monkeypatch):
+    monkeypatch.setattr(bot_config, "CHAT_PROVIDER", "openrouter")
+    monkeypatch.setattr(
+        bot_config,
+        "OPENROUTER_PROVIDER",
+        {"only": ["deepseek"], "allow_fallbacks": False},
+    )
     payload = bot_config.apply_chat_gateway(
         {"model": MODEL, "messages": []},
         session_id="berangaria-abc",
     )
     assert payload["session_id"] == "berangaria-abc"
-    assert payload["provider"] == {
-        "only": ["meta"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
-    assert "service_tier" not in payload
-
-
-def test_apply_chat_gateway_keeps_provider_pin_without_session_id():
-    payload = bot_config.apply_chat_gateway({"model": MODEL, "messages": []}, session_id=None)
-    assert "session_id" not in payload
-    assert payload["provider"] == {
-        "only": ["meta"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
-    assert "service_tier" not in payload
+    assert payload["provider"] == {"only": ["deepseek"], "allow_fallbacks": False}
 
 
 def test_markdown_html_escapes_special_chars():
@@ -370,40 +378,6 @@ def test_render_reaction_resolves_live_sid_from_mid():
 def test_render_user_without_sid_unchanged():
     hist = [{"role": "user", "content": "hi"}]
     assert _render_history_for_api(hist) == [{"role": "user", "content": "hi"}]
-
-
-def test_render_assistant_voice_like_sticker_note():
-    """Voice is an action note with quoted speech — not typed assistant prose."""
-    hist = [{
-        "role": "assistant",
-        "content": "",
-        "voices": [{"text": "Ну да. Конечно.", "emotion": "sarcastic"}],
-    }]
-    out = _render_history_for_api(hist)
-    assert len(out) == 1
-    assert out[0]["role"] == "system"
-    assert "голосовое" in out[0]["content"]
-    assert "Ну да. Конечно." in out[0]["content"]
-    assert "sarcastic" in out[0]["content"]
-    assert "действия в чате" in out[0]["content"]
-    # Must not also appear as a normal assistant message (that looked like typing).
-    assert not any(m.get("role") == "assistant" for m in out)
-
-
-def test_render_legacy_voice_row_with_content_not_duplicated():
-    """Older rows may have spoken text in content; still only one voice note."""
-    hist = [{
-        "role": "assistant",
-        "content": "Ну да. Конечно.",
-        "voices": [{"text": "Ну да. Конечно.", "emotion": "calm"}],
-    }]
-    out = _render_history_for_api(hist)
-    assistant_msgs = [m for m in out if m["role"] == "assistant"]
-    assert assistant_msgs == []
-    assert any(
-        m["role"] == "system" and "голосовое" in m["content"] and "Ну да" in m["content"]
-        for m in out
-    )
 
 
 # ---------- _build_sid_map / _renumber_sids ----------
@@ -738,29 +712,14 @@ def test_successful_summary_returns_new_list_and_pins_meta(monkeypatch):
     assert "RTX 5070 Ti" in result[0]["content"]
     assert len(result) == llm_client.SUMMARY_INTERVAL + 1
     assert captured["url"] == llm_client.CHAT_API_URL
-    assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
-    assert captured["headers"]["X-Title"] == "Berangaria"
-    assert captured["headers"]["x-session-id"] == llm_client._chat_session_id(
-        "private_1"
-    )
-    assert "x-grok-conv-id" not in captured["headers"]
+    assert captured["headers"]["Authorization"].startswith("Bearer ")
     assert captured["payload"]["model"] == llm_client.MODEL
-    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
     assert captured["payload"]["temperature"] == 0.3
-    assert "service_tier" not in captured["payload"]
-    assert "thinking" not in captured["payload"]
-    assert "reasoning_effort" not in captured["payload"]
     assert captured["payload"]["max_tokens"] == 8192
-    assert "top_k" not in captured["payload"]
-    assert "top_p" not in captured["payload"]
-    assert "min_p" not in captured["payload"]
+    assert "provider" not in captured["payload"]
+    assert "session_id" not in captured["payload"]
     assert captured["timeout"] == 120.0
-    assert captured["payload"]["provider"] == {
-        "only": ["meta"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
-    assert captured["payload"]["session_id"] == llm_client._chat_session_id("private_1")
 
 
 def test_summary_null_content_does_not_crash_and_keeps_history(monkeypatch):
@@ -894,20 +853,38 @@ def test_usage_log_labels_fallback_estimate_for_invalid_provider_cost(caplog):
     assert "источник=локальная оценка" in caplog.text
 
 
-def test_shipped_chat_model_is_muse_spark_with_low_reasoning():
-    """Lock the shipped OpenRouter slug, prices, and sampling. Update with config.yaml."""
-    assert MODEL == "meta/muse-spark-1.3-contributor"
-    assert "openrouter.ai" in CHAT_API_URL
+def test_usage_reads_deepseek_prompt_cache_hit_tokens(caplog):
+    caplog.set_level(logging.INFO, logger="berangaria.chat.llm_diagnostics")
+    usage = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 50,
+        "total_tokens": 1050,
+        "prompt_cache_hit_tokens": 800,
+        "prompt_cache_miss_tokens": 200,
+    }
+    chat_tokens = {}
+    cost = llm_diagnostics.record_usage(
+        usage,
+        key="private_1",
+        chat_tokens=chat_tokens,
+        estimate_request_cost=llm_client._estimate_request_cost,
+    )
+    assert cost > 0
+    assert "кэш-чтение=[cyan]800[/]" in caplog.text
+
+
+def test_shipped_chat_model_is_deepseek_flash():
+    """Lock the shipped DeepSeek default model, prices, and sampling."""
+    assert bot_config.CHAT_PROVIDER == "deepseek"
+    assert MODEL == "deepseek-flash"
+    assert CHAT_API_URL == "https://api.deepseek.com/chat/completions"
     assert GENERATION_PARAMS.get("temperature") == 1.0
-    assert GENERATION_PARAMS.get("reasoning") == {"effort": "low"}
-    assert bot_config.CHAT_PROVIDER == "meta"
-    assert llm_client.PRICE_PROMPT_CACHE_MISS == 0.10
-    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.002
-    assert llm_client.PRICE_PROMPT_CACHE_WRITE == 0.10
-    assert llm_client.PRICE_COMPLETION == 0.20
-    assert "top_p" not in GENERATION_PARAMS
-    assert "top_k" not in GENERATION_PARAMS
-    assert "min_p" not in GENERATION_PARAMS
+    assert GENERATION_PARAMS.get("thinking") == {"type": "disabled"}
+    assert bot_config.SUMMARY_GENERATION_PARAMS.get("thinking") == {"type": "enabled"}
+    assert llm_client.PRICE_PROMPT_CACHE_MISS == 0.15
+    assert llm_client.PRICE_PROMPT_CACHE_HIT == 0.003
+    assert llm_client.PRICE_PROMPT_CACHE_WRITE == 0.15
+    assert llm_client.PRICE_COMPLETION == 0.60
 
 
 def test_chat_session_id_is_stable_opaque_and_scope_specific():

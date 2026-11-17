@@ -56,8 +56,13 @@ def main():
 
     # Импортируем после возможного переопределения QDRANT_HOST
     from berangaria.stickers.store import (
-        sticker_text, get_client, ensure_collection, upsert_stickers,
-        collection_count, missing_records, STICKER_COLLECTION,
+        STICKER_COLLECTION,
+        collection_count,
+        ensure_collection,
+        get_client,
+        missing_records,
+        sticker_text,
+        upsert_stickers,
     )
 
     if not os.path.exists(args.input):

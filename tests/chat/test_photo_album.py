@@ -62,6 +62,7 @@ def test_album_photos_one_gemini_call(monkeypatch):
     """Several media_group photos → one describe_images, one queue_message."""
     _clear_album_state()
     monkeypatch.setattr(handlers, "VISION_MODE", True)
+    monkeypatch.setattr(handlers, "IMAGE_VISION_PROVIDER", "gemini")
     monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
     monkeypatch.setattr(handlers, "ALBUM_GATHER_SECONDS", 0.05)
 
@@ -124,6 +125,7 @@ def test_album_photos_one_gemini_call(monkeypatch):
 def test_single_photo_still_uses_describe_image_bytes(monkeypatch):
     _clear_album_state()
     monkeypatch.setattr(handlers, "VISION_MODE", True)
+    monkeypatch.setattr(handlers, "IMAGE_VISION_PROVIDER", "gemini")
     monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
 
     describe_images_calls = []
@@ -160,6 +162,7 @@ def test_single_photo_still_uses_describe_image_bytes(monkeypatch):
 def test_album_cache_hit_skips_vision(monkeypatch):
     _clear_album_state()
     monkeypatch.setattr(handlers, "VISION_MODE", True)
+    monkeypatch.setattr(handlers, "IMAGE_VISION_PROVIDER", "gemini")
     monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
     monkeypatch.setattr(handlers, "ALBUM_GATHER_SECONDS", 0.05)
 
@@ -203,6 +206,7 @@ def test_album_cache_hit_skips_vision(monkeypatch):
 def test_album_policy_block_passed_to_queue(monkeypatch):
     _clear_album_state()
     monkeypatch.setattr(handlers, "VISION_MODE", True)
+    monkeypatch.setattr(handlers, "IMAGE_VISION_PROVIDER", "gemini")
     monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
     monkeypatch.setattr(handlers, "ALBUM_GATHER_SECONDS", 0.05)
 
@@ -234,3 +238,88 @@ def test_album_policy_block_passed_to_queue(monkeypatch):
     assert queued == [vision.POLICY_BLOCKED_IMAGE]
     # Policy placeholder is cacheable so we do not re-hit Gemini for the same album.
     assert state.get_cached_media_description(handlers._album_cache_key(["p1", "p2"]))
+
+
+def test_native_chat_vision_skips_gemini_and_renders_image_urls(monkeypatch):
+    """image_vision_provider='chat' caches image bytes and emits OpenAI image_url blocks."""
+    from berangaria.chat.history_rendering import render_history_for_api
+
+    _clear_album_state()
+    state.media_image_cache.clear()
+    monkeypatch.setattr(handlers, "VISION_MODE", True)
+    monkeypatch.setattr(handlers, "IMAGE_VISION_PROVIDER", "chat")
+    monkeypatch.setattr(handlers, "ALLOWED_USERS", [1])
+    monkeypatch.setattr(handlers, "ALBUM_GATHER_SECONDS", 0.05)
+
+    gemini_called = []
+    queued = []
+
+    async def fake_download(file_id, context, return_bytes=False, **kwargs):
+        raw = f"img-{file_id}".encode()
+        if return_bytes:
+            return raw, "image/jpeg"
+        import base64
+        return base64.b64encode(raw).decode("utf-8"), "image/jpeg"
+
+    async def boom_gemini(*args, **kwargs):
+        gemini_called.append(1)
+        raise AssertionError("Gemini must not be called when image_vision_provider='chat'")
+
+    async def fake_queue(
+        update, context, text, media_description=None, media_kind=None, media_images=None
+    ):
+        queued.append({
+            "text": text,
+            "media_description": media_description,
+            "media_images": media_images,
+        })
+
+    monkeypatch.setattr(handlers, "download_media_as_base64", fake_download)
+    monkeypatch.setattr(handlers, "describe_images", boom_gemini)
+    monkeypatch.setattr(handlers, "describe_image_bytes", boom_gemini)
+    monkeypatch.setattr(handlers, "queue_message", fake_queue)
+
+    u1 = _Update(_Message(media_group_id="mg-native", photos=[_PhotoSize("f1", "n1")], caption="смотри"))
+    u2 = _Update(_Message(media_group_id="mg-native", photos=[_PhotoSize("f2", "n2")]))
+
+    async def run():
+        await handlers.handle_media(u1, _Context())
+        await handlers.handle_media(u2, _Context())
+        await asyncio.sleep(0.2)
+
+    asyncio.run(run())
+
+    assert gemini_called == []
+    assert len(queued) == 1
+    assert queued[0]["media_images"] == [
+        {"id": "n1", "mime": "image/jpeg"},
+        {"id": "n2", "mime": "image/jpeg"},
+    ]
+
+    history = [
+        {
+            "role": "user",
+            "content": "[User: Tester] [Message: смотри] [Image description: прикреплён альбом из 2 фото]",
+            "sid": 1,
+            "media_images": queued[0]["media_images"],
+        }
+    ]
+    rendered = render_history_for_api(history, native_images=True)
+    assert isinstance(rendered[0]["content"], list)
+    assert rendered[0]["content"][0]["type"] == "text"
+    assert "[#1]" in rendered[0]["content"][0]["text"]
+    assert len(rendered[0]["content"]) == 3
+    assert rendered[0]["content"][1]["type"] == "image_url"
+    assert rendered[0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    # By default (no sliding window), appending later text turns preserves earlier image_url blocks
+    # so the committed provider prefix never mutates and KV-cache stays valid.
+    for sid in range(2, 8):
+        history.append({"role": "user", "content": f"[User: Tester] [Message: ход {sid}]", "sid": sid})
+    preserved = render_history_for_api(history, native_images=True)
+    assert isinstance(preserved[0]["content"], list)
+    assert len(preserved[0]["content"]) == 3
+
+    # Explicit image_window remains supported when passed directly.
+    windowed = render_history_for_api(history, native_images=True, image_window=1)
+    assert isinstance(windowed[0]["content"], str)

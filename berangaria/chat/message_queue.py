@@ -28,6 +28,7 @@ from berangaria.core.utils import (
     now_local,
     strip_tiktok_urls,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,6 +125,13 @@ async def process_buffered_messages(
         overflow = len(media_items) - runtime.max_media_items_in_context
         message_parts.append(f"[+{overflow} more media items]")
 
+    combined_images: list[dict] = []
+    for message in messages:
+        for img_ref in message.get("media_images") or []:
+            if isinstance(img_ref, dict) and img_ref.get("id"):
+                combined_images.append(img_ref)
+    combined_images = combined_images[: runtime.max_media_items_in_context]
+
     message_content = " ".join(message_parts)
     # The lock order is an invariant: whole turn first, short history mutation second.
     async with get_turn_lock(key):
@@ -147,6 +155,8 @@ async def process_buffered_messages(
                 "created_at": first_msg.get("created_at"),
                 "provider_sent": False,
             }
+            if combined_images:
+                entry["media_images"] = combined_images
             telegram_messages = [
                 {
                     "mid": message.get("message_id"),
@@ -208,17 +218,19 @@ async def queue_message(
     media_kind: str | None,
     runtime: QueueRuntime,
     mention_text: str | None = None,
+    media_images: list[dict] | None = None,
 ) -> None:
     """Normalize one user update and append it to the debounce buffer."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
+    user_name = update.effective_user.first_name or "bot"
+    is_other_bot = bool(getattr(update.effective_user, "is_bot", False))
     is_group = update.effective_chat.type in ["group", "supergroup"]
     key = get_history_key(chat_id, not is_group, user_id)
     buffer_key = f"{chat_id}_{user_id}"
 
     if not runtime.check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
+        if not is_group and not is_other_bot:
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
@@ -245,11 +257,22 @@ async def queue_message(
         state.record_group_activity(chat_id) if is_group else None
     )
 
+    if is_other_bot:
+        author_kind = "Bot"
+        actor_kind = "bot"
+    elif user_id == runtime.owner_user_id:
+        author_kind = "Owner"
+        actor_kind = "owner"
+    else:
+        author_kind = "User"
+        actor_kind = "user"
+
     msg_data = {
         "text": text,
         "telegram_text": text,
         "media_description": media_description,
         "media_kind": media_kind,
+        "media_images": list(media_images or []),
         "timestamp": timestamp,
         "reply_to_name": reply_to_name,
         "reply_to_text": reply_to_text,
@@ -262,13 +285,15 @@ async def queue_message(
             if getattr(update.message, "date", None) is not None
             else time.time()
         ),
-        "author_kind": (
-            "Owner" if user_id == runtime.owner_user_id else "User"
-        ),
+        "author_kind": author_kind,
         "group_activity_token": group_activity_token,
     }
-    memory_text = runtime.build_memory_text(
-        original_text, is_forwarded=forward_info is not None
+    memory_text = (
+        ""
+        if is_other_bot
+        else runtime.build_memory_text(
+            original_text, is_forwarded=forward_info is not None
+        )
     )
     memory_source_id = None
     if memory_text:
@@ -290,7 +315,7 @@ async def queue_message(
             chat_type=update.effective_chat.type,
             actor_id=user_id,
             actor_name=user_name,
-            actor_kind="owner" if user_id == runtime.owner_user_id else "user",
+            actor_kind=actor_kind,
             message_id=update.message.message_id,
             occurred_at=msg_data["created_at"],
             details={"media_kind": media_kind} if media_kind else None,
@@ -306,108 +331,6 @@ async def queue_message(
         context=context,
         key=key,
         is_group=is_group,
-        user_id=user_id,
-        user_name=user_name,
-        mentioned=mentioned,
-        runtime=runtime,
-    )
-
-
-async def queue_bridge_bot_message(
-    update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    text: str,
-    media_description: str | None,
-    media_kind: str | None,
-    reply_to_name: str | None,
-    reply_to_text: str | None,
-    reply_quote_selected: bool,
-    reply_quote_position: int | None,
-    reply_to_user_id: int | None,
-    created_at: float | None,
-    runtime: QueueRuntime,
-) -> None:
-    """Ingest an allowlisted group message from the read-only user bridge."""
-    from berangaria.config import BOT_NAMES
-    from berangaria.user_bridge.policy import message_mentions_bot
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "bot"
-    chat_type = getattr(update.effective_chat, "type", "supergroup")
-    if chat_type not in ("group", "supergroup"):
-        return
-    if not runtime.check_access_permissions(chat_id, user_id, True):
-        logger.info("👀 [dim]User bridge: чат не в allowlist chat=%s[/]", chat_id)
-        return
-
-    text = strip_tiktok_urls(text or "")
-    now = now_local()
-    timestamp = f"{now.hour:02d}:{now.minute:02d}"
-    bot = context.bot
-    bot_id = getattr(bot, "id", None)
-    if bot_id is None:
-        try:
-            bot_id = (await bot.get_me()).id
-        except Exception:
-            bot_id = 0
-
-    mentioned = message_mentions_bot(
-        text,
-        bot_id=int(bot_id or 0),
-        bot_username=getattr(bot, "username", None),
-        bot_first_name=getattr(bot, "first_name", None),
-        reply_to_user_id=reply_to_user_id,
-        bot_names=BOT_NAMES,
-    )
-    group_activity_token = state.record_group_activity(chat_id)
-    if not text and not media_description:
-        return
-
-    key = get_history_key(chat_id, False, user_id)
-    buffer_key = f"bridge_{chat_id}_{user_id}"
-    msg_data = {
-        "text": text,
-        "telegram_text": text,
-        "media_description": media_description,
-        "media_kind": media_kind,
-        "timestamp": timestamp,
-        "reply_to_name": reply_to_name,
-        "reply_to_text": reply_to_text,
-        "reply_quote_selected": reply_quote_selected,
-        "reply_quote_position": reply_quote_position,
-        "forward_info": None,
-        "message_id": update.message.message_id,
-        "created_at": created_at if created_at is not None else time.time(),
-        "author_kind": "Bot",
-        "memory_source_id": None,
-        "group_activity_token": group_activity_token,
-    }
-    logger.info(
-        "👀 [[blue]bridge | %s[/]] [magenta]%s[/]: %s",
-        chat_id,
-        user_name,
-        runtime.log_message_preview(text) or "(media)",
-    )
-    analytics_store.record_event(
-        "user_message",
-        chat_id=chat_id,
-        chat_type=chat_type,
-        actor_id=user_id,
-        actor_name=user_name,
-        actor_kind="bot",
-        message_id=update.message.message_id,
-        occurred_at=msg_data["created_at"],
-        details={"media_kind": media_kind} if media_kind else None,
-    )
-    await enqueue_buffered(
-        buffer_key=buffer_key,
-        msg_data=msg_data,
-        update=update,
-        context=context,
-        key=key,
-        is_group=True,
         user_id=user_id,
         user_name=user_name,
         mentioned=mentioned,

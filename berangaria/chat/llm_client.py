@@ -1,38 +1,16 @@
-import logging
 import asyncio
 import copy
 import hashlib
 import json
+import logging
 import random
+import ssl
+
 import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from berangaria.config import (
-    CHAT_API_URL, SUMMARY_INTERVAL as _SUMMARY_INTERVAL, VISION_MODE,
-    MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, MODEL, GENERATION_PARAMS, FULL_DEBUG_LOGS,
-    PRICE_PROMPT_CACHE_MISS, PRICE_PROMPT_CACHE_HIT, PRICE_PROMPT_CACHE_WRITE,
-    PRICE_COMPLETION, CHAT_PROVIDER,
-    MEMORY_SEARCH_LIMIT, MEMORY_MIN_SCORE, MEMORY_MAX_CHARS,
-    MEMORY_QUERY_MIN_CHARS, MEMORY_QUERY_RECENT_MESSAGES, MAX_API_RETRIES,
-    MAX_TOOL_ROUNDS, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL_SECONDS,
-    STREAM_PREVIEW_MIN_CHARS,
-    MULTI_MESSAGE_DELAY_MIN, MULTI_MESSAGE_DELAY_MAX, MULTI_MESSAGE_DELAY_TOTAL_CAP,
-    MULTI_MESSAGE_CHARS_PER_SEC, chat_api_headers, apply_chat_gateway,
-)
 from berangaria.analytics import store as analytics_store
-from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
-from berangaria.core.state import histories, chat_tokens, api_call_count, get_history_lock, save_history
-from berangaria.memory import store as memory_store
-from berangaria.core import state
-from berangaria.core import alerts
-from berangaria.tools.schemas import TOOLS
-from berangaria.tools.dispatch import ToolTurn, available_tools_for_turn, dispatch_tool_call
-from berangaria.chat.streaming import stream_chat_completion
-from berangaria.chat.turn_outcome import TurnOutcome
-from berangaria.chat.outgoing_message import DeliveredMessage, OutgoingMessage
-from berangaria.chat.chat_actions import ChatActionHeartbeat, effective_message_thread_id
 from berangaria.chat import (
     assistant_turn,
     completion_transport,
@@ -41,20 +19,92 @@ from berangaria.chat import (
     reply_delivery,
     summarization,
 )
+from berangaria.chat.chat_actions import (
+    ChatActionHeartbeat,
+    effective_message_thread_id,
+)
 from berangaria.chat.history_rendering import (
     build_sid_map as _build_sid_map,
+)
+from berangaria.chat.history_rendering import (
     extract_plain_text as _extract_plain_text,
+)
+from berangaria.chat.history_rendering import (
     render_history_for_api as _render_history_for_api,
+)
+from berangaria.chat.history_rendering import (
     renumber_sids,
 )
+from berangaria.chat.outgoing_message import DeliveredMessage, OutgoingMessage
 from berangaria.chat.reply_formatting import (
     clean_reply as _clean_reply,
+)
+from berangaria.chat.reply_formatting import (
     is_parse_error as _is_parse_error,
+)
+from berangaria.chat.reply_formatting import (
     markdown_to_html as _markdown_to_html,
+)
+from berangaria.chat.reply_formatting import (
     split_for_telegram,
+)
+from berangaria.chat.reply_formatting import (
     strip_markdown as _strip_markdown,
 )
+from berangaria.chat.streaming import stream_chat_completion
+from berangaria.chat.turn_outcome import TurnOutcome
+from berangaria.config import (
+    CHAT_API_URL,
+    CHAT_PROVIDER,
+    FULL_DEBUG_LOGS,
+    GENERATION_PARAMS,
+    IMAGE_VISION_PROVIDER,
+    MAX_API_RETRIES,
+    MAX_CONTEXT_TOKENS,
+    MAX_REPLY_TOKENS,
+    MAX_TOOL_ROUNDS,
+    MEMORY_MAX_CHARS,
+    MEMORY_MIN_SCORE,
+    MEMORY_QUERY_MIN_CHARS,
+    MEMORY_QUERY_RECENT_MESSAGES,
+    MEMORY_SEARCH_LIMIT,
+    MODEL,
+    MULTI_MESSAGE_CHARS_PER_SEC,
+    MULTI_MESSAGE_DELAY_MAX,
+    MULTI_MESSAGE_DELAY_MIN,
+    MULTI_MESSAGE_DELAY_TOTAL_CAP,
+    OPENROUTER_PROVIDER,
+    PRICE_COMPLETION,
+    PRICE_PROMPT_CACHE_HIT,
+    PRICE_PROMPT_CACHE_MISS,
+    PRICE_PROMPT_CACHE_WRITE,
+    STREAM_PREVIEW_MIN_CHARS,
+    STREAM_UPDATE_INTERVAL_SECONDS,
+    STREAMING_ENABLED,
+    VISION_MODE,
+    apply_chat_gateway,
+    chat_api_headers,
+)
+from berangaria.config import (
+    SUMMARY_INTERVAL as _SUMMARY_INTERVAL,
+)
+from berangaria.core import alerts, state
+from berangaria.core.state import (
+    api_call_count,
+    chat_tokens,
+    get_history_lock,
+    histories,
+    save_history,
+)
 from berangaria.core.utils import now_local
+from berangaria.memory import store as memory_store
+from berangaria.prompts import SYSTEM_PROMPT, VISION_PROMPT_SUFFIX
+from berangaria.tools.dispatch import (
+    ToolTurn,
+    available_tools_for_turn,
+    dispatch_tool_call,
+)
+from berangaria.tools.schemas import TOOLS
 
 _renumber_sids = renumber_sids
 SUMMARY_INTERVAL = _SUMMARY_INTERVAL
@@ -347,6 +397,50 @@ async def send_llm_request(
         )
 
 
+def _is_transient_memory_search_error(exc: BaseException) -> bool:
+    """True for stale TLS/socket errors on Gemini embedding calls inside Mem0."""
+    if isinstance(exc, (ssl.SSLError, OSError, httpx.TransportError)):
+        return True
+    msg = str(exc)
+    return any(
+        marker in msg
+        for marker in (
+            "UNEXPECTED_EOF_WHILE_READING",
+            "SSLEOFError",
+            "ConnectError",
+            "ConnectionReset",
+            "Server disconnected",
+        )
+    )
+
+
+async def _search_mem0_with_retry(query: str, *, key: str) -> dict:
+    """Run Mem0 vector search with one fast retry on transient TLS/socket drops."""
+    for attempt in (1, 2):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    memory_store.memory.search,
+                    query,
+                    filters={"user_id": key},
+                    limit=MEMORY_SEARCH_LIMIT,
+                ),
+                timeout=15.0,
+            )
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            if attempt == 1 and _is_transient_memory_search_error(exc):
+                logger.warning(
+                    "⚠️ [yellow]Память: транзиентный сетевой сбой поиска (%s), повтор...[/]",
+                    exc,
+                )
+                await asyncio.sleep(0.25)
+                continue
+            raise
+    return {"results": []}
+
+
 async def _run_llm_turn(
     update: Update, context: ContextTypes.DEFAULT_TYPE, key: str,
     history: list, user_name: str, user_id: int, mentioned: bool = False,
@@ -364,7 +458,10 @@ async def _run_llm_turn(
 
     # Reply handles [#N] only in the payload copy; persisted history stays clean.
     # Date is a second system message so the long personality prefix can cache.
-    payload_messages = _build_payload_prefix() + _render_history_for_api(history)
+    payload_messages = _build_payload_prefix() + _render_history_for_api(
+        history,
+        native_images=bool(VISION_MODE and IMAGE_VISION_PROVIDER == "chat"),
+    )
     sid_to_mid = _build_sid_map(history)
 
     try:
@@ -387,16 +484,7 @@ async def _run_llm_turn(
                     if FULL_DEBUG_LOGS:
                         logger.debug(f"🔍 Mem0 поиск: query='{query[:80]}', scope={key}")
 
-                    # Уменьшен таймаут до 15 секунд для быстрого ответа
-                    mem_results = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            memory_store.memory.search,
-                            query,
-                            filters={"user_id": key},
-                            limit=MEMORY_SEARCH_LIMIT
-                        ),
-                        timeout=15.0
-                    )
+                    mem_results = await _search_mem0_with_retry(query, key=key)
 
                     results_count = len(mem_results.get('results', []))
                     approved_results = _filter_approved_memory_results(mem_results, key)
@@ -412,11 +500,29 @@ async def _run_llm_turn(
                 )
 
                 if mem_text and payload_messages[-1]["role"] == "user":
+                    mem_suffix = f"\n\n[Context from memory:\n{mem_text}\n]"
                     last_content = payload_messages[-1]["content"]
-                    payload_messages[-1] = {
-                        "role": "user",
-                        "content": f"{last_content}\n\n[Context from memory:\n{mem_text}\n]"
-                    }
+                    if isinstance(last_content, list):
+                        updated_parts = copy.deepcopy(last_content)
+                        attached = False
+                        for part in updated_parts:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                part["text"] = f"{part.get('text', '')}{mem_suffix}"
+                                attached = True
+                                break
+                        if not attached:
+                            updated_parts.insert(
+                                0, {"type": "text", "text": mem_suffix.lstrip()}
+                            )
+                        payload_messages[-1] = {
+                            "role": "user",
+                            "content": updated_parts,
+                        }
+                    else:
+                        payload_messages[-1] = {
+                            "role": "user",
+                            "content": f"{last_content}{mem_suffix}",
+                        }
                     facts_count = _count_memory_block_facts(mem_text)
 
                     # Краткий лог для INFO, детальный для DEBUG
@@ -425,7 +531,7 @@ async def _run_llm_turn(
                     if FULL_DEBUG_LOGS:
                         logger.debug(f"📝 Факты:\n{mem_text}")
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(f"⚠️ [yellow]Память: таймаут поиска (15s), продолжаем без неё[/] scope={key}")
     except Exception as e:
         logger.error(f"⚠️ [red]Ошибка получения памяти:[/] {e}")
@@ -686,25 +792,32 @@ async def _run_llm_turn(
                 llm_diagnostics.log_router_metadata(data, response.headers)
 
                 raw_provider = data.get("provider")
-                provider_name = str(raw_provider or "unknown")
-                if raw_provider is None:
-                    logger.warning(
-                        "OpenRouter не вернул provider; ожидался %s",
-                        CHAT_PROVIDER,
-                    )
-                elif provider_name.strip().lower() != CHAT_PROVIDER:
-                    generation_id = str(data.get("id") or "unknown")
-                    logger.error(
-                        "OpenRouter нарушил pin провайдера: expected=%s actual=%s generation=%s",
-                        CHAT_PROVIDER,
-                        provider_name,
-                        generation_id,
-                    )
-                    await _alert(
-                        "LLM routing provider",
-                        f"OpenRouter вернул provider={provider_name}, "
-                        f"ожидался {CHAT_PROVIDER}; generation={generation_id}",
-                    )
+                provider_name = str(raw_provider or CHAT_PROVIDER)
+                pinned_only = (
+                    OPENROUTER_PROVIDER.get("only")
+                    if CHAT_PROVIDER == "openrouter" and isinstance(OPENROUTER_PROVIDER, dict)
+                    else None
+                )
+                if isinstance(pinned_only, list) and pinned_only:
+                    allowed_lower = {str(p).strip().lower() for p in pinned_only}
+                    if raw_provider is None:
+                        logger.warning(
+                            "OpenRouter не вернул provider; ожидался %s",
+                            pinned_only,
+                        )
+                    elif provider_name.strip().lower() not in allowed_lower:
+                        generation_id = str(data.get("id") or "unknown")
+                        logger.error(
+                            "OpenRouter нарушил pin провайдера: expected=%s actual=%s generation=%s",
+                            pinned_only,
+                            provider_name,
+                            generation_id,
+                        )
+                        await _alert(
+                            "LLM routing provider",
+                            f"OpenRouter вернул provider={provider_name}, "
+                            f"ожидался {pinned_only}; generation={generation_id}",
+                        )
 
                 if usage:
                     total_cost = llm_diagnostics.record_usage(
@@ -716,7 +829,7 @@ async def _run_llm_turn(
                     details = usage.get("prompt_tokens_details") or {}
                     model_name = str(data.get("model") or MODEL)
                     prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
-                    cached_tokens = max(0, int(details.get("cached_tokens", 0) or 0))
+                    cached_tokens = llm_diagnostics.cached_prompt_tokens(usage)
                     cache_ratio = (
                         (cached_tokens / prompt_tokens) * 100
                         if prompt_tokens
@@ -737,8 +850,12 @@ async def _run_llm_turn(
                         provider=provider_name,
                         model=model_name,
                         prompt_tokens=usage.get("prompt_tokens", 0),
-                        cached_tokens=details.get("cached_tokens", 0),
-                        cache_write_tokens=details.get("cache_write_tokens", 0),
+                        cached_tokens=cached_tokens,
+                        cache_write_tokens=(
+                            details.get("cache_write_tokens", 0)
+                            if isinstance(details, dict)
+                            else 0
+                        ),
                         completion_tokens=usage.get("completion_tokens", 0),
                         total_tokens=usage.get("total_tokens", 0),
                         cost_usd=total_cost,
@@ -771,7 +888,7 @@ async def _run_llm_turn(
                                 tool_call, sid_to_mid, history,
                             )
                         except Exception as exc:
-                            logger.error(f"❌ Ошибка инструмента: {exc}", exc_info=True)
+                            logger.exception(f"❌ Ошибка инструмента: {exc}")
                             payload_messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.get("id", ""),
@@ -802,12 +919,11 @@ async def _run_llm_turn(
                             # ответов. Уронить это в общий retry-обработчик значит
                             # переотправить такой payload, получить 400 и стереть
                             # историю чата. Завершаем ход здесь.
-                            logger.error(
-                                f"❌ Не удалось подготовить текст реплая: {exc}",
-                                exc_info=True,
+                            logger.exception(
+                                f"❌ Не удалось подготовить текст реплая: {exc}"
                             )
                             await _delete_turn_status()
-                            if turn.reactions_made or turn.stickers_made or turn.voices_made:
+                            if turn.reactions_made or turn.stickers_made:
                                 await _save_assistant(
                                     "",
                                     provider_messages=_provider_trace_for_history(
@@ -833,13 +949,13 @@ async def _run_llm_turn(
                                     quote_position=reply_quote_position,
                                 )
                             except Exception as exc:
-                                logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                                logger.exception(f"❌ Не удалось доставить ответ: {exc}")
                                 await _alert(
                                     "Telegram delivery",
                                     "не удалось доставить адресный ответ",
                                     exc,
                                 )
-                                if turn.reactions_made or turn.stickers_made or turn.voices_made:
+                                if turn.reactions_made or turn.stickers_made:
                                     await _save_assistant(
                                         "",
                                         provider_messages=_provider_trace_for_history(
@@ -872,7 +988,7 @@ async def _run_llm_turn(
                             )
                         else:
                             # reply_to_message без текста — отправлять нечего (пустых сообщений не шлём)
-                            if turn.reacted or turn.sticker_sent or turn.voice_sent:
+                            if turn.reacted or turn.sticker_sent:
                                 await _save_assistant(
                                     "",
                                     provider_messages=_provider_trace_for_history(
@@ -884,11 +1000,11 @@ async def _run_llm_turn(
                                         ),
                                     ),
                                 )
-                                if turn.sticker_sent or turn.voice_sent:
+                                if turn.sticker_sent:
                                     _record_reply(
                                         None,
                                         target_mid=reply_mid,
-                                        mode="voice" if turn.voice_sent else "sticker",
+                                        mode="sticker",
                                     )
                             elif not mentioned:
                                 logger.info("🤫 [dim]Промолчала (ambient, reply без текста)[/]")
@@ -899,7 +1015,7 @@ async def _run_llm_turn(
                                     await turn.status_message.delete()
                                 except Exception:
                                     pass
-                        if reply_text or turn.reacted or turn.sticker_sent or turn.voice_sent:
+                        if reply_text or turn.reacted or turn.sticker_sent:
                             return TurnOutcome.DELIVERED
                         return TurnOutcome.FAILED if mentioned else TurnOutcome.SILENT
 
@@ -940,16 +1056,15 @@ async def _run_llm_turn(
                                     messages, target_mid, turn.status_message
                                 )
                         except Exception as exc:
-                            logger.error(
-                                f"❌ Не удалось доставить серию сообщений: {exc}",
-                                exc_info=True,
+                            logger.exception(
+                                f"❌ Не удалось доставить серию сообщений: {exc}"
                             )
                             await _alert(
                                 "Telegram delivery",
                                 "не удалось доставить серию сообщений",
                                 exc,
                             )
-                            if turn.reactions_made or turn.stickers_made or turn.voices_made:
+                            if turn.reactions_made or turn.stickers_made:
                                 await _save_assistant(
                                     "",
                                     provider_messages=_provider_trace_for_history(
@@ -1005,7 +1120,7 @@ async def _run_llm_turn(
                                     mode="multi",
                                     bubbles=len(delivered),
                                 )
-                        elif turn.reactions_made or turn.stickers_made or turn.voices_made:
+                        elif turn.reactions_made or turn.stickers_made:
                             await _save_assistant(
                                 "",
                                 provider_messages=_provider_trace_for_history(
@@ -1017,7 +1132,7 @@ async def _run_llm_turn(
                                     ),
                                 ),
                             )
-                        if delivered or turn.reactions_made or turn.stickers_made or turn.voices_made:
+                        if delivered or turn.reactions_made or turn.stickers_made:
                             return TurnOutcome.DELIVERED
                         return TurnOutcome.FAILED if mentioned else TurnOutcome.SILENT
 
@@ -1034,26 +1149,6 @@ async def _run_llm_turn(
                             mode="sticker",
                         )
                         logger.info("🎨 [dim]Ход завершён стикером (без доп. текста)[/]")
-                        if turn.status_message:
-                            try:
-                                await turn.status_message.delete()
-                            except Exception:
-                                pass
-                        return TurnOutcome.DELIVERED
-
-                    # Голосовое уже в чате — терминальный ответ, без ещё одного round-trip.
-                    if turn.voice_sent:
-                        api_call_count[key] = api_call_count.get(key, 0) + 1
-                        await _save_assistant(
-                            "",
-                            provider_messages=provider_tool_trace,
-                        )
-                        _record_reply(
-                            None,
-                            target_mid=update.message.message_id,
-                            mode="voice",
-                        )
-                        logger.info("🔊 [dim]Ход завершён голосовым (без доп. текста)[/]")
                         if turn.status_message:
                             try:
                                 await turn.status_message.delete()
@@ -1081,18 +1176,18 @@ async def _run_llm_turn(
                 reply = _clean_reply(reply)
 
                 if not reply:
-                    if turn.reacted or turn.sticker_sent or turn.voice_sent:
-                        # Ограничилась реакцией/стикером/голосом — валидный ответ.
+                    if turn.reacted or turn.sticker_sent:
+                        # Ограничилась реакцией/стикером — валидный ответ.
                         await _save_assistant(
                             "",
                             provider_message=message,
                             provider_messages=provider_final_trace,
                         )
-                        if turn.sticker_sent or turn.voice_sent:
+                        if turn.sticker_sent:
                             _record_reply(
                                 None,
                                 target_mid=update.message.message_id,
-                                mode="voice" if turn.voice_sent else "sticker",
+                                mode="sticker",
                             )
                         if turn.status_message:
                             try:
@@ -1130,13 +1225,13 @@ async def _run_llm_turn(
                 try:
                     sent_mid = await _deliver(reply, target_mid, turn.status_message)
                 except Exception as exc:
-                    logger.error(f"❌ Не удалось доставить ответ: {exc}", exc_info=True)
+                    logger.exception(f"❌ Не удалось доставить ответ: {exc}")
                     await _alert(
                         "Telegram delivery",
                         "не удалось доставить ответ",
                         exc,
                     )
-                    if turn.reactions_made or turn.stickers_made or turn.voices_made:
+                    if turn.reactions_made or turn.stickers_made:
                         await _save_assistant(
                             "",
                             provider_messages=_provider_trace_for_history(
@@ -1185,7 +1280,7 @@ async def _run_llm_turn(
                 await update.message.reply_text("❌ Таймаут.")
                 return TurnOutcome.FAILED
             except Exception as e:
-                logger.error(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}", exc_info=True)
+                logger.exception(f"❌ [bright_red]Ошибка в обработке запроса:[/] {e}")
                 api_failures += 1
                 if api_failures < MAX_API_RETRIES:
                     await asyncio.sleep(2 ** (api_failures - 1))

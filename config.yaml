@@ -1,27 +1,29 @@
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter → Meta Muse Spark 1.3)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek Direct или OpenRouter)
 # ========================================
-# Чат и суммаризация: meta/muse-spark-1.3-contributor через OpenRouter, pinned to Meta.
-# Contributor — тот же checkpoint, что standard; Meta может использовать промпты и
-# ответы для обучения. Чат: effort low; reasoning у Muse обязателен, поэтому none не используется.
-# Суммаризация шлёт high отдельно — это сжатие фактов, не болтовня.
-# Память (Mem0 extractor/verifier) по-прежнему DeepSeek.
-# session_id + provider.only=[meta] держат один endpoint; фолбэки запрещены.
-# Смена slug: price_* ниже в этом файле, pin-тест
-# test_shipped_chat_model_is_muse_spark_with_low_reasoning, затем
-# AGENTS.md, README.md, docs/configuration.md, docs/openrouter-chat.md.
-"model": "meta/muse-spark-1.3-contributor"
-"chat_api_url": "https://openrouter.ai/api/v1/chat/completions"
+# chat_provider:
+#   "deepseek"   — прямой DeepSeek API (DEEPSEEK_API_KEY / API_KEY)
+#   "openrouter" — OpenRouter Chat Completions (OPENROUTER_API_KEY)
+"chat_provider": "deepseek"
+"model": "deepseek-flash"
+"chat_api_url": "https://api.deepseek.com/chat/completions"
 "max_context_tokens": 32000               # Максимальная история контекста
 "max_reply_tokens": 4096                  # Максимальный размер ответа
 
-# Параметры генерации обычного чата. Маршрут принимается только при поддержке всех полей.
-# Muse Spark 1.3: reasoning.effort minimal|low|medium|high|xhigh|max.
-# Фиксируем только temperature и reasoning; остальное оценивается отдельным A/B.
+# Параметры генерации обычного чата (для DeepSeek: thinking disabled = быстрый чат).
 "generation_params":
   "temperature": 1.0
-  "reasoning":
-    "effort": "low"
+  "thinking":
+    "type": "disabled"
+
+# Параметры генерации для сжатия истории (thinking enabled для качественного резюме).
+"summary_generation_params":
+  "temperature": 0.3
+  "thinking":
+    "type": "enabled"
+
+# Опциональные правила маршрутизации провайдера (используются только при chat_provider: "openrouter").
+"openrouter_provider": null
 
 "streaming_enabled": true                 # Потоковые ответы чат-модели и Telegram preview
 "stream_update_interval_seconds": 0.8     # Не чаще одного обновления preview за этот интервал
@@ -31,21 +33,20 @@
 # 👁️ VISION (Распознавание картинок/видео)
 # ========================================
 "vision_mode": true                      # Включить распознавание изображений и видео
-"gemini_model": "gemini-3.5-flash-lite"  # Gemini model (GA since 2026-07-21, free tier available).
-                                         # gemini-3.1-flash-lite is deprecated, shutdown 2027-05-07 — this is its official replacement.
-                                         # gemini-2.0-flash is already shut down; gemini-2.5-flash shuts down 2026-10-16.
-"video_max_duration_sec": 300            # Максимальная длительность видео (секунды). Файлы до 20 МиБ — Bot API getFile; крупнее — Telethon. Потолок по весу — video_max_file_size_bytes: 2 ГиБ
+"image_vision_provider": "chat"          # "chat" = фото/стикеры уходят нативно в чат-модель (image_url); "gemini" = пересказ через Gemini
+"gemini_model": "gemini-3.5-flash-lite"  # Gemini model для видео/аудио и режима image_vision_provider="gemini"
+"video_max_duration_sec": 300            # Максимальная длительность видео (секунды, лимит Bot API 20 МиБ)
 "audio_max_duration_sec": 300            # Максимальная длительность голосовых/аудио (секунды)
 
 # Настройки загрузки видео в Gemini Files API
-"gemini_upload_max_wait_sec": 180        # Макс. время ожидания препроцессинга видео в Gemini (секунды). Длинным роликам нужно больше
+"gemini_upload_max_wait_sec": 180        # Макс. время ожидания препроцессинга видео в Gemini (секунды)
 "gemini_upload_backoff_initial": 0.5     # Начальная задержка между попытками опроса статуса (секунды)
 "gemini_upload_backoff_max": 5.0         # Максимальная задержка между попытками (секунды)
 
 # ========================================
 # 🧠 ПАМЯТЬ (Mem0 + Embeddings)
 # ========================================
-"mem0_llm_model": "deepseek-v4-flash"    # Отдельная модель DeepSeek для Mem0
+"mem0_llm_model": "deepseek-flash"       # Модель DeepSeek для extractor/verifier памяти
 "embedding_model": "gemini-embedding-2"  # Gemini API embedding (бесплатно, multilingual)
 "embedding_dims": 768                    # Размерность векторов
 "memory_search_limit": 8                 # Сколько фактов подмешивать в контекст (больше=лучше контекст)
@@ -75,23 +76,10 @@
 "sticker_send_max_per_turn": 2           # Max one-shot send_sticker(query) tries per turn (1 retry if miss)
 
 # ========================================
-# 🔊 TTS (Fish Audio → Telegram voice notes)
-# ========================================
-# Secrets: FISH_API_KEY + FISH_VOICE_ID in .env. Without them the tool stays off.
-"tts_enabled": true                      # Master switch; also requires API key + voice id
-"tts_model": "s2.1-pro-free"             # Fish model header (free tier until ~2026-08-31; then s2.1-pro)
-"tts_format": "opus"                     # Telegram voice notes prefer ogg/opus
-"tts_latency": "normal"                  # normal | balanced | low
-"tts_sample_rate": 48000                 # Opus default; leave 48000 unless you know better
-"tts_max_chars": 400                     # Hard cap on spoken text (voice ≠ essay)
-"tts_timeout_seconds": 45                # HTTP timeout for one synthesis
-"tts_max_per_turn": 1                    # At most one voice note per turn
-"tts_default_emotion": "calm"            # Applied when the model omits emotion (empty = none)
-
-# ========================================
 # 🔍 SEARCH
 # ========================================
-"web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The DDG limit is process-global
+"search_provider": "deepseek"            # "deepseek" = нативный DeepSeek Search/Fetch API; "ddgs" = DuckDuckGo + прямой парсер
+"web_search_max_per_turn": 2             # Max web_search calls per reply (query + one retry). The rate limit is process-global
 "read_url_max_per_turn": 4               # Max pages fetched per reply; page bodies expand every following LLM request
 "web_tool_max_per_turn": 6               # Combined web_search + read_url ceiling for one reply
 
@@ -140,25 +128,12 @@
 "admin_alert_chat_id": null              # null = личка owner; укажи chat id для другого места
 
 # ========================================
-# 👀 USER BRIDGE (видеть сообщения других ботов в группах)
-# ========================================
-# Read-only MTProto sidecar (Telethon). Ответы, tools, memory path — только Bot API.
-# Secrets: TELEGRAM_API_ID, TELEGRAM_API_HASH, USER_BRIDGE_SESSION в .env / GitHub Secrets.
-# Выключено по умолчанию: без session бот работает как раньше.
-"user_bridge_enabled": true
-"user_bridge_port": 5222                 # 0 = порт из session; 5222 для сетей с HTTP-шлюзом на 443
-"user_bridge_chat_ids": []               # пусто = пересечение с allowed_groups; иначе явный allowlist
-"user_bridge_reconnect_seconds": 5       # пауза между reconnect при обрыве session/сети
-"user_bridge_media_timeout_seconds": 60  # таймаут download+vision на одно bot-media
-"user_bridge_dedup_ttl_seconds": 300     # окно дедупа (chat_id, message_id)
-
-# ========================================
 # 💰 ЦЕНЫ основной чат-модели (за 1M токенов)
 # ========================================
-# meta/muse-spark-1.3-contributor: вход $0.10 / кэш-чтение $0.002 / выход $0.20.
-# Отдельная цена записи не опубликована: fallback считает её как обычный вход.
-# Если OpenRouter вернул usage.cost, он всегда имеет приоритет над оценкой.
-"price_prompt_cache_miss": 0.10          # Обычные входные токены
-"price_prompt_cache_hit": 0.002          # Прочитанные из кэша
-"price_prompt_cache_write": 0.10         # Консервативная fallback-оценка записи
-"price_completion": 0.20                 # Выходные токены
+# deepseek-flash (DeepSeek V4.1 Flash, off-peak базовые тарифы):
+# вход $0.15 / кэш-чтение $0.003 / выход $0.60.
+# Если провайдер (напр. OpenRouter) вернул usage.cost, он имеет приоритет над оценкой.
+"price_prompt_cache_miss": 0.15          # Обычные входные токены
+"price_prompt_cache_hit": 0.003          # Прочитанные из кэша
+"price_prompt_cache_write": 0.15         # Консервативная fallback-оценка записи
+"price_completion": 0.60                 # Выходные токены

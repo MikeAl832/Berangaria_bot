@@ -6,6 +6,7 @@ existing public handler functions and test seams.
 """
 
 import asyncio
+import base64
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ class MediaRuntime:
     describe_images: Callable[..., Awaitable[str]]
     describe_video: Callable[..., Awaitable[str]]
     transcribe_audio: Callable[..., Awaitable[str]]
+    image_vision_provider: str = "gemini"
 
 
 # Telegram delivers album photos as separate updates with the same
@@ -95,6 +97,55 @@ async def process_photo_album(data: dict, runtime: MediaRuntime) -> None:
         if item.get("caption") and item.get("update") is not None:
             update = item["update"]
             break
+
+    if runtime.image_vision_provider == "chat":
+        media_images: list[dict] = []
+        for item in items:
+            uid = item["file_unique_id"]
+            cached_img = state.get_cached_media_image(uid)
+            if cached_img is not None:
+                _, mime = cached_img
+                media_images.append({"id": uid, "mime": mime})
+                continue
+            try:
+                image_bytes, mime = await runtime.download_media_as_base64(
+                    item["file_id"],
+                    context,
+                    return_bytes=True,
+                    file_size=item.get("file_size"),
+                )
+                b64_data = base64.b64encode(image_bytes).decode("utf-8")
+                state.cache_media_image(uid, b64_data, mime)
+                media_images.append({"id": uid, "mime": mime})
+            except Exception as error:
+                logger.error(
+                    "❌ [red]Не удалось скачать фото альбома %s:[/] %s",
+                    uid,
+                    error,
+                )
+        if not media_images:
+            await runtime.queue_message(
+                update,
+                context,
+                text=caption,
+                media_description=runtime.vision_failed_image,
+                media_kind="image",
+            )
+            return
+        logger.info(
+            "🖼️ [dim]Альбом: %s/%s фото → нативный vision чат-модели[/]",
+            len(media_images),
+            len(items),
+        )
+        await runtime.queue_message(
+            update,
+            context,
+            text=caption,
+            media_description=f"прикреплён альбом из {len(media_images)} фото",
+            media_kind="image",
+            media_images=media_images,
+        )
+        return
 
     cached = state.get_cached_media_description(cache_key)
     if cached is not None:
@@ -209,7 +260,7 @@ async def handle_media(
     user_id = update.effective_user.id
     is_group = update.effective_chat.type in ["group", "supergroup"]
     if not runtime.check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
+        if not is_group and not getattr(update.effective_user, "is_bot", False):
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
@@ -225,6 +276,40 @@ async def handle_media(
             update, context, str(media_group_id), caption, runtime
         )
         return
+
+    if runtime.image_vision_provider == "chat":
+        try:
+            photo = update.message.photo[-1]
+            cached_img = state.get_cached_media_image(photo.file_unique_id)
+            if cached_img is not None:
+                _, mime = cached_img
+            else:
+                b64_data, mime = await runtime.download_media_as_base64(
+                    photo.file_id,
+                    context,
+                    return_bytes=False,
+                    file_size=getattr(photo, "file_size", None),
+                )
+                state.cache_media_image(photo.file_unique_id, b64_data, mime)
+            await runtime.queue_message(
+                update,
+                context,
+                text=caption,
+                media_description="прикреплено фото",
+                media_kind="image",
+                media_images=[{"id": photo.file_unique_id, "mime": mime}],
+            )
+            return
+        except Exception as error:
+            logger.error("❌ [red]Ошибка скачивания фото:[/] %s", error)
+            await runtime.queue_message(
+                update,
+                context,
+                text=caption,
+                media_description=runtime.vision_failed_image,
+                media_kind="image",
+            )
+            return
 
     image_description = None
     try:
@@ -289,7 +374,7 @@ async def handle_video(
     user_id = update.effective_user.id
     is_group = update.effective_chat.type in ["group", "supergroup"]
     if not runtime.check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
+        if not is_group and not getattr(update.effective_user, "is_bot", False):
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
@@ -339,8 +424,8 @@ async def handle_video(
             )
             video_path = None
     except Exception as error:
-        logger.error(
-            "❌ [red]Ошибка обработки видео:[/] %s", error, exc_info=True
+        logger.exception(
+            "❌ [red]Ошибка обработки видео:[/] %s", error
         )
         video_description = runtime.vision_failed_video
     finally:
@@ -389,7 +474,7 @@ async def handle_sticker(
     user_id = update.effective_user.id
     is_group = update.effective_chat.type in ["group", "supergroup"]
     if not runtime.check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
+        if not is_group and not getattr(update.effective_user, "is_bot", False):
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
@@ -415,6 +500,45 @@ async def handle_sticker(
             media_kind="image",
         )
         return
+
+    if not sticker.is_video and runtime.image_vision_provider == "chat":
+        try:
+            cached_img = state.get_cached_media_image(sticker.file_unique_id)
+            if cached_img is not None:
+                _, mime = cached_img
+            else:
+                b64_data, mime = await runtime.download_media_as_base64(
+                    sticker.file_id,
+                    context,
+                    return_bytes=False,
+                    file_size=getattr(sticker, "file_size", None),
+                )
+                state.cache_media_image(sticker.file_unique_id, b64_data, mime)
+            label = f"стикер {emoji}".strip()
+            await runtime.queue_message(
+                update,
+                context,
+                text="",
+                media_description=label,
+                media_kind="image",
+                media_images=[{"id": sticker.file_unique_id, "mime": mime}],
+            )
+            return
+        except Exception as error:
+            logger.error("❌ [red]Ошибка скачивания стикера:[/] %s", error)
+            fallback_desc = (
+                f"Стикер с эмодзи {emoji}"
+                if emoji
+                else runtime.vision_failed_image
+            )
+            await runtime.queue_message(
+                update,
+                context,
+                text="",
+                media_description=fallback_desc,
+                media_kind="image",
+            )
+            return
 
     cached = state.get_cached_media_description(sticker.file_unique_id)
     if cached is not None:
@@ -502,7 +626,7 @@ async def handle_voice(
     user_id = update.effective_user.id
     is_group = update.effective_chat.type in ["group", "supergroup"]
     if not runtime.check_access_permissions(chat_id, user_id, is_group):
-        if not is_group:
+        if not is_group and not getattr(update.effective_user, "is_bot", False):
             await update.message.reply_text("Не разговариваю с незнакомцами.")
         return
 
@@ -527,8 +651,8 @@ async def handle_voice(
                     audio_path=audio_path, mime=mime, caption=caption
                 )
         except Exception as error:
-            logger.error(
-                "❌ [red]Ошибка обработки голосового:[/] %s", error, exc_info=True
+            logger.exception(
+                "❌ [red]Ошибка обработки голосового:[/] %s", error
             )
             transcript = ""
         if transcript:

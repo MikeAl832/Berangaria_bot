@@ -1,1 +1,1 @@
-"""Media: Gemini vision/audio understanding and Fish Audio TTS."""
+"""Media helpers: vision/audio understanding and Bot API media downloads."""

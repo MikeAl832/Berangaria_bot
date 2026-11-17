@@ -95,7 +95,7 @@ def test_dashboard_callback_rechecks_owner(monkeypatch):
 
 
 
-def test_ping_replies_with_pong_and_poll_facts(monkeypatch):
+def test_ping_replies_with_pong_and_update_facts(monkeypatch):
     update = _message_update(user_id=7, chat_id=-100, chat_type="supergroup")
     monkeypatch.setattr(handlers, "ALLOWED_GROUPS", [-100])
     monkeypatch.setattr(
@@ -105,8 +105,8 @@ def test_ping_replies_with_pong_and_poll_facts(monkeypatch):
             hostname="bot-host",
             pid=4242,
             uptime_seconds=125.4,
-            seconds_since_poll=3.2,
-            polls_seen=17,
+            seconds_since_update=3.2,
+            updates_seen=17,
         ),
     )
 
@@ -116,8 +116,8 @@ def test_ping_replies_with_pong_and_poll_facts(monkeypatch):
     text = update.message.replies[0][0]
     assert text.startswith("pong\n")
     assert "uptime=125s" in text
-    assert "since_poll=3s" in text
-    assert "polls=17" in text
+    assert "since_update=3s" in text
+    assert "updates=17" in text
     assert "pid=4242" in text
 
 
@@ -130,7 +130,7 @@ def test_ping_uses_same_group_allowlist_as_stats(monkeypatch):
     assert update.message.replies == []
 
 
-def test_format_ping_reply_handles_never_polled(monkeypatch):
+def test_format_ping_reply_handles_never_updated(monkeypatch):
     monkeypatch.setattr(
         handlers.polling_diagnostics,
         "snapshot",
@@ -138,9 +138,9 @@ def test_format_ping_reply_handles_never_polled(monkeypatch):
             hostname="h",
             pid=1,
             uptime_seconds=None,
-            seconds_since_poll=None,
-            polls_seen=0,
+            seconds_since_update=None,
+            updates_seen=0,
         ),
     )
     text = handlers._format_ping_reply()
-    assert text == "pong\nuptime=n/a since_poll=never polls=0 pid=1"
+    assert text == "pong\nuptime=n/a since_update=never updates=0 pid=1"

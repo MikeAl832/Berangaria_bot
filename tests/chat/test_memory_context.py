@@ -1,12 +1,13 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
+from berangaria.analytics import store as analytics_store
 from berangaria.chat import handlers
 from berangaria.chat.handlers import _build_memory_text
-import pytest
-from berangaria.core import state
-from berangaria.analytics import store as analytics_store
 from berangaria.config import ALLOWED_USERS, OWNER_USER_ID
+from berangaria.core import state
 from berangaria.prompts import SYSTEM_PROMPT
 
 
@@ -109,7 +110,7 @@ def test_prompt_forbids_faking_multi_bubbles_with_blank_lines():
     assert "Never fake a messenger burst with a blank line" in SYSTEM_PROMPT
     assert "two or more beats" in SYSTEM_PROMPT
     assert "Cap is 5 bubbles" in SYSTEM_PROMPT
-    assert 'send_messages(["…", "…"])' in SYSTEM_PROMPT
+    assert 'send_messages([{"text": "…", "reply_to": 7}' in SYSTEM_PROMPT
 
 
 def test_prompt_documents_telegram_markup_and_selected_quotes():
@@ -313,3 +314,66 @@ def test_owner_message_gets_authenticated_author_kind(monkeypatch, isolated_db):
     overview = analytics_store.get_overview("all", chat_id=7)
     assert overview["messages"] == 1
     assert overview["active_users"] == 1
+
+
+def test_search_mem0_retries_once_on_transient_ssl_eof(monkeypatch):
+    import ssl
+
+    from berangaria.chat import llm_client
+    from berangaria.memory import store as memory_store
+
+    calls = 0
+
+    def flaky_search(query, *, filters, limit):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred")
+        return {"results": [{"id": "m1", "memory": "Миша живёт в Москве", "score": 0.9}]}
+
+    monkeypatch.setattr(
+        memory_store,
+        "memory",
+        SimpleNamespace(search=flaky_search),
+    )
+
+    result = asyncio.run(llm_client._search_mem0_with_retry("где я живу", key="private_42"))
+    assert calls == 2
+    assert len(result["results"]) == 1
+
+
+def test_logging_setup_suppresses_mem0_optional_extras_and_httpcore2(tmp_path):
+    import logging
+
+    from berangaria.core.logging_setup import setup_logging
+
+    log_path = tmp_path / "clean.log"
+    setup_logging(log_file=str(log_path), debug=False, verbose=False)
+    mem_logger = logging.getLogger("mem0.memory.main")
+    mem_logger.warning("Failed to load spaCy lemma model: spaCy is not installed.")
+    mem_logger.warning("fastembed not installed - BM25 keyword search disabled.")
+    mem_logger.warning("real mem0 warning must remain visible")
+    logging.getLogger("httpcore2").debug("connect_tcp.started")
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    content = log_path.read_text(encoding="utf-8")
+    assert "Failed to load spaCy" not in content
+    assert "fastembed not installed" not in content
+    assert "connect_tcp.started" not in content
+    assert "real mem0 warning must remain visible" in content
+
+
+def test_prompts_and_tool_schemas_avoid_ai_slop_punctuation():
+    from berangaria.prompts import VISION_PROMPT_SUFFIX
+    from berangaria.tools.schemas import TOOLS
+
+    # Only the single explicit rule banning em-dashes may contain literal '—'.
+    assert SYSTEM_PROMPT.count("\u2014") == 1
+    assert "do not use em-dashes (\u2014)" in SYSTEM_PROMPT
+    assert "\u2014" not in VISION_PROMPT_SUFFIX
+    for tool in TOOLS:
+        fn = tool["function"]
+        assert "\u2014" not in fn["description"], fn["name"]
+        for prop in fn["parameters"]["properties"].values():
+            assert "\u2014" not in prop.get("description", ""), fn["name"]

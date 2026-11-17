@@ -65,10 +65,12 @@ def test_history_edit_waits_for_turn_and_rechecks_sent_flag(monkeypatch, freeze)
         )
 
 
-def test_buffer_edit_does_not_wait_for_active_turn():
+def test_buffer_edit_does_not_wait_for_active_turn(monkeypatch):
     key = state.get_history_key(-100, False, 42)
     message = {"message_id": 10, "text": "старый", "telegram_text": "старый"}
     handlers.message_buffer["-100_42"] = {"messages": [message]}
+    update_source = Mock()
+    monkeypatch.setattr(state, "update_memory_source_text", update_source)
     context = SimpleNamespace(bot=SimpleNamespace(id=999))
 
     async def run():
@@ -80,6 +82,9 @@ def test_buffer_edit_does_not_wait_for_active_turn():
     asyncio.run(run())
     assert message["text"] == "новый текст"
     assert message["telegram_text"] == "новый текст"
+    update_source.assert_called_once_with(
+        scope=key, message_id=10, text="новый текст"
+    )
 
 
 def test_edit_handler_does_not_block_update_processor():

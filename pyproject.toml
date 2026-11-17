@@ -1,0 +1,24 @@
+[project]
+name = "berangaria"
+version = "2.0.0"
+description = "Telegram chat bot powered by DeepSeek, Gemini media/embeddings, Mem0, and Qdrant"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+ignore = [
+    "BLE001",  # Fail-open Telegram/analytics/network boundaries catch Exception intentionally
+    "S110",    # Best-effort message cleanup (e.g. deleting stale status banners)
+    "S112",    # Best-effort loop continuation
+    "TRY004",  # Preserve existing ValueError validation contracts tested across the suite
+    "TRY401",  # Keep inline exception summary on the colored header line before traceback
+]
+
+[tool.ruff.lint.per-file-ignores]
+"berangaria/app.py" = ["E402", "I001"]  # setup_logging() runs intentionally before client imports

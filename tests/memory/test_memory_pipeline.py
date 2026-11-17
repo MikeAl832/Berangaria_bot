@@ -1,11 +1,12 @@
-from berangaria.core import state
 import asyncio
-import logging
 import json
+import logging
 
-from berangaria.memory import pipeline as memory_pipeline
 import pytest
 
+from berangaria.core import state
+from berangaria.memory import pipeline as memory_pipeline
+from berangaria.memory import store as memory_store
 from berangaria.memory.pipeline import (
     DeepSeekMemoryExtractor,
     DeepSeekMemoryVerifier,
@@ -15,11 +16,10 @@ from berangaria.memory.pipeline import (
     MemoryDiscard,
     MemoryTransientError,
     VerifiedMemoryFact,
-    process_pending_memory,
     _ensure_author_attribution,
     _validate_verified_fact,
+    process_pending_memory,
 )
-from berangaria.memory import store as memory_store
 
 
 def test_text_message_is_queued_with_provenance(monkeypatch, tmp_path):

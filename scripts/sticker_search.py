@@ -32,7 +32,11 @@ def main():
     if args.qdrant_host:
         os.environ["QDRANT_HOST"] = args.qdrant_host
 
-    from berangaria.stickers.store import search_stickers, collection_count, STICKER_MIN_SCORE
+    from berangaria.stickers.store import (
+        STICKER_MIN_SCORE,
+        collection_count,
+        search_stickers,
+    )
 
     query = " ".join(args.query)
     print(f"🔎 Запрос: {query!r}")

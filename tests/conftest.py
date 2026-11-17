@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,11 @@ import pytest
 # Добавляем корневую директорию проекта в sys.path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# Изолируем БД и лог-файл тестов от живого рабочего каталога бота
+_TEST_RUNTIME_DIR = Path(tempfile.mkdtemp(prefix="berangaria_pytest_"))
+os.environ.setdefault("BOT_DB_PATH", str(_TEST_RUNTIME_DIR / "test_bot_state.db"))
+os.environ.setdefault("BOT_LOG_FILE", str(_TEST_RUNTIME_DIR / "test_bot.log"))
 
 # Подставляем фиктивные ключи до импорта config (он падает без них)
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
@@ -25,6 +31,7 @@ _STATE_DICTS = (
     "message_buffer",
     "last_activity",
     "media_description_cache",
+    "media_image_cache",
     "random_reply_cooldown",
     "group_activity_versions",
     "bot_presence_started_at",

@@ -1,7 +1,7 @@
 import pytest
 
-from berangaria.tools.dispatch import ToolTurn, handle_send_messages
 from berangaria.chat.outgoing_message import OutgoingMessage
+from berangaria.tools.dispatch import ToolTurn, handle_send_messages
 
 
 def test_model_payload_resolves_each_reply_target():

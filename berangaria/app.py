@@ -4,16 +4,12 @@ import warnings
 import asyncio
 
 # Логирование намеренно настраивается до импорта модулей, создающих клиентов.
-# ruff: noqa: E402
 
 try:
     from telegram.warnings import PTBDeprecationWarning
     warnings.filterwarnings("ignore", category=PTBDeprecationWarning)
 except ImportError:
     pass
-
-# Suppress fastembed metadata warnings (non-critical)
-warnings.filterwarnings("ignore", message="Local file sizes do not match the metadata")
 
 from berangaria.core.logging_setup import setup_logging
 from berangaria.config import DEBUG, FULL_DEBUG_LOGS, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES, VERBOSE
@@ -40,7 +36,7 @@ from telegram.ext import (
 
 from berangaria.config import (
     TELEGRAM_TOKEN, RANDOM_REPLY_CHANCE, MAX_CONTEXT_TOKENS,
-    MAX_REPLY_TOKENS, VISION_MODE, GEMINI_MODEL,
+    MAX_REPLY_TOKENS, VISION_MODE, IMAGE_VISION_PROVIDER, GEMINI_MODEL,
     MEMORY_FLUSH_INTERVAL_SECONDS, MEMORY_WAITING_MAX_AGE_SECONDS,
     MEMORY_SOURCE_RETENTION_SECONDS,
     SUMMARY_HOURS, SUMMARY_INTERVAL, SUMMARY_MIN_EXTRA, SUMMARY_QUIET_SECONDS,
@@ -58,41 +54,20 @@ from berangaria.chat.handlers import (
     handle_edited_message, handle_chat_event, handle_message_reaction, error_handler
 )
 from berangaria.core.utils import now_local, next_summary_run
-from berangaria.user_bridge import start_user_bridge, stop_user_bridge
-from berangaria.media.telegram_download import stop_media_downloader
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("telethon").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
 async def _telegram_post_init(application: Application) -> None:
-    """Emit readiness only after PTB has initialized the Telegram bot.
-
-    ``Application.initialize`` performs the first authenticated Telegram API
-    request.  Keeping the deploy marker in ``main`` made an invalid token or an
-    unreachable Bot API look like a successful start because ``run_polling``
-    had not begun yet.
-
-    The user bridge starts here so ``ExtBot.id`` is available for self-skip.
-    ``start_user_bridge`` only spawns the supervisor task; Telethon I/O must
-    not block polling. Failures stay fail-open.
-    """
+    """Emit readiness only after PTB has initialized the Telegram bot."""
     logger.info("✅ [bright_green]Бот запущен![/]")
     # Prefer cached getMe user; never touch ExtBot.id before initialize in tests.
     bot = getattr(application, "bot", None)
     bot_user = getattr(bot, "_bot_user", None) if bot is not None else None
     bot_id = getattr(bot_user, "id", None)
     polling_diagnostics.mark_started(bot_id=bot_id)
-    if bot is not None:
-        polling_diagnostics.install_get_updates_probe(bot)
-    try:
-        await start_user_bridge(application)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("👀 [red]User bridge: ошибка запуска (бот продолжает работу)[/]")
 
 
 async def _summarize_scheduled_keys(keys: list[str]) -> tuple[int, list[str]]:
@@ -171,10 +146,7 @@ async def periodic_summarization(bot=None):
             f"({TIMEZONE_NAME})[/] (через {wait_seconds/3600:.1f}ч; слоты: {hours_label})"
         )
 
-        try:
-            await asyncio.sleep(wait_seconds)
-        except asyncio.CancelledError:
-            raise
+        await asyncio.sleep(wait_seconds)
 
         try:
             await run_scheduled_summarization_slot()
@@ -187,7 +159,7 @@ async def periodic_summarization(bot=None):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}", exc_info=True)
+            logger.exception(f"❌ [red]Ошибка при суммаризации чатов:[/] {e}")
             await alerts.notify_owner(
                 bot,
                 category="Summarization job",
@@ -248,7 +220,7 @@ async def sync_stickers_on_start():
                 logger.info(f"🎨 [dim]Стикеры: новых нет (в коллекции {res['already']})[/]")
     except Exception as e:
         # Версию НЕ пишем → на следующем старте попробует снова (миграция идемпотентна).
-        logger.error(f"🎨 [red]Синк/миграция стикеров при старте не удались:[/] {e}", exc_info=True)
+        logger.exception(f"🎨 [red]Синк/миграция стикеров при старте не удались:[/] {e}")
 
 
 async def periodic_memory_flush(bot=None):
@@ -305,7 +277,7 @@ async def periodic_memory_flush(bot=None):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"❌ [red]Ошибка периодического flush памяти:[/] {e}", exc_info=True)
+            logger.exception(f"❌ [red]Ошибка периодического flush памяти:[/] {e}")
             await alerts.notify_owner(
                 bot,
                 category="Memory job",
@@ -316,26 +288,19 @@ async def periodic_memory_flush(bot=None):
 
 def build_telegram_application() -> Application:
     """Use Telegram's cloud Bot API for updates and outgoing messages."""
-    # PTB keeps two HTTPX clients. `.read_timeout` / `.connect_timeout` apply
-    # only to sendMessage/getFile. getUpdates has its own client whose default
-    # read slack is 5s; PTB adds that to the 10s long-poll. From this host
-    # (AWS us-west-2) Telegram DC RTT already exceeded 5s for getFile (#15).
-    # A TimedOut getUpdates retries immediately while Telegram still holds the
-    # previous long-poll → HTTP 409 Conflict. Match the outgoing budget.
     builder = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
         .connect_timeout(10.0)
-        .read_timeout(60.0)
-        .write_timeout(60.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
         .pool_timeout(5.0)
         .media_write_timeout(120.0)
         .get_updates_connect_timeout(10.0)
-        .get_updates_read_timeout(60.0)
-        .get_updates_write_timeout(60.0)
+        .get_updates_read_timeout(30.0)
+        .get_updates_write_timeout(30.0)
         .get_updates_pool_timeout(5.0)
         .post_init(_telegram_post_init)
-        .post_shutdown(stop_media_downloader)
     )
     return builder.build()
 
@@ -409,8 +374,6 @@ def register_handlers(app: Application) -> None:
 
 
 def main():
-    from berangaria.core.faulthandler_setup import install_faulthandler_sigusr1
-    install_faulthandler_sigusr1()
     logger.info("🤖 [cyan]Бот запускается...[/]")
 
     # Инициализируем БД, runtime-настройки и сохранённые истории диалогов
@@ -439,7 +402,10 @@ def main():
     logger.info(f"🧾 Full debug logs: [yellow]{FULL_DEBUG_LOGS}[/]")
     logger.info(f"🌊 Потоковые ответы: [yellow]{STREAMING_ENABLED}[/]")
     if VISION_MODE:
-        logger.info(f"🖼️ Vision provider: [cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])")
+        logger.info(
+            f"🖼️ Vision: images=[cyan]{IMAGE_VISION_PROVIDER}[/] | "
+            f"video/audio=[cyan]Gemini[/] ([magenta]{GEMINI_MODEL}[/])"
+        )
     logger.info(
         "🔧 Команды: /start, /clear, /stats, /ping, /top, /dashboard, /random X, /summarize"
     )
@@ -454,10 +420,6 @@ def main():
     polling_heartbeat_task = loop.create_task(
         polling_diagnostics.polling_heartbeat_loop()
     )
-    polling_diagnostics.start_loop_watchdog()
-    # User bridge is started from post_init (after ExtBot.initialize). The
-    # long-lived supervisor lives inside the user_bridge module and is stopped
-    # explicitly below. Missing secrets / Telethon errors never block polling.
 
     try:
         # allowed_updates=ALL_TYPES — иначе Telegram НЕ присылает message_reaction.
@@ -468,11 +430,6 @@ def main():
     finally:
         # Graceful shutdown
         background_tasks = [summarization_task, sticker_sync_task, memory_flush_task, polling_heartbeat_task]
-        try:
-            if not loop.is_closed():
-                loop.run_until_complete(stop_user_bridge())
-        except Exception as e:
-            logger.debug(f"User bridge stop: {e}")
         for task in background_tasks:
             task.cancel()
         try:
@@ -508,7 +465,7 @@ def main():
                 )
             else:
                 logger.info("🧠 [green]Очередь памяти сохранена в SQLite[/]")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "🧠 [yellow]Финальный проход памяти не уложился в отведённое время — "
                 "очередь осталась в SQLite и будет продолжена после старта[/]"

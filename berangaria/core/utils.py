@@ -1,29 +1,30 @@
-import re
-import time
-import random
+import asyncio
 import base64
-import os
-import tempfile
 import logging
 import math
+import os
+import random
+import re
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Tuple, Optional
+
 from telegram import Update
 from telegram.ext import ContextTypes
-import asyncio
+
 from berangaria.config import (
     BOT_NAMES,
+    BOT_TZ,
     RANDOM_REPLY_COOLDOWN,
     RANDOM_REPLY_IDLE_TARGET_SECONDS,
     RANDOM_REPLY_PRESENCE_MULTIPLIER,
     RANDOM_REPLY_PRESENCE_SECONDS,
     RANDOM_REPLY_RECENT_WINDOW_SECONDS,
-    BOT_TZ,
     SUMMARY_HOURS,
 )
-from berangaria.core.state import random_reply_cooldown
 from berangaria.core import state
+from berangaria.core.state import random_reply_cooldown
 from berangaria.media.telegram_download import download_telegram_file, media_suffix
 
 logger = logging.getLogger(__name__)
@@ -334,7 +335,7 @@ def is_bot_mentioned(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     additional_text: str | None = None,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Проверяет обращение к боту в Telegram-тексте и дополнительном тексте.
 
     ``additional_text`` нужен для уже распознанной речи: транскрипт участвует
@@ -348,9 +349,11 @@ def is_bot_mentioned(
     bot_real_name = get_bot_real_name(context)
     bot_username = context.bot.username
 
-    if update.message.reply_to_message:
-        if update.message.reply_to_message.from_user.id == context.bot.id:
-            return True, "reply"
+    if (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    ):
+        return True, "reply"
 
     if not message_text and not additional_text:
         return False, None
@@ -425,7 +428,7 @@ async def _download_media_tempfile(file_id: str, context, *, file_size: int | No
 
 async def download_media_as_base64(file_id: str, context: ContextTypes.DEFAULT_TYPE,
                                    return_bytes: bool = False,
-                                   file_size: int | None = None) -> Tuple[bytes | str, str]:
+                                   file_size: int | None = None) -> tuple[bytes | str, str]:
     """
     Скачивает медиа-файл из Telegram (используется для изображений).
     
@@ -510,7 +513,7 @@ def get_video_duration(video_obj) -> float:
 
 
 async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE,
-                                 *, file_size: int | None = None) -> Tuple[Optional[str], str, float]:
+                                 *, file_size: int | None = None) -> tuple[str | None, str, float]:
     """
     Скачивает видео из Telegram во временный файл для Gemini.
     
@@ -559,7 +562,7 @@ async def download_video_to_file(file_id: str, context: ContextTypes.DEFAULT_TYP
 
 
 async def download_audio_to_file(file_id: str, context: ContextTypes.DEFAULT_TYPE,
-                                 *, file_size: int | None = None) -> Tuple[Optional[str], str]:
+                                 *, file_size: int | None = None) -> tuple[str | None, str]:
     """
     Скачивает аудио/голосовое из Telegram во временный файл для Gemini.
 

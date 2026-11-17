@@ -1,38 +1,39 @@
 # Глобальные состояния бота
 import asyncio
-import time
 import json
-import sqlite3
 import logging
 import os
 import re
+import sqlite3
+import time
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Dict, List, Sequence, TypeAlias
+from typing import Any, TypeAlias
 
 from berangaria.core.paths import project_path
 
 logger = logging.getLogger(__name__)
 
-HistoryEntry: TypeAlias = Dict[str, Any]
-HistoryList: TypeAlias = List[HistoryEntry]
+HistoryEntry: TypeAlias = dict[str, Any]
+HistoryList: TypeAlias = list[HistoryEntry]
 
 # История сообщений по ключу (private_X или group_Y)
-histories: Dict[str, HistoryList] = {}
+histories: dict[str, HistoryList] = {}
 
 # Тайм-ауты для рандомных ответов
-random_reply_cooldown: Dict[int, float] = {}
+random_reply_cooldown: dict[int, float] = {}
 
 # Версия последней человеческой активности в группе. Каждый новый message/event
 # получает монотонный token; ambient-кандидат отвечает только если к моменту
 # debounce он всё ещё последний. Это отсекает встревания, когда собеседник уже
 # успел ответить или поставить реакцию.
-group_activity_versions: Dict[int, int] = {}
+group_activity_versions: dict[int, int] = {}
 
 # Момент последнего успешного ответа Бер на явный групповой пинг. Состояние
 # намеренно только runtime: после рестарта бот снова считается «не в комнате».
-bot_presence_started_at: Dict[int, float] = {}
+bot_presence_started_at: dict[int, float] = {}
 
 DEFAULT_RANDOM_REPLY_CHANCE = 10
 MEMORY_SOURCE_MAX_ATTEMPTS = 5
@@ -124,14 +125,14 @@ def get_bot_presence_age(chat_id: int, *, now: float | None = None) -> float | N
     return max(0.0, current - started_at)
 
 # Последнее известное количество токенов для чата (из API)
-chat_tokens: Dict[str, int] = {}
+chat_tokens: dict[str, int] = {}
 
 # Счётчик количества вызовов API для каждого ключа
-api_call_count: Dict[str, int] = {}
+api_call_count: dict[str, int] = {}
 
 # Буфер сообщений для склеивания (debounce)
 # Формат: { "chat_id_user_id": { "messages": [...], "task": asyncio.Task } }
-message_buffer: Dict[str, Dict[str, Any]] = {}
+message_buffer: dict[str, dict[str, Any]] = {}
 
 # Кэш описаний медиа: file_unique_id -> описание от vision-модели.
 # Позволяет не анализировать повторно одно и то же изображение/стикер заново.
@@ -158,15 +159,41 @@ def cache_media_description(file_unique_id: str, description: str) -> None:
     while len(media_description_cache) > MEDIA_CACHE_MAX:
         media_description_cache.popitem(last=False)
 
+
+# LRU-кэш сырых изображений (base64 + mime) для нативного vision чат-модели.
+# Позволяет не хранить тяжёлый base64 в SQLite histories и не мутировать префикс до суммаризации.
+MEDIA_IMAGE_CACHE_MAX = 200
+media_image_cache: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+
+
+def get_cached_media_image(file_unique_id: str) -> tuple[str, str] | None:
+    """Возвращает (base64_str, mime_type) из LRU-кэша или None."""
+    if not file_unique_id:
+        return None
+    item = media_image_cache.get(file_unique_id)
+    if item is not None:
+        media_image_cache.move_to_end(file_unique_id)
+    return item
+
+
+def cache_media_image(file_unique_id: str, b64_data: str, mime: str) -> None:
+    """Кэширует изображение (base64, mime) с ограничением размера (LRU)."""
+    if not file_unique_id or not b64_data or not mime:
+        return
+    media_image_cache[file_unique_id] = (b64_data, mime)
+    media_image_cache.move_to_end(file_unique_id)
+    while len(media_image_cache) > MEDIA_IMAGE_CACHE_MAX:
+        media_image_cache.popitem(last=False)
+
 # Последнее время активности чата (для очистки старых данных)
-last_activity: Dict[str, float] = {}
+last_activity: dict[str, float] = {}
 
 # Блокировки для предотвращения race conditions
-_history_locks: Dict[str, asyncio.Lock] = {}
-_turn_locks: Dict[str, asyncio.Lock] = {}
+_history_locks: dict[str, asyncio.Lock] = {}
+_turn_locks: dict[str, asyncio.Lock] = {}
 _buffer_lock: asyncio.Lock = asyncio.Lock()
 
-def get_history_key(chat_id: int, is_private: bool, user_id: int = None) -> str:
+def get_history_key(chat_id: int, is_private: bool, user_id: int | None = None) -> str:
     if is_private:
         return f"private_{user_id}"
     return f"group_{chat_id}"
@@ -234,7 +261,7 @@ def _db_execute(
     query: str,
     params: Sequence[Any] = (),
     fetch: bool = False,
-) -> List[tuple[Any, ...]] | None:
+) -> list[tuple[Any, ...]] | None:
     """Выполняет запрос с гарантированным закрытием соединения. Возвращает строки при fetch=True."""
     conn = _connect()
     try:

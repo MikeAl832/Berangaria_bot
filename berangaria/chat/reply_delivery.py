@@ -325,11 +325,13 @@ async def deliver_multi(
         use_html = len(reply_html) <= 4096
         body = reply_html if use_html else reply_plain
 
-        async def send_message(body: str, html: bool):
+        is_first_bubble = first_mid is None
+
+        async def send_message(body: str, html: bool, *, attach_reply: bool = is_first_bubble):
             kwargs = {"chat_id": chat_id, "text": body}
             if thread_id is not None:
                 kwargs["message_thread_id"] = thread_id
-            if first_mid is None and target_mid is not None:
+            if attach_reply and target_mid is not None:
                 kwargs["reply_to_message_id"] = target_mid
                 kwargs["allow_sending_without_reply"] = True
             if html:

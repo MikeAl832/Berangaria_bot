@@ -3,6 +3,7 @@
 import copy
 import re
 
+from berangaria.core import state
 from berangaria.core.utils import strip_tiktok_urls
 
 
@@ -94,11 +95,51 @@ def _render_history_event(message: dict) -> dict | None:
     }
 
 
-def render_history_for_api(history: list) -> list:
+def _resolve_native_image_parts(message: dict) -> list[dict]:
+    """Build OpenAI-compatible image_url blocks from cached image references."""
+    refs = message.get("media_images")
+    if not isinstance(refs, list) or not refs:
+        return []
+    blocks: list[dict] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        uid = ref.get("id")
+        if not isinstance(uid, str) or not uid:
+            continue
+        cached = state.get_cached_media_image(uid)
+        if cached is None:
+            continue
+        b64_data, mime = cached
+        blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64_data}"},
+            }
+        )
+    return blocks
+
+
+def render_history_for_api(
+    history: list,
+    *,
+    native_images: bool = False,
+    image_window: int | None = None,
+) -> list:
     """Render persisted history into an ephemeral provider payload."""
     mid_to_sid = _build_mid_to_sid(history)
+    eligible_image_indices: set[int] = set()
+    if native_images:
+        user_indices = [
+            idx for idx, item in enumerate(history) if item.get("role") == "user"
+        ]
+        if image_window is None:
+            eligible_image_indices = set(user_indices)
+        elif image_window > 0:
+            eligible_image_indices = set(user_indices[-image_window:])
+
     output = []
-    for message in history:
+    for idx, message in enumerate(history):
         role = message.get("role")
         if role == "event":
             rendered_event = _render_history_event(message)
@@ -116,23 +157,31 @@ def render_history_for_api(history: list) -> list:
         reactions = message.get("reactions") if role == "assistant" else None
         incoming = message.get("incoming_reactions") if role == "assistant" else None
         stickers = message.get("stickers") if role == "assistant" else None
-        voices = message.get("voices") if role == "assistant" else None
         provider_messages = _render_provider_messages(message) if role == "assistant" else []
-        if not (reactions or incoming or stickers or voices):
+        if not (reactions or incoming or stickers):
             if role == "assistant":
                 if provider_messages:
                     output.extend(provider_messages)
                 else:
                     output.append(_render_assistant_message(message, content))
+            elif role == "user" and idx in eligible_image_indices:
+                image_blocks = _resolve_native_image_parts(message)
+                if image_blocks:
+                    output.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": content}, *image_blocks],
+                        }
+                    )
+                else:
+                    output.append({"role": role, "content": content})
             else:
                 output.append({"role": role, "content": content})
             continue
 
         if provider_messages:
             output.extend(provider_messages)
-        elif content and not voices:
-            output.append(_render_assistant_message(message, content))
-        elif content and voices and (reactions or stickers or incoming):
+        elif content:
             output.append(_render_assistant_message(message, content))
 
         notes = []
@@ -150,17 +199,6 @@ def render_history_for_api(history: list) -> list:
                     f"[{emotion}] «{description}»" if emotion else f"«{description}»"
                 )
             notes.append("Ты отправила стикер " + ", ".join(parts) + ".")
-        if voices:
-            parts = []
-            for voice in voices:
-                spoken = (voice.get("text") or "").strip()
-                if not spoken and content:
-                    spoken = content.strip()
-                if len(spoken) > 80:
-                    spoken = spoken[:80] + "…"
-                emotion = voice.get("emotion")
-                parts.append(f"[{emotion}] «{spoken}»" if emotion else f"«{spoken}»")
-            notes.append("Ты отправила голосовое " + ", ".join(parts) + ".")
         if incoming:
             quote = content.strip()
             quote = quote[:40] + "…" if len(quote) > 40 else quote

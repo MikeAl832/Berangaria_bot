@@ -4,7 +4,6 @@ import re
 
 from berangaria.core.utils import strip_internal_tags
 
-
 _FENCED_CODE_RE = re.compile(
     r"```(?:(?P<language>[A-Za-z0-9_+.-]+)[ \t]*\n)?(?P<body>.*?)```",
     flags=re.DOTALL,

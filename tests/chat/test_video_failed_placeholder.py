@@ -20,26 +20,26 @@ def _runtime(**overrides):
             }
         )
 
-    base = dict(
-        vision_mode=True,
-        album_gather_seconds=0.1,
-        max_media_items_in_context=10,
-        video_max_duration_sec=300,
-        video_max_file_size_bytes=100_000_000,
-        audio_max_duration_sec=300,
-        vision_failed_image="(image fail)",
-        vision_failed_video=VISION_FAILED_VIDEO,
-        check_access_permissions=lambda chat_id, user_id, is_group: True,
-        queue_message=queue_message,
-        download_media_as_base64=AsyncMock(),
-        download_video_to_file=AsyncMock(return_value=("/tmp/v.mp4", "video/mp4", 1000)),
-        download_audio_to_file=AsyncMock(),
-        get_video_duration=lambda obj: 3.0,
-        describe_image_bytes=AsyncMock(return_value=""),
-        describe_images=AsyncMock(return_value=""),
-        describe_video=AsyncMock(return_value=""),
-        transcribe_audio=AsyncMock(return_value=""),
-    )
+    base = {
+        "vision_mode": True,
+        "album_gather_seconds": 0.1,
+        "max_media_items_in_context": 10,
+        "video_max_duration_sec": 300,
+        "video_max_file_size_bytes": 100_000_000,
+        "audio_max_duration_sec": 300,
+        "vision_failed_image": "(image fail)",
+        "vision_failed_video": VISION_FAILED_VIDEO,
+        "check_access_permissions": lambda chat_id, user_id, is_group: True,
+        "queue_message": queue_message,
+        "download_media_as_base64": AsyncMock(),
+        "download_video_to_file": AsyncMock(return_value=("/tmp/v.mp4", "video/mp4", 1000)),
+        "download_audio_to_file": AsyncMock(),
+        "get_video_duration": lambda obj: 3.0,
+        "describe_image_bytes": AsyncMock(return_value=""),
+        "describe_images": AsyncMock(return_value=""),
+        "describe_video": AsyncMock(return_value=""),
+        "transcribe_audio": AsyncMock(return_value=""),
+    }
     base.update(overrides)
     return media_handlers.MediaRuntime(**base), queued
 

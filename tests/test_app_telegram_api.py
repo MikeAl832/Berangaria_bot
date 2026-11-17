@@ -95,15 +95,7 @@ def test_build_application_uses_cloud_defaults_without_override(monkeypatch):
     assert app.bot.local_mode is False
 
 
-def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
-    started = {}
-
-    async def _fake_start(application):
-        started["app"] = application
-        return None
-
-    # post_init now boots the user bridge; do not start Telethon from this test.
-    monkeypatch.setattr(main, "start_user_bridge", _fake_start)
+def test_readiness_is_registered_as_post_init(caplog):
     app = main.build_telegram_application()
 
     assert app.post_init is main._telegram_post_init
@@ -112,49 +104,33 @@ def test_readiness_is_registered_as_post_init(monkeypatch, caplog):
         asyncio.run(app.post_init(app))
 
     assert "Бот запущен" in caplog.text
-    assert started["app"] is app
 
 
-def test_post_init_bridge_boot_is_fail_open(monkeypatch):
-
-    async def _boom(_application):
-        raise RuntimeError("bridge boot exploded")
-
-    monkeypatch.setattr(main, "start_user_bridge", _boom)
-    app = main.build_telegram_application()
-    asyncio.run(app.post_init(app))
-
-
-def test_build_application_raises_media_http_timeouts(monkeypatch):
+def test_build_application_raises_media_http_timeouts():
     """Outgoing media uploads need headroom beyond PTB defaults."""
 
     app = main.build_telegram_application()
     request = app.bot.request
     timeout = request._client.timeout
 
-    assert request.read_timeout == 60.0
-    assert timeout.read == 60.0
-    assert timeout.write == 60.0
+    assert request.read_timeout == 30.0
+    assert timeout.read == 30.0
+    assert timeout.write == 30.0
     assert timeout.connect == 10.0
     assert timeout.pool == 5.0
     assert request._media_write_timeout == 120.0
 
 
-def test_get_updates_http_client_uses_the_same_timeout_budget(monkeypatch):
-    """getUpdates is a separate HTTPX client; #15 only raised the outgoing one."""
+def test_get_updates_http_client_uses_the_same_timeout_budget():
+    """getUpdates is a separate HTTPX client; match the outgoing read budget."""
 
     app = main.build_telegram_application()
     get_updates_request = app.bot._request[0]
     timeout = get_updates_request._client.timeout
 
-    assert get_updates_request.read_timeout == 60.0
-    assert timeout.read == 60.0
-    assert timeout.write == 60.0
+    assert get_updates_request.read_timeout == 30.0
+    assert timeout.read == 30.0
+    assert timeout.write == 30.0
     assert timeout.connect == 10.0
     assert timeout.pool == 5.0
     assert get_updates_request is not app.bot.request
-
-
-def test_media_client_shutdown_is_registered():
-    app = main.build_telegram_application()
-    assert app.post_shutdown is main.stop_media_downloader

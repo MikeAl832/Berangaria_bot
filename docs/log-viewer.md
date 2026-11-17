@@ -1,102 +1,42 @@
-# Self-hosted log viewer
+# Self-Hosted Log Viewer (Dozzle)
 
-Berangaria uses a local Dozzle instance for browser-based log viewing.
+`docker-compose.yml` includes a local [Dozzle](https://dozzle.dev/) instance bound strictly to `127.0.0.1:9999` for browser-based container and audit-log inspection.
 
-## Current deployment on cursor
+## Runtime Layout
 
-`logs.titlo10.fun` connects through Cloudflare Tunnel directly to Dozzle at
-`http://127.0.0.1:9999`. The old VPS Nginx password is not used on this route.
-`deploy/compose.cursor.yml` enables Dozzle's `simple` authentication provider.
-The `logs` account must sign in before accessing the UI or log streams.
-
-The password hash is stored outside the repository in
-`/opt/box-access/dozzle-auth/users.yml`, mounted read-only at `/data/users.yml`.
-The generated login credentials are in
-`/opt/box-access/dozzle-auth/credentials.txt` (mode `0600`). Keep both files out
-of Git and retain them when redeploying. Login sessions last 24 hours.
-
-The connector runs independently as Docker container `berangaria-cloudflared`;
-its Compose file and operating instructions are in
-`/opt/box-access/cloudflared/`. Its service URL must use HTTP for the local
-Dozzle endpoint; the public website uses HTTPS.
-
-The sections below describe the previous VPS setup.
-
-## Runtime layout
+The full bot audit log (`bot.log`) is streamed through a lightweight `log-tail` sidecar so Dozzle can display both clean INFO console output and full DEBUG audit traces side by side:
 
 ```text
-https://logs.titlo10.fun
-  -> host Nginx with Basic Auth
-  -> 127.0.0.1:9999
-  -> dozzle
-  -> Docker logs
+bot       -> writes /data/bot.log (./bot_data/bot.log on host)
+log-tail  -> tail -n 300 -F /logs/bot.log
+dozzle    -> reads Docker stdout of containers labeled dev.berangaria.logs=visible
 ```
 
-The full bot audit log is streamed through a dedicated `log-tail` container:
+Containers visible in Dozzle:
+- `*-bot-1`: clean `INFO` console stream (incoming previews, token/cache stats, tool summaries, alerts).
+- `*-log-tail-1`: full `DEBUG` audit stream (`bot_data/bot.log`, including prompts and responses when `full_debug_logs: true`).
+- `*-qdrant-1`: Qdrant vector database logs.
 
-```text
-bot -> /data/bot.log
-./bot_data/bot.log on host
-log-tail container -> tail -n 300 -F /logs/bot.log
-dozzle -> reads log-tail stdout
-```
+## Secure Access
 
-Dozzle only sees containers labeled with `dev.berangaria.logs=visible`.
+Because `full_debug_logs: true` records full chat prompts and replies, Dozzle binds to `127.0.0.1:9999` only and is never exposed on `0.0.0.0` by default.
 
-## What to watch
+### Option A: SSH Port Forwarding (Recommended, Zero Extra Setup)
 
-- `berangaria_bot-log-tail-1`: full `bot_data/bot.log`, including detailed LLM DEBUG logs.
-- `berangaria_bot-bot-1`: regular Docker console logs.
-- `berangaria_bot-qdrant-1`: Qdrant logs.
-
-## Debug levels
-
-- `debug: false`: keeps Docker console readable.
-- `full_debug_logs: false`: suppresses detailed prompts, model replies, memory facts, and vision descriptions.
-- `full_debug_logs: true`: current production audit mode; contains private chat data.
-- `verbose: false`: keeps third-party HTTP/Telegram SDK noise out.
-
-Docker explicitly enables the operator-selected audit mode with `BOT_FULL_DEBUG_LOGS=true`; keep Dozzle access restricted.
-
-## DNS and TLS
-
-Create a Cloudflare DNS record:
-
-```text
-logs.titlo10.fun -> VPS public IPv4
-```
-
-The current VPS has a Let's Encrypt certificate at:
-
-```text
-/etc/letsencrypt/live/logs.titlo10.fun/fullchain.pem
-```
-
-Nginx redirects HTTP to HTTPS and keeps `/.well-known/acme-challenge/` open for
-certbot renewal. If the host is recreated, issue the certificate with:
+From your workstation:
 
 ```bash
-sudo mkdir -p /var/www/letsencrypt/.well-known/acme-challenge
-sudo certbot certonly --webroot -w /var/www/letsencrypt -d logs.titlo10.fun
+ssh -L 9999:127.0.0.1:9999 user@your-server
 ```
 
-## Credentials
+Then open `http://127.0.0.1:9999` in your local browser.
 
-Nginx Basic Auth is configured on the host, outside the repository:
+### Option B: Reverse Proxy with TLS & Authentication
 
-```text
-/etc/nginx/.htpasswd-berangaria-logs
-```
+If you expose Dozzle on a custom domain (via Nginx, Caddy, or Cloudflare Tunnel), always enforce authentication (e.g., Basic Auth, Cloudflare Access, or Dozzle's `DOZZLE_AUTH_PROVIDER=simple` with a mounted `users.yml`) before routing traffic to `http://127.0.0.1:9999`.
 
-The generated initial password is stored on the server in:
+## Debug Flags (`config.yaml` / env)
 
-```text
-/root/berangaria-logs-credentials.txt
-```
-
-Rotate it with:
-
-```bash
-printf 'logs:%s\n' "$(openssl passwd -apr1 'new-password')" | sudo tee /etc/nginx/.htpasswd-berangaria-logs >/dev/null
-sudo nginx -t && sudo systemctl reload nginx
-```
+- `debug: false`: keeps console stream at `INFO` while `bot.log` still captures `DEBUG`.
+- `full_debug_logs: true` (`BOT_FULL_DEBUG_LOGS`): writes full LLM payloads, model replies, memory blocks, and media descriptions to `bot.log`. Set to `false` if you want technical `DEBUG` events without prompt/message bodies.
+- `verbose: false`: suppresses noisy low-level SDK/HTTP/TLS frame logs (`httpx`, `httpcore2`, `google_genai`, `apscheduler`).

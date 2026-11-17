@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from berangaria.chat.chat_actions import effective_message_thread_id
 from berangaria.core.utils import strip_internal_tags

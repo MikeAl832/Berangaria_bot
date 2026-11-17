@@ -2,7 +2,9 @@ import logging
 import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from colorama import Fore, Style, init as colorama_init
+
+from colorama import Fore, Style
+from colorama import init as colorama_init
 
 colorama_init(autoreset=False)
 
@@ -101,6 +103,19 @@ def _ensure_log_parent(log_file: str) -> None:
         parent.mkdir(parents=True, exist_ok=True)
 
 
+class _Mem0OptionalExtrasFilter(logging.Filter):
+    """Глушит штатные предупреждения mem0 про неустановленные spaCy/fastembed."""
+
+    _SUPPRESSED = (
+        "Failed to load spaCy",
+        "fastembed not installed",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(marker in msg for marker in self._SUPPRESSED)
+
+
 def flush_log_handlers() -> None:
     """Push buffered records to files/stderr before a hard process exit."""
     root = logging.getLogger()
@@ -178,25 +193,27 @@ def setup_logging(
 
     # Глушим избыточные библиотечные логи (если verbose=False, то глушим)
     if not verbose:
-        # HTTP клиенты
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        
-        # OpenAI/DeepSeek клиент
-        logging.getLogger("openai").setLevel(logging.WARNING)
-        
-        # H2 protocol (HTTP/2)
-        logging.getLogger("h2").setLevel(logging.WARNING)
-        logging.getLogger("hpack").setLevel(logging.WARNING)
-        
-        # TLS/rustls/rquest (если есть)
-        logging.getLogger("rustls").setLevel(logging.WARNING)
-        logging.getLogger("rquest").setLevel(logging.WARNING)
-        
-        # fastembed (уже есть warning filter, но на всякий случай)
-        logging.getLogger("fastembed").setLevel(logging.WARNING)
-        
+        extras_filter = _Mem0OptionalExtrasFilter()
+        console.addFilter(extras_filter)
+        file_handler.addFilter(extras_filter)
+
+        # HTTP клиенты (включая httpx2/httpcore2 внутри google-genai)
+        for noisy in (
+            "httpx",
+            "httpx2",
+            "httpcore",
+            "httpcore2",
+            "urllib3",
+            "openai",
+            "google_genai",
+            "apscheduler",
+            "h2",
+            "hpack",
+            "rustls",
+            "rquest",
+        ):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
         # Telegram bot библиотека (бесконечные getUpdates)
         logging.getLogger("telegram").setLevel(logging.INFO)
         logging.getLogger("telegram.ext").setLevel(logging.INFO)

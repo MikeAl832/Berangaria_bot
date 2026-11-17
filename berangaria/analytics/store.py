@@ -237,10 +237,9 @@ def record_alert(*, category: str, fingerprint: str, message: str) -> bool:
         )
         return True
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Аналитика: не удалось записать критический алерт: %s",
             exc,
-            exc_info=True,
         )
         return False
 

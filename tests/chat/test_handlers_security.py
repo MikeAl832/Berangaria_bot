@@ -239,7 +239,9 @@ def test_spoken_name_turn_recovers_from_incomplete_sse(
 
     class _FallbackResponse:
         status_code = 200
-        headers = {}
+
+        def __init__(self):
+            self.headers = {}
 
         def json(self):
             return {
@@ -340,3 +342,73 @@ def test_extract_reply_context_falls_back_to_original_excerpt():
         False,
         None,
     )
+
+
+def test_native_other_bot_message_tagged_as_bot_and_excluded_from_memory(monkeypatch):
+    enqueued_memory = []
+    monkeypatch.setattr(handlers, "MESSAGE_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: True)
+    monkeypatch.setattr(
+        handlers,
+        "enqueue_memory_source",
+        lambda **kwargs: enqueued_memory.append(kwargs) or 1,
+    )
+    monkeypatch.setattr(
+        handlers,
+        "send_llm_request",
+        lambda *args, **kwargs: asyncio.sleep(0, result=handlers.message_queue.TurnOutcome.DELIVERED),
+    )
+
+    chat = SimpleNamespace(id=-100, type="supergroup", title="Группа")
+    msg = SimpleNamespace(
+        chat=chat,
+        message_id=501,
+        date=None,
+        text="Бер, привет от другого бота",
+        caption=None,
+        forward_origin=None,
+        reply_to_message=None,
+        quote=None,
+    )
+    update = SimpleNamespace(
+        message=msg,
+        effective_chat=chat,
+        effective_user=SimpleNamespace(id=777, first_name="PeerBot", is_bot=True),
+    )
+    context = SimpleNamespace(
+        bot=SimpleNamespace(id=999, username="berangaria_bot", first_name="Berangaria")
+    )
+
+    async def run():
+        await handlers.queue_message(update, context, text=msg.text)
+        await asyncio.sleep(0.05)
+
+    handlers.histories.clear()
+    asyncio.run(run())
+
+    assert enqueued_memory == []
+    entries = handlers.histories.get("group_-100", [])
+    assert len(entries) == 1
+    assert entries[0]["author_kind"] == "bot"
+    assert "[Bot: PeerBot]" in entries[0]["content"]
+
+
+def test_stranger_bot_in_private_chat_is_ignored_silently(monkeypatch):
+    monkeypatch.setattr(handlers, "_check_access_permissions", lambda *args: False)
+    replies = []
+    chat = SimpleNamespace(id=777, type="private")
+    msg = SimpleNamespace(
+        chat=chat,
+        message_id=1,
+        text="spam",
+        reply_text=lambda text, **kw: asyncio.sleep(0, result=replies.append(text)),
+    )
+    update = SimpleNamespace(
+        message=msg,
+        effective_chat=chat,
+        effective_user=SimpleNamespace(id=777, first_name="SpamBot", is_bot=True),
+    )
+    context = SimpleNamespace(bot=SimpleNamespace(id=999))
+
+    asyncio.run(handlers.queue_message(update, context, text="spam"))
+    assert replies == []

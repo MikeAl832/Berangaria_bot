@@ -2,8 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any
-
+from typing import Any, Self
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class ChatActionHeartbeat:
     def action(self) -> str:
         return self._action
 
-    async def __aenter__(self) -> "ChatActionHeartbeat":
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 

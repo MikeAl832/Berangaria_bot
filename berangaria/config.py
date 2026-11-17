@@ -3,10 +3,11 @@
 Secrets come only from the environment (.env or docker compose env_file);
 everything else is set in config.yaml at the repository root.
 """
+import copy
 import os
+from zoneinfo import ZoneInfo
 
 import yaml
-from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from berangaria.core.paths import PROJECT_ROOT, project_path
@@ -96,47 +97,79 @@ def _required_price(mapping: dict[str, object], key: str) -> float:
 # 🔑 API КЛЮЧИ
 # ========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-DEEPSEEK_API_KEY = os.environ.get("API_KEY", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# Fish Audio TTS (optional — voice notes via send_voice). Prefer FISH_API_KEY.
-FISH_API_KEY = (
-    os.environ.get("FISH_API_KEY", "")
-    or os.environ.get("FISH_AUDIO_API_KEY", "")
+DEEPSEEK_API_KEY = (
+    os.environ.get("DEEPSEEK_API_KEY", "")
+    or os.environ.get("API_KEY", "")
 ).strip()
-FISH_VOICE_ID = os.environ.get("FISH_VOICE_ID", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # ========================================
-# 🤖 ОСНОВНАЯ МОДЕЛЬ (OpenRouter Meta Muse + DeepSeek Mem0)
+# 🤖 ОСНОВНАЯ МОДЕЛЬ (DeepSeek Direct или OpenRouter)
 # ========================================
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_API_BASE = "https://api.deepseek.com"
+DEEPSEEK_API_URL = f"{DEEPSEEK_API_BASE}/chat/completions"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+CHAT_PROVIDER = _str_setting(
+    "BOT_CHAT_PROVIDER",
+    "chat_provider",
+    "deepseek",
+).strip().lower()
+if CHAT_PROVIDER not in {"deepseek", "openrouter"}:
+    raise ValueError(
+        f"chat_provider должен быть 'deepseek' или 'openrouter' (получено {CHAT_PROVIDER!r})"
+    )
+
+_default_chat_url = (
+    OPENROUTER_API_URL if CHAT_PROVIDER == "openrouter" else DEEPSEEK_API_URL
+)
 CHAT_API_URL = _str_setting(
     "CHAT_API_URL",
     "chat_api_url",
-    "https://openrouter.ai/api/v1/chat/completions",
+    _default_chat_url,
 )
 MODEL = _required_str(config_yaml, "model")
-CHAT_PROVIDER = "meta"
 OPENROUTER_HTTP_REFERER = "https://github.com/MikeAl832/Berangaria_bot"
 OPENROUTER_APP_TITLE = "Berangaria"
-CHAT_API_KEY = (
+OPENROUTER_API_KEY = (
     os.environ.get("OPENROUTER_API_KEY", "")
     or os.environ.get("CHAT_API_KEY", "")
 ).strip()
+
+if CHAT_PROVIDER == "openrouter":
+    CHAT_API_KEY = OPENROUTER_API_KEY
+else:
+    CHAT_API_KEY = (
+        os.environ.get("CHAT_API_KEY", "").strip()
+        or DEEPSEEK_API_KEY
+    )
 
 # Валидация обязательных API ключей
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
 if not DEEPSEEK_API_KEY:
-    raise ValueError("API_KEY (DeepSeek) не установлен в .env файле!")
+    raise ValueError("DEEPSEEK_API_KEY (или API_KEY) не установлен в .env файле!")
 if not CHAT_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY (чат) не установлен в .env файле!")
+    raise ValueError(
+        "OPENROUTER_API_KEY не установлен в .env файле (требуется для chat_provider=openrouter)!"
+    )
 
 
 MAX_CONTEXT_TOKENS = config_yaml.get("max_context_tokens", 32000)
 MAX_REPLY_TOKENS = config_yaml.get("max_reply_tokens", 4096)
 GENERATION_PARAMS = config_yaml.get(
     "generation_params",
-    {"temperature": 1.0, "reasoning": {"effort": "low"}},
+    {"temperature": 1.0, "thinking": {"type": "disabled"}},
+)
+SUMMARY_GENERATION_PARAMS = config_yaml.get(
+    "summary_generation_params",
+    {"temperature": 0.3, "thinking": {"type": "enabled"}},
+)
+_raw_openrouter_provider = config_yaml.get("openrouter_provider")
+OPENROUTER_PROVIDER: dict[str, object] | None = (
+    copy.deepcopy(_raw_openrouter_provider)
+    if isinstance(_raw_openrouter_provider, dict)
+    else None
 )
 STREAMING_ENABLED = _bool_setting("BOT_STREAMING_ENABLED", "streaming_enabled", True)
 STREAM_UPDATE_INTERVAL_SECONDS = max(
@@ -149,17 +182,33 @@ STREAM_PREVIEW_MIN_CHARS = max(
 )
 
 # ========================================
-# 👁️ VISION (Gemini)
+# 👁️ VISION (Native Chat Vision + Gemini)
 # ========================================
 VISION_MODE = config_yaml.get("vision_mode", False)
+IMAGE_VISION_PROVIDER = _str_setting(
+    "BOT_IMAGE_VISION_PROVIDER",
+    "image_vision_provider",
+    "chat",
+).strip().lower()
+if IMAGE_VISION_PROVIDER not in {"chat", "gemini"}:
+    raise ValueError(
+        "image_vision_provider должен быть 'chat' или 'gemini' "
+        f"(получено {IMAGE_VISION_PROVIDER!r})"
+    )
 GEMINI_MODEL = config_yaml.get("gemini_model", "gemini-3.5-flash-lite")
 VIDEO_MAX_DURATION_SEC = config_yaml.get("video_max_duration_sec", 300)
 AUDIO_MAX_DURATION_SEC = config_yaml.get("audio_max_duration_sec", 300)
-# MTProto downloads bypass the HTTP getFile limit; keep a resource ceiling.
-_video_file_limit_default = 2 * 1024 * 1024 * 1024
+_TELEGRAM_GETFILE_LIMIT_BYTES = 20 * 1024 * 1024
 VIDEO_MAX_FILE_SIZE_BYTES = max(
     1,
-    _int_setting("BOT_VIDEO_MAX_FILE_SIZE_BYTES", "video_max_file_size_bytes", _video_file_limit_default),
+    min(
+        _int_setting(
+            "BOT_VIDEO_MAX_FILE_SIZE_BYTES",
+            "video_max_file_size_bytes",
+            _TELEGRAM_GETFILE_LIMIT_BYTES,
+        ),
+        _TELEGRAM_GETFILE_LIMIT_BYTES,
+    ),
 )
 GEMINI_UPLOAD_MAX_WAIT_SEC = config_yaml.get("gemini_upload_max_wait_sec", 180)
 GEMINI_UPLOAD_BACKOFF_INITIAL = config_yaml.get("gemini_upload_backoff_initial", 0.5)
@@ -205,12 +254,17 @@ MAX_BUFFERED_CHARS = max(
 )
 
 # ========================================
-# 🗄️ QDRANT (общий для mem0 и стикеров)
+# 🗄️ QDRANT (серверный или локальный на диске)
 # ========================================
-# В докере бот ходит в сервис "qdrant", с хоста — в "localhost".
-# Переопределяется переменной окружения QDRANT_HOST (напр. при запуске скрипта с хоста).
-QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
+# В Docker Compose передаётся QDRANT_HOST=qdrant; локально по умолчанию 127.0.0.1.
+# Если задан QDRANT_PATH (напр. при локальном запуске без Docker), используется
+# встроенный дисковый Qdrant без отдельного контейнера.
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "127.0.0.1")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+_raw_qdrant_path = str(
+    os.environ.get("QDRANT_PATH") or config_yaml.get("qdrant_path") or ""
+).strip()
+QDRANT_PATH = str(project_path(_raw_qdrant_path)) if _raw_qdrant_path else ""
 
 # ========================================
 # 🎨 СТИКЕРЫ (векторный поиск)
@@ -236,36 +290,17 @@ _sticker_send_cap = config_yaml.get(
 STICKER_SEND_MAX_PER_TURN = max(1, min(_as_int(_sticker_send_cap, 2), 5))
 
 # ========================================
-# 🔊 TTS (Fish Audio)
-# ========================================
-# Master yaml flag; effective readiness also needs FISH_API_KEY + FISH_VOICE_ID.
-_tts_yaml_enabled = _as_bool(config_yaml.get("tts_enabled", True), True)
-TTS_MODEL = str(config_yaml.get("tts_model", "s2.1-pro-free") or "s2.1-pro-free").strip()
-_tts_format = str(config_yaml.get("tts_format", "opus") or "opus").strip().lower()
-TTS_FORMAT = _tts_format if _tts_format in {"opus", "mp3", "wav", "pcm"} else "opus"
-_tts_latency = str(config_yaml.get("tts_latency", "normal") or "normal").strip().lower()
-TTS_LATENCY = _tts_latency if _tts_latency in {"normal", "balanced", "low"} else "normal"
-TTS_SAMPLE_RATE = max(
-    8000,
-    min(_as_int(config_yaml.get("tts_sample_rate", 48000), 48000), 48000),
-)
-TTS_MAX_CHARS = max(40, min(_as_int(config_yaml.get("tts_max_chars", 400), 400), 2000))
-TTS_TIMEOUT_SECONDS = max(
-    5.0,
-    min(_as_float(config_yaml.get("tts_timeout_seconds", 45.0), 45.0), 120.0),
-)
-TTS_MAX_PER_TURN = max(1, min(_as_int(config_yaml.get("tts_max_per_turn", 1), 1), 3))
-_tts_default_emotion = config_yaml.get("tts_default_emotion", "calm")
-if isinstance(_tts_default_emotion, str):
-    TTS_DEFAULT_EMOTION = _tts_default_emotion.strip().lower() or None
-else:
-    TTS_DEFAULT_EMOTION = "calm"
-# True only when the operator wants TTS and secrets are present.
-TTS_ENABLED = bool(_tts_yaml_enabled and FISH_API_KEY and FISH_VOICE_ID)
-
-# ========================================
 # 🔍 SEARCH
 # ========================================
+SEARCH_PROVIDER = _str_setting(
+    "BOT_SEARCH_PROVIDER",
+    "search_provider",
+    "deepseek",
+).strip().lower()
+if SEARCH_PROVIDER not in {"deepseek", "ddgs"}:
+    raise ValueError(
+        f"search_provider должен быть 'deepseek' или 'ddgs' (получено {SEARCH_PROVIDER!r})"
+    )
 # How many times web_search may run in one turn. The prompt asks for far more
 # fact-checking, and without a ceiling a single runaway turn eats the
 # process-global rate limit (10/min), i.e. breaks search for every other chat.
@@ -418,58 +453,14 @@ OWNER_USER_ID = (
     else 0
 ) or None
 
-# ========================================
-# 👀 USER BRIDGE (read-only MTProto → bot messages in groups)
-# ========================================
-# Optional: when disabled or secrets missing, the bot never starts Telethon.
-USER_BRIDGE_ENABLED = _bool_setting("USER_BRIDGE_ENABLED", "user_bridge_enabled", False)
-USER_BRIDGE_PORT = _as_int(
-    os.environ.get("USER_BRIDGE_PORT", config_yaml.get("user_bridge_port", 0)), 0
-)
-_raw_bridge_chats = config_yaml.get("user_bridge_chat_ids", [])
-if not isinstance(_raw_bridge_chats, (list, tuple)):
-    _raw_bridge_chats = []
-USER_BRIDGE_CHAT_IDS: list[int] = [
-    cid for cid in (_as_int(x, 0) for x in _raw_bridge_chats) if cid != 0
-]
-USER_BRIDGE_RECONNECT_SECONDS = max(
-    1.0,
-    _float_setting("USER_BRIDGE_RECONNECT_SECONDS", "user_bridge_reconnect_seconds", 5.0),
-)
-USER_BRIDGE_MEDIA_TIMEOUT_SECONDS = max(
-    5.0,
-    _float_setting(
-        "USER_BRIDGE_MEDIA_TIMEOUT_SECONDS", "user_bridge_media_timeout_seconds", 60.0
-    ),
-)
-USER_BRIDGE_DEDUP_TTL_SECONDS = max(
-    30.0,
-    _float_setting("USER_BRIDGE_DEDUP_TTL_SECONDS", "user_bridge_dedup_ttl_seconds", 300.0),
-)
-# Application credentials are shared by the bot media client and the user bridge.
-_raw_telegram_api_id = (os.environ.get("TELEGRAM_API_ID") or "").strip()
-try:
-    TELEGRAM_API_ID = int(_raw_telegram_api_id) if _raw_telegram_api_id else 0
-except ValueError:
-    TELEGRAM_API_ID = 0
-TELEGRAM_API_HASH = (os.environ.get("TELEGRAM_API_HASH") or "").strip()
-USER_BRIDGE_SESSION = (os.environ.get("USER_BRIDGE_SESSION") or "").strip()
-TELEGRAM_MEDIA_SESSION_PATH = project_path(
-    os.environ.get("TELEGRAM_MEDIA_SESSION_PATH")
-    or os.path.join(os.path.dirname(os.environ.get("BOT_DB_PATH") or "bot_state.db"), "telegram_media.session")
-)
-TELEGRAM_MEDIA_PORT = _int_setting("TELEGRAM_MEDIA_PORT", "telegram_media_port", USER_BRIDGE_PORT or 443)
-if not 1 <= TELEGRAM_MEDIA_PORT <= 65535:
-    raise ValueError("TELEGRAM_MEDIA_PORT must be 1..65535")
 TELEGRAM_MEDIA_TIMEOUT_SECONDS = max(
-    5.0, _float_setting("TELEGRAM_MEDIA_TIMEOUT_SECONDS", "telegram_media_timeout_seconds", 300.0)
+    5.0,
+    _float_setting("TELEGRAM_MEDIA_TIMEOUT_SECONDS", "telegram_media_timeout_seconds", 120.0),
 )
-# Cloud Bot API getFile rejects downloads above 20 MiB. 0 disables the HTTP path.
-_TELEGRAM_GETFILE_LIMIT_BYTES = 20 * 1024 * 1024
 TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES = min(
     _TELEGRAM_GETFILE_LIMIT_BYTES,
     max(
-        0,
+        1,
         _int_setting(
             "TELEGRAM_BOT_API_DOWNLOAD_MAX_BYTES",
             "telegram_bot_api_download_max_bytes",
@@ -501,27 +492,26 @@ PRICE_COMPLETION = _required_price(config_yaml, "price_completion")
 
 
 def chat_api_headers(*, session_id: str | None = None) -> dict[str, str]:
-    """OpenRouter Completions headers. ``x-session-id`` is the sticky routing key."""
+    """Build HTTP headers for the active chat provider."""
     headers = {
         "Authorization": f"Bearer {CHAT_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": OPENROUTER_HTTP_REFERER,
-        "X-Title": OPENROUTER_APP_TITLE,
     }
-    if session_id:
-        headers["x-session-id"] = session_id
+    if CHAT_PROVIDER == "openrouter":
+        headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
+        headers["X-Title"] = OPENROUTER_APP_TITLE
+        if session_id:
+            headers["x-session-id"] = session_id
     return headers
 
 
 def apply_chat_gateway(payload: dict, *, session_id: str | None) -> dict:
-    """Pin chat to Meta's Muse endpoint and reject incompatible fallbacks."""
-    if session_id:
-        payload["session_id"] = session_id
-    payload["provider"] = {
-        "only": [CHAT_PROVIDER],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
+    """Attach optional OpenRouter routing fields when chat_provider=='openrouter'."""
+    if CHAT_PROVIDER == "openrouter":
+        if session_id:
+            payload["session_id"] = session_id
+        if isinstance(OPENROUTER_PROVIDER, dict) and OPENROUTER_PROVIDER:
+            payload["provider"] = copy.deepcopy(OPENROUTER_PROVIDER)
     return payload
 
 # ========================================
@@ -533,6 +523,24 @@ os.environ["MEM0_TELEMETRY"] = "false"
 os.environ['HTTP_PROXY'] = ''
 os.environ['HTTPS_PROXY'] = ''
 os.environ['no_proxy'] = 'localhost,127.0.0.1'
+
+_qdrant_vector_config = (
+    {
+        "path": os.path.join(QDRANT_PATH, "mem0"),
+        "host": None,
+        "port": None,
+        "on_disk": True,
+        "collection_name": "mem0",
+        "embedding_model_dims": EMBEDDING_DIMS,
+    }
+    if QDRANT_PATH
+    else {
+        "host": QDRANT_HOST,
+        "port": QDRANT_PORT,
+        "collection_name": "mem0",
+        "embedding_model_dims": EMBEDDING_DIMS,
+    }
+)
 
 MEM0_CONFIG = {
     "version": "v1.1",
@@ -555,11 +563,6 @@ MEM0_CONFIG = {
     },
     "vector_store": {
         "provider": "qdrant",
-        "config": {
-            "host": QDRANT_HOST,
-            "port": QDRANT_PORT,
-            "collection_name": "mem0",
-            "embedding_model_dims": EMBEDDING_DIMS
-        }
+        "config": _qdrant_vector_config,
     }
 }

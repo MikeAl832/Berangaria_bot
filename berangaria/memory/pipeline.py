@@ -9,15 +9,15 @@ from typing import Protocol
 
 import httpx
 
-from berangaria.memory import store as memory_store
-from berangaria.core import state
 from berangaria.config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_API_URL,
     MEM0_LLM_MODEL,
     MEMORY_QUEUE_BATCH_SIZE,
 )
+from berangaria.core import state
 from berangaria.core.utils import strip_tiktok_urls_preserving_whitespace
+from berangaria.memory import store as memory_store
 
 logger = logging.getLogger(__name__)
 _worker_task: asyncio.Task[None] | None = None

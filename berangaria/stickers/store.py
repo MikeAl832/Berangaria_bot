@@ -22,10 +22,15 @@ import uuid
 import httpx
 
 from berangaria.config import (
-    GEMINI_API_KEY, EMBEDDING_MODEL,
-    QDRANT_HOST, QDRANT_PORT,
-    STICKER_COLLECTION, STICKER_DIMS,
-    STICKER_MIN_SCORE, STICKER_TOP_K,
+    EMBEDDING_MODEL,
+    GEMINI_API_KEY,
+    QDRANT_HOST,
+    QDRANT_PATH,
+    QDRANT_PORT,
+    STICKER_COLLECTION,
+    STICKER_DIMS,
+    STICKER_MIN_SCORE,
+    STICKER_TOP_K,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,8 +186,21 @@ def embed_texts(
 
 # ============================ QDRANT ============================
 
+_local_qdrant_client = None
+_local_qdrant_path = None
+
+
 def get_client():
+    global _local_qdrant_client, _local_qdrant_path
     from qdrant_client import QdrantClient
+
+    if QDRANT_PATH:
+        target = os.path.join(QDRANT_PATH, "stickers")
+        if _local_qdrant_client is None or _local_qdrant_path != target:
+            os.makedirs(target, exist_ok=True)
+            _local_qdrant_client = QdrantClient(path=target)
+            _local_qdrant_path = target
+        return _local_qdrant_client
     return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
 
@@ -439,7 +457,7 @@ def sync_from_file(path, limit=None, batch_size=50, sleep_between=1.5,
 
 # ============================ ПОИСК (рантайм) ============================
 
-def search_stickers(query: str, top_k: int = None, min_score: float = None):
+def search_stickers(query: str, top_k: int | None = None, min_score: float | None = None):
     """
     Ищет подходящие стикеры по текстовому описанию.
     Возвращает list[dict]: {file_id, description, emotion, score}, отсортированный

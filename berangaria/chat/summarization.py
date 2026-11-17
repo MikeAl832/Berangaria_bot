@@ -1,18 +1,18 @@
 """Conversation-history summarization for the chat pipeline."""
 
 import copy
+import json
 import logging
 import re
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
 from berangaria.chat.history_rendering import renumber_sids
 from berangaria.config import (
     CHAT_API_URL,
-    GENERATION_PARAMS,
     MODEL,
+    SUMMARY_GENERATION_PARAMS,
     SUMMARY_INTERVAL,
     SUMMARY_MAX_CHARS,
     SUMMARY_MIN_EXTRA,
@@ -95,10 +95,7 @@ def _summary_text(history: list) -> str:
             continue
         raw = message.get("content")
         if not isinstance(raw, str) or not raw.strip():
-            raw = "\n".join(
-                voice["text"] for voice in message.get("voices") or []
-                if isinstance(voice, dict) and isinstance(voice.get("text"), str)
-            )
+            continue
         text = _redact_credentials(strip_tiktok_urls(raw))
         if text.strip():
             lines.append(f"{role}: {text}")
@@ -162,15 +159,13 @@ async def summarize_history(
                     ),
                 },
                 {"role": "user", "content": json.dumps({
-                    "as_of": datetime.now(timezone.utc).isoformat(),
+                    "as_of": datetime.now(UTC).isoformat(),
                     "older_history": text_to_summarize,
                     "recent_context": _summary_text(keep_recent),
                 }, ensure_ascii=False)},
             ],
             "max_tokens": 8192,
-            **dict(GENERATION_PARAMS),
-            "temperature": 0.3,
-            "reasoning": {"effort": "high"},
+            **dict(SUMMARY_GENERATION_PARAMS),
         },
         session_id=session_id,
     )

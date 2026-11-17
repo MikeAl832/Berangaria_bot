@@ -10,127 +10,15 @@ TOOLS = [
         "function": {
             "name": "web_search",
             "description": (
-                "Fact-check against the live web. Use BEFORE you state a checkable fact yourself, "
-                "and BEFORE you agree with, repeat as true, or casually accept a checkable claim "
-                "someone else just made — confident tone is not evidence. "
+                "Fact-check against the live web. Call BEFORE stating a checkable fact yourself, "
+                "and BEFORE agreeing with, repeating, or casually accepting a checkable claim "
+                "someone else made (confident tone is not evidence). "
                 "Mandatory for numbers, prices, rates, dates, specs, versions, releases, statistics, "
-                "real people/companies/products, current status, and anything that would differ a year ago. "
-                "Also when about to hedge ('вроде', 'кажется') or rubber-stamp ('да, точно') on such a claim: search instead. "
-                "NOT for opinions, jokes, pure absurdity you are only mocking, arithmetic, or facts about this chat and its people. "
-                "After results: answer with the specific number or date; do not invent or endorse the user's story if sources disagree or are empty. "
-                "Never mention that you searched."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query: keywords plus the entity, not a full sentence. Use the language of the best source — Russian for local/RU topics, English for tech, global news and foreign products."
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Number of results, 3-8",
-                        "default": 5
-                    },
-                    "region": {
-                        "type": "string",
-                        "description": "'ru-ru' for local and Russian-language topics (default), 'wt-wt' for global, tech and English-language topics. Match it to the query language."
-                    },
-                    "timelimit": {
-                        "type": "string",
-                        "description": "Time filter for fast-moving facts (news, prices, rates, standings, live scores): 'd'=day, 'w'=week, 'm'=month, 'y'=year. Omit it for stable facts.",
-                        "enum": ["d", "w", "m", "y"]
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "react_to_message",
-            "description": (
-                "Put an emoji reaction badge on a message (NOT in your text). "
-                "This is a real Telegram action — the emoji appears next to that message. "
-                "Use it freely and often to acknowledge emotion: agreement 👍, laughter 😂, shock 😱, "
-                "trolling 🤡, approval 🔥. PREFER reaction-only (no text) when a message needs nothing beyond 'seen, noted'. "
-                "Add text only if you have something specific to say. "
-                "If your whole answer IS the emotion — you were about to type 'ржу' / 'жесть' / 'топ' — "
-                "call send_sticker(query) instead: a reaction acknowledges, a sticker replies. "
-                "By default it reacts to the latest message; pass the [#N] handle as 'id' to react to a specific earlier one. "
-                "Do NOT react again to a message you already reacted to (history notes look like "
-                "'Ты поставила реакцию 🤡 на [#N] …') — pick another [#N], write text, send_sticker, or stay silent. "
-                "NEVER fake it in text (no '*reacts with 🔥*') — call this function instead."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "emoji": {
-                        "type": "string",
-                        "description": "A single emoji character to react with (a common Telegram reaction)."
-                    },
-                    "id": {
-                        "type": "integer",
-                        "description": "Optional [#N] handle of the message to react to. Omit to react to the latest message."
-                    }
-                },
-                "required": ["emoji"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "reply_to_message",
-            "description": (
-                "Send your message as a Telegram REPLY to a specific earlier message, identified by its [#N] handle "
-                "(shown at the very start of each incoming message, e.g. [#7]). "
-                "In a normal back-and-forth you do NOT need this — just answer with plain text. "
-                "Use it when you deliberately want to answer an EARLIER or different message, or when you want "
-                "Telegram to highlight exact words even in the latest message. "
-                "Pass the number from [#N] as 'id' and your reply as 'text'. To make Telegram highlight only "
-                "specific words, optionally pass 'quote' copied EXACTLY from that message's [Message: ...] text. "
-                "Never paraphrase quote; omit it when an exact substring is not available."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "The [#N] handle number of the message you want to reply to."
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Your reply text (no service tags or emoji; supported Telegram markup is allowed)."
-                    },
-                    "quote": {
-                        "type": "string",
-                        "description": "Optional exact substring of the target message to highlight in Telegram's reply header."
-                    }
-                },
-                "required": ["id", "text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "send_sticker",
-            "description": (
-                "ONE call: vector-search your sticker pack and post one match immediately "
-                "(no second tool, no id pick). "
-                "Use when the whole reply is emotion — laughter, mockery, refusal, shock, fatigue, cringe — "
-                "or you were about to type 'ржу' / 'жесть' / 'топ' / 'ну ты дал' / 'не хочу'. "
-                "Also when you have no sentence: send a sticker instead of inventing a one-liner or going empty. "
-                "Prefer over a reaction when you would have typed something or you are in the thread without a line; "
-                "reaction-only when you would add nothing, not even a sticker. "
-                "INDEX (Russian): each sticker is stored as emotion + secondary emotions + action + use_cases "
-                "(when to send) + situation + keywords + optional character + visual description. "
-                "Query that language: occasion/emotion tags, not a chat retelling. "
-                "On success the turn ENDS; plain text alongside is discarded. "
-                "Not for direct questions, help, or after web_search. Miss → tighter query once or words. "
-                "NEVER fake a sticker in text."
+                "real people/companies/products, current status, and anything that could differ from a year ago. "
+                "Also call instead of hedging ('вроде', 'кажется') or rubber-stamping ('да, точно') on such claims. "
+                "Skip for opinions, jokes, pure absurdity you are mocking, arithmetic, or chat lore. "
+                "Answer with the concrete number, name, or date from sources; do not invent or endorse unsupported claims, "
+                "and never announce that you searched."
             ),
             "parameters": {
                 "type": "object",
@@ -138,52 +26,162 @@ TOOLS = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "Short Russian tags matching the index: primary emotion and/or use_case phrases. "
-                            "GOOD: 'отказ, не хочу', 'ирония, сарказм', 'отчаяние, паника', 'смущение, обида', "
-                            "'радость, ура', 'усталость, всё', 'злость, бесит'. "
-                            "BAD: 'стикер про то как человек купил машину и хвастается' (story, no match)."
-                        )
+                            "Keywords plus the entity rather than a full sentence. "
+                            "Use Russian for local/RU topics, English for tech, global news, and foreign products."
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Number of results, 3 to 8.",
+                        "default": 5,
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": (
+                            "'ru-ru' for local and Russian-language topics (default), "
+                            "'wt-wt' for global, tech, and English-language topics."
+                        ),
+                    },
+                    "timelimit": {
+                        "type": "string",
+                        "description": (
+                            "Time filter for fast-moving facts (news, prices, rates, standings, live scores): "
+                            "'d'=day, 'w'=week, 'm'=month, 'y'=year. Omit for stable facts."
+                        ),
+                        "enum": ["d", "w", "m", "y"],
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "react_to_message",
+            "description": (
+                "Put a real Telegram emoji badge on a message (not in your reply text). "
+                "Use freely to acknowledge emotion: agreement 👍, laughter 😂, shock 😱, trolling 🤡, approval 🔥. "
+                "Prefer reaction-only (no text) when 'seen, noted' is enough; add text only if you have a specific remark. "
+                "If your whole reply is an emotional beat where you would type 'ржу' / 'жесть' / 'топ', "
+                "call send_sticker(query) instead. "
+                "Defaults to the latest message; pass [#N] as 'id' for an earlier one. "
+                "Do not react twice to a message you already reacted to in history; pick another [#N], send a sticker, write text, or stay silent. "
+                "Never narrate reactions in text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": "A single allowed Telegram reaction emoji.",
+                    },
+                    "id": {
+                        "type": "integer",
+                        "description": "Optional [#N] handle of the message to react to. Omit for the latest message.",
+                    },
+                },
+                "required": ["emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reply_to_message",
+            "description": (
+                "Send your message as a Telegram reply to a specific [#N] message handle "
+                "(shown at the start of incoming messages, e.g. [#7]). "
+                "Not needed in normal 1-on-1 back-and-forth where plain text suffices. "
+                "Use when answering an earlier or different message, or when highlighting exact words in the latest message. "
+                "Pass the [#N] number as 'id' and your reply as 'text'. To highlight specific words in Telegram's reply header, "
+                "optionally pass 'quote' copied EXACTLY from that message's [Message: ...] text; "
+                "never paraphrase quote, and omit it when an exact substring is unavailable."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The [#N] handle number of the target message.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Your reply text (no service tags or emoji; supported Telegram markup is allowed).",
+                    },
+                    "quote": {
+                        "type": "string",
+                        "description": "Optional exact substring of the target message to highlight in Telegram's reply header.",
+                    },
+                },
+                "required": ["id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_sticker",
+            "description": (
+                "Vector-search your sticker pack and send one matching sticker immediately in a single call. "
+                "Use when the whole reply is emotion (laughter, mockery, refusal, shock, fatigue, cringe) "
+                "or instead of typing 'ржу' / 'жесть' / 'топ' / 'ну ты дал' / 'не хочу'. "
+                "Also use when you have no sentence to add instead of inventing filler or going empty. "
+                "Prefer over a badge reaction when replying in the thread; use reaction-only when adding nothing at all. "
+                "Stickers are indexed in Russian by emotion, action, occasion, keywords, character, and visual description; "
+                "query with short emotion/occasion tags rather than retelling the chat. "
+                "Success ends the turn and discards accompanying plain text. "
+                "Not for direct questions, help requests, or after web_search. On a miss, try one tighter query or reply in words."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Short Russian emotion or occasion tags matching the index. "
+                            "Examples: 'отказ, не хочу', 'ирония, сарказм', 'отчаяние, паника', "
+                            "'радость, ржу', 'усталость, всё', 'злость, бесит'."
+                        ),
                     }
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "read_url",
             "description": (
-                "Download a web page by URL and read its text content. "
-                "Use when the user sends a link or asks about a specific page, AND as the follow-up to "
-                "web_search when a result snippet is truncated, vague, or missing the number you need — "
-                "open the most credible result URL and read the real page. "
-                "Don't use it for a general question with no URL in hand — that is web_search."
+                "Fetch a web page by URL and read its text content. "
+                "Use when someone shares a link or asks about a specific page, or right after web_search "
+                "when a result snippet is truncated or missing the exact detail you need. "
+                "For general questions without a URL, call web_search first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Full page URL (with http:// or https://)"
+                        "description": "Full http:// or https:// page URL.",
                     }
                 },
-                "required": ["url"]
-            }
-        }
+                "required": ["url"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "send_messages",
             "description": (
-                "Send 1–5 Telegram messages, each optionally replying to its own [#N] target. "
-                "Use reply_to to make clear who and what you are answering in a group, especially "
-                "when several topics overlap. Different bubbles may answer different people or the same message. "
-                "Available after web_search/read_url: address the person who asked, not the tool result. "
-                "Omit reply_to for a standalone message. Keep each bubble concise; use plain text for "
-                "one long answer. After success the turn ends; accompanying plain text is discarded. "
-                "Use this one batch instead of combining it with reply_to_message, stickers or voice."
+                "Send 1 to 5 short Telegram bubbles in order, each optionally replying to its own [#N] target. "
+                "Use when your answer genuinely splits into two or more distinct beats, or when addressing "
+                "multiple people/messages in a group. For a single compact thought, reply in plain text instead. "
+                "Available after web_search/read_url (address the user who asked, not the tool output). "
+                "Omit reply_to for standalone bubbles. Success ends the turn and discards accompanying plain text; "
+                "do not combine with reply_to_message or send_sticker."
             ),
             "parameters": {
                 "type": "object",
@@ -193,7 +191,7 @@ TOOLS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string", "description": "Message text."},
+                                "text": {"type": "string", "description": "Bubble text."},
                                 "reply_to": {
                                     "type": "integer",
                                     "description": "Optional existing [#N] handle to reply to in this chat.",
@@ -202,62 +200,12 @@ TOOLS = [
                             "required": ["text"],
                             "additionalProperties": False,
                         },
-                        "description": "Messages in delivery order, with an independent optional reply_to each.",
+                        "description": "Messages in delivery order, each with an optional reply_to.",
                         "minItems": 1,
                         "maxItems": 5,
                     }
                 },
                 "required": ["messages"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "send_voice",
-            "description": (
-                "Speak a SHORT reply as a Telegram voice note in your calm, slightly haughty voice. "
-                "Use RARELY — only when spoken deadpan lands better than text "
-                "(quiet burn, dry one-liner, intimate private-chat beat). "
-                "Default remains plain text or send_sticker. "
-                "On success the turn ENDS; do not combine with send_sticker, send_messages, or reply_to_message. "
-                "Not for long explanations, lists, code, facts after web_search, or pure emotion "
-                "(pure emotion → send_sticker). "
-                "Optional emotion is a subtle delivery cue only — calm / sarcastic / disdainful / "
-                "bored / indifferent / confident / sighing / chuckling. Never invent other tags; "
-                "never put [brackets] in text; never announce that this is a voice message."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": (
-                            "What you say aloud: 1–2 short sentences, plain speech, no emoji, "
-                            "no service tags, no stage directions."
-                        ),
-                    },
-                    "emotion": {
-                        "type": "string",
-                        "description": (
-                            "Optional delivery cue. Omit for default calm deadpan. "
-                            "Allowed: calm, sarcastic, disdainful, bored, indifferent, "
-                            "confident, sighing, chuckling, none."
-                        ),
-                        "enum": [
-                            "calm",
-                            "sarcastic",
-                            "disdainful",
-                            "bored",
-                            "indifferent",
-                            "confident",
-                            "sighing",
-                            "chuckling",
-                            "none",
-                        ],
-                    },
-                },
-                "required": ["text"],
             },
         },
     },

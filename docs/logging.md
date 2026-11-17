@@ -39,9 +39,9 @@ verbose: false
 2026-09-15 18:02:11 [INFO] ✅ Бот запущен!
 2026-09-15 18:02:02 [INFO] 📨 [STAIRS + FENCE | -1002263830880 | supergroup] Михаил: короче я жесточайше нава...
 2026-09-15 18:02:08 [INFO] 🧠 Память: найдено 17 → загружено 9 фактов (732 символов)
-2026-09-15 18:02:12 [INFO] 📊 Токены: запрос=15906 (кэш-чтение=0, кэш-запись=0), ответ=106, reasoning=56, всего=16012
-2026-09-15 18:02:12 [INFO] 💰 Стоимость запроса: $0.020333 (источник=usage.cost)
-2026-09-15 18:02:12 [INFO] 🧭 Маршрут: provider=Meta model=meta/muse-spark-1.3-contributor session=e51b38c1b58f cache=0.0%
+2026-11-17 23:05:13 [INFO] 📊 Токены: запрос=7753 (кэш-чтение=7552, кэш-запись=0), ответ=162, reasoning=0, всего=7915
+2026-11-17 23:05:13 [INFO] 💰 Стоимость запроса: $0.000150 (источник=локальная оценка)
+2026-11-17 23:05:13 [INFO] 🧭 Маршрут: provider=deepseek model=deepseek-flash session=e51b38c1b58f cache=97.4%
 2026-09-15 18:02:18 [INFO] 🧠 Память: факт одобрен (source_id=41, scope=group_-123, key=hardware.gpu, reason=прямое самоутверждение)
 ```
 
@@ -70,7 +70,7 @@ verbose: false
 2026-06-10 18:02:09 [DEBUG] [1] Role: SYSTEM
 2026-06-10 18:02:09 [DEBUG] Length: 7488 символов
 2026-06-10 18:02:09 [DEBUG] Content:
-2026-06-10 18:02:09 [DEBUG] You are Berangaria, nicknamed Ber. YOUR GENDER IS STRICTLY FEMALE...
+2026-11-17 23:05:11 [DEBUG] You are Berangaria, nicknamed Ber. You are female; in Russian always use feminine forms...
 2026-06-10 18:02:09 [DEBUG] --------------------------------------------------------------------------------
 2026-06-10 18:02:09 [DEBUG] [2] Role: USER
 2026-06-10 18:02:09 [DEBUG] Length: 863 символов

@@ -4,16 +4,16 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
 from telegram.error import BadRequest, TimedOut
 
+from berangaria.analytics import store as analytics_store
 from berangaria.chat import llm_client
 from berangaria.chat.chat_actions import CHAT_ACTION_REFRESH_SECONDS
-from berangaria.chat.turn_outcome import TurnOutcome
-from berangaria.memory import store as memory_store
-import pytest
-from berangaria.core import state
 from berangaria.chat.streaming import StreamedCompletionResponse
-from berangaria.analytics import store as analytics_store
+from berangaria.chat.turn_outcome import TurnOutcome
+from berangaria.core import state
+from berangaria.memory import store as memory_store
 
 
 def _record_transport_retry_sleeps(sleeps, *, budget=3, message="transport retry budget was reset"):
@@ -382,15 +382,9 @@ def test_streaming_preview_finishes_with_persisted_delivery(monkeypatch, tmp_pat
     assert history[-1]["mid"] == 99
     assert history[0]["provider_sent"] is True
     assert history[-1]["provider_sent"] is False
-    assert payloads[0]["session_id"] == llm_client._chat_session_id(key)
-    assert payloads[0]["provider"] == {
-        "only": ["meta"],
-        "allow_fallbacks": False,
-        "require_parameters": True,
-    }
-    assert "service_tier" not in payloads[0]
-    assert captured_headers[0]["x-session-id"] == llm_client._chat_session_id(key)
-    assert "x-grok-conv-id" not in captured_headers[0]
+    assert "session_id" not in payloads[0]
+    assert "provider" not in payloads[0]
+    assert "x-session-id" not in captured_headers[0]
 
     state.histories.clear()
     state.load_all_histories()
@@ -452,11 +446,11 @@ def test_confirmed_reply_and_usage_are_recorded(monkeypatch, tmp_path, caplog):
     assert "provider=Meta model=meta/muse-spark-1.3-20260902" in caplog.text
 
 
-def test_unexpected_provider_alerts_owner(monkeypatch, tmp_path):
+def test_unexpected_openrouter_provider_alerts_owner_when_pinned(monkeypatch, tmp_path):
     response = _Response(200, {
         "id": "gen-wrong-provider-1",
         "provider": "Other",
-        "model": "meta/muse-spark-1.3-20260902",
+        "model": "deepseek/deepseek-chat",
         "choices": [{"finish_reason": "stop", "message": {"content": "ответ"}}],
         "usage": {},
     })
@@ -466,6 +460,8 @@ def test_unexpected_provider_alerts_owner(monkeypatch, tmp_path):
         alerts.append({"category": category, "message": message, "error": error})
         return True
 
+    monkeypatch.setattr(llm_client, "CHAT_PROVIDER", "openrouter")
+    monkeypatch.setattr(llm_client, "OPENROUTER_PROVIDER", {"only": ["deepseek"]})
     monkeypatch.setattr(llm_client.httpx, "AsyncClient", _client_returning(response))
     monkeypatch.setattr(llm_client, "STREAMING_ENABLED", False)
     monkeypatch.setattr(memory_store, "memory", None)
@@ -488,7 +484,7 @@ def test_unexpected_provider_alerts_owner(monkeypatch, tmp_path):
     assert len(alerts) == 1
     assert alerts[0]["category"] == "LLM routing provider"
     assert "provider=Other" in alerts[0]["message"]
-    assert "ожидался meta" in alerts[0]["message"]
+    assert "deepseek" in alerts[0]["message"]
     assert "generation=gen-wrong-provider-1" in alerts[0]["message"]
 
 
@@ -805,7 +801,7 @@ def test_search_round_keeps_temperature_when_reasoning_is_on(monkeypatch, tmp_pa
         monkeypatch, tmp_path, "web_search", '{"query": "курс евро"}'
     )
     assert posts[1]["temperature"] == llm_client.GENERATION_PARAMS["temperature"]
-    assert posts[1]["reasoning"] == {"effort": "low"}
+    assert posts[1]["thinking"] == llm_client.GENERATION_PARAMS["thinking"]
     provider_messages = history[-1]["provider_messages"]
     assert [message["role"] for message in provider_messages] == [
         "assistant", "tool", "assistant",

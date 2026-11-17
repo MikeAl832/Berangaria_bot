@@ -4,7 +4,6 @@ import copy
 from typing import Any
 
 from berangaria.chat.outgoing_message import DeliveredMessage
-
 from berangaria.core.state import (
     get_history_lock,
     histories,
@@ -35,7 +34,6 @@ async def save_assistant_turn(
         not text
         and not turn.reactions_made
         and not turn.stickers_made
-        and not turn.voices_made
     ):
         return None
 
@@ -62,8 +60,6 @@ async def save_assistant_turn(
         entry["reactions"] = list(turn.reactions_made)
     if turn.stickers_made:
         entry["stickers"] = list(turn.stickers_made)
-    if turn.voices_made:
-        entry["voices"] = list(turn.voices_made)
 
     exact_messages = [
         copy.deepcopy(message)
